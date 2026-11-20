@@ -1,6 +1,6 @@
 // Sea-state / spectrum / Froude–Krylov / RAO validation, run by validate-core.js.
 import { mat3, transformTris, solveWaterline, hydrostatics, inertiaAbout, massProperties, submerged } from '../js/physics.js';
-import { pmSpectrum, jonswapSpectrum, spectrumFn, spectralMoments, WaveField, SEA_STATES, pmFullyDevelopedTp } from '../js/waves.js';
+import { pmSpectrum, jonswapSpectrum, spectrumFn, spectralMoments, WaveField, SEA_STATES, pmFullyDevelopedTp, G as G0 } from '../js/waves.js';
 import { refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoAt, spectralResponse } from '../js/hydro.js';
 import { WaveSim, seriesStats } from '../js/sim.js';
 import { hemisphereStudy, sparStudy } from './trade-study.js';
@@ -88,6 +88,36 @@ export async function runWaveValidation({ exp, getTris, chkFactory }) {
     for (let t = 0; t < 3 * 3600; t += 0.37) { const e = f.eta(3.1, -1.7, t); s2 += e * e; n++; }
     chk('η record variance (3 h) vs Σa²/2', s2 / n, f.meta.m0, 0.05);
     out.push({ id: 'wave_record', title: 'Random-phase JONSWAP sea, SS4 (Hs 1.88 m, Tp 8.8 s)', ref: 'linear superposition: Var[η] = Σaᵢ²/2 = m0', rows });
+  }
+
+  // 2b — regular waves from user values (no spectrum): height, period, heading and wavelength reproduced exactly
+  {
+    const { rows, chk } = chkFactory();
+    const H = 1.5, T = 7, beta = 30;
+    const f = WaveField.fromParams({ mode: 'regular', H, T, heading: beta, heightKind: 'H' });
+    chk('single component, no spectrum', f.n, 1, 0, 0);
+    let lo = Infinity, hi = -Infinity, up = [];
+    const x0 = 2.3, y0 = -4.1, dt = T / 20000;
+    let prev = f.eta(x0, y0, 0);
+    for (let t = dt; t <= 3 * T; t += dt) {
+      const e = f.eta(x0, y0, t);
+      lo = Math.min(lo, e); hi = Math.max(hi, e);
+      if (prev < 0 && e >= 0) up.push(t - dt * e / (e - prev));
+      prev = e;
+    }
+    chk('crest-to-trough height = H', hi - lo, H, 1e-6);
+    chk('zero-up-crossing period = T', up[1] - up[0], T, 1e-6);
+    const lam = G0 * T * T / (2 * Math.PI), b = beta * Math.PI / 180;
+    chk('deep-water wavelength gT²/2π', f.meta.lambda, lam, 1e-9);
+    chk('crests repeat one wavelength along the heading', f.eta(x0 + lam * Math.cos(b), y0 + lam * Math.sin(b), 1.234), f.eta(x0, y0, 1.234), 0, 1e-9);
+    chk('crests constant across the heading', f.eta(x0 - 17 * Math.sin(b), y0 + 17 * Math.cos(b), 1.234), f.eta(x0, y0, 1.234), 0, 1e-9);
+    // significant-height input: a sinusoid of the same energy, so 4σ of the record equals the entered Hs
+    const fs = WaveField.fromParams({ mode: 'regular', H: 2, T: 9, heading: 90, heightKind: 'Hs' });
+    let s2 = 0, n = 0;
+    for (let i = 0; i < 400 * 50; i++) { const e = fs.eta(0, 0, i * 9 / 400); s2 += e * e; n++; }   // 50 whole periods
+    chk('Hs input: 4σ of the record = Hs', 4 * Math.sqrt(s2 / n), 2, 1e-6);
+    chk('Hs input: crest-to-trough = Hs/√2', fs.meta.Hwave, 2 / Math.SQRT2, 1e-12);
+    out.push({ id: 'wave_regular', title: 'Regular waves from user inputs (H 1.5 m, T 7 s, β 30°; and Hs 2 m, T 9 s)', ref: 'Airy wave η = A cos(k·x − ωt), deep water k = ω²/g; sinusoid σ = A/√2 so Hs = 4σ = 2√2 A', rows });
   }
 
   const tris = await getTris(box.file);

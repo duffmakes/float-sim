@@ -149,6 +149,24 @@
   </section>
   <section>
     <h2>7 · Sea state (waves)</h2>
+    <div class="seg" id="waveMode">
+      <button data-mode="spectrum" class="on">Spectrum (irregular)</button>
+      <button data-mode="regular">Regular waves</button>
+    </div>
+    <div id="regInputs" class="hidden">
+      <div class="row">
+        <label>Wave height (m) <input id="rgH" type="number" step="any" min="0" value="1"></label>
+        <label>Period T (s) <input id="rgT" type="number" step="any" min="0" value="6"></label>
+      </div>
+      <label>Height means
+        <select id="rgKind">
+          <option value="H">crest-to-trough height H (amplitude H/2)</option>
+          <option value="Hs">significant height Hs (same energy, amplitude Hs/2√2)</option>
+        </select>
+      </label>
+      <div id="rgInfo" class="hint"></div>
+    </div>
+    <div id="specInputs">
     <label>Sea state (NATO STANAG 4194, open-ocean N. Atlantic)
       <select id="ssSel"></select>
     </label>
@@ -165,24 +183,27 @@
       <label>JONSWAP γ <input id="ssGamma" type="number" step="any" min="1" max="7" value="3.3"></label>
       <label class="tog" style="flex:none;align-self:flex-end;margin-bottom:6px"><input id="ssDnvGamma" type="checkbox"> DNV γ(Tp/√Hs)</label>
     </div>
+    </div>
     <div class="slider"><span>Heading β</span><input id="ssHead" type="range" min="0" max="360" step="5" value="90"><input id="ssHeadN" type="number" step="any" value="90"></div>
     <p class="hint">β = direction the waves travel, relative to the model's +X axis: 180° head seas, 90° beam seas, 0° following.</p>
     <details>
       <summary>Wave &amp; hydrodynamic settings</summary>
+      <div id="specAdv">
       <div class="row">
         <label>Components <input id="ssN" type="number" min="5" max="300" value="50"></label>
         <label>Seed <input id="ssSeed" type="number" value="1"></label>
         <label>Spreading s <input id="ssSpread" type="number" min="0" step="1" value="0"></label>
       </div>
       <p class="hint">Spreading 0 gives long-crested waves; s &gt; 0 applies cos<sup>2s</sup> short-crested spreading.</p>
+      </div>
       <p class="hint">Added mass and damping are <b>estimates</b> (no diffraction/radiation solver). Defaults: strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p>
       <div class="row three">
         <label>A11 (kg) <input id="hA11" type="number" step="any"></label>
         <label>A22 (kg) <input id="hA22" type="number" step="any"></label>
-        <label><span>&nbsp;</label>
+        <label>&nbsp;</label>
       </div>
       <div class="row three">
-        <label>A33 (kg)</span> <input id="hA33" type="number" step="any"></label>
+        <label>A33 (kg) <input id="hA33" type="number" step="any"></label>
         <label>A44 / I44 <input id="hA44" type="number" step="any" value="0.2"></label>
         <label>A55 (kg·m²) <input id="hA55" type="number" step="any"></label>
       </div>
@@ -301,7 +322,7 @@
     </div>
     <div id="tabSea" class="tab hidden">
       <div id="seaVerdict" class="verdict">Pick a sea state, then run the waves or the statistics.</div>
-      <div class="rhead"><h2>Wave spectrum</h2></div>
+      <div class="rhead"><h2 id="specTitle">Wave spectrum</h2></div>
       <canvas id="specCv" class="chart"></canvas>
       <div id="specInfo" class="info"></div>
       <div class="rhead"><h2>Motions</h2></div>
