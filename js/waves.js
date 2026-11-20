@@ -95,6 +95,9 @@ export function rng(seed) {
   };
 }
 
+// Amplitude of a regular wave from a crest-to-trough height ('H') or an energy-equivalent significant height ('Hs').
+export function regularAmplitude(H, heightKind = 'H') { return heightKind === 'Hs' ? H / (2 * Math.SQRT2) : H / 2; }
+
 // Linear superposition of long- or short-crested components.
 // headingDeg: direction the waves travel TOWARD, measured from world +x (counter-clockwise).
 //   180° = waves travelling toward −x (head seas for a body whose bow points +x), 90° = beam seas, 0° = following.
@@ -119,6 +122,22 @@ export class WaveField {
   static regular(A, w, headingDeg, depth = Infinity, phase = 0) {
     return new WaveField([{ a: A, w, dir: headingDeg, phi: phase }], depth);
   }
+
+  // Regular (monochromatic Airy) wave from user values, independent of any spectrum.
+  //   heightKind 'H'  : H is the crest-to-trough height, so amplitude A = H/2.
+  //   heightKind 'Hs' : H is a significant wave height Hs = 4σ of the record; a sinusoid has σ = A/√2,
+  //                     so A = Hs/(2√2) and the crest-to-trough height is Hs/√2 (same energy as an irregular sea of that Hs).
+  static regularFrom({ H, T, heading = 90, heightKind = 'H', depth = Infinity }) {
+    if (!(H > 0) || !(T > 0)) return WaveField.calm();
+    const A = regularAmplitude(H, heightKind), w = 2 * Math.PI / T;
+    const f = WaveField.regular(A, w, heading, depth);
+    const k = f.k[0];
+    f.meta = { mode: 'regular', H, T, heightKind, heading, A, Hwave: 2 * A, w, k, lambda: 2 * Math.PI / k, steepness: 2 * A * k / (2 * Math.PI), wMin: w, wMax: w, m0: A * A / 2 };
+    return f;
+  }
+
+  // One entry point for the UI and the worker: { mode: 'regular', H, T, … } or spectrum parameters.
+  static fromParams(p) { return p.mode === 'regular' ? WaveField.regularFrom(p) : WaveField.fromSpectrum(p); }
 
   // Random-phase discretisation of a spectrum. Frequencies are randomised within equal-width bins
   // (avoids the record repeating after 2π/Δω); amplitude aᵢ = √(2 S(ωᵢ) Δω).
