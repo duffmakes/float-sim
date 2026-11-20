@@ -202,3 +202,47 @@ export class WaveField {
     return rho * G * (s * this.scale - z);
   }
 }
+
+// ------------------------------------------------------------------------------------------------
+// Wave drift (second-order mean effects), used by the time-domain simulator when drift is on.
+//  [STK]  Stokes (1847); deep-water Stokes drift of a component: u_s(z) = ω k a² e^{2kz} along its heading
+//         (for a spectrum, the sum over components: Kenyon 1969).
+//  [LH]   Longuet-Higgins (1977), Maruo (1960): mean drift force of reflected waves, F = ½ ρ g a² R² per unit
+//         width of the body across the wave direction.
+//  [URS]  Ursell (1947): thin fixed surface barrier of draft d in deep water,
+//         transmission T = K₁(kd) / √(K₁(kd)² + π² I₁(kd)²), reflection R² = 1 − T².
+//  Modified Bessel functions I₁, K₁: Abramowitz & Stegun 9.8.3/9.8.4/9.8.7/9.8.8 (|ε| < 2.2e-7 relative).
+export function besselI1(x) {
+  const ax = Math.abs(x);
+  if (ax <= 3.75) {
+    const t = (x / 3.75) ** 2;
+    return x * (0.5 + t * (0.87890594 + t * (0.51498869 + t * (0.15084934 + t * (0.02658733 + t * (0.00301532 + t * 0.00032411))))));
+  }
+  const t = 3.75 / ax;
+  const r = Math.exp(ax) / Math.sqrt(ax) * (0.39894228 + t * (-0.03988024 + t * (-0.00362018 + t * (0.00163801 + t * (-0.01031555
+    + t * (0.02282967 + t * (-0.02895312 + t * (0.01787654 + t * -0.00420059))))))));
+  return x < 0 ? -r : r;
+}
+export function besselK1(x) {
+  if (x <= 2) {
+    const u = (x / 2) ** 2;
+    return (x * Math.log(x / 2) * besselI1(x) + 1 + u * (0.15443144 + u * (-0.67278579 + u * (-0.18156897 + u * (-0.01919402
+      + u * (-0.00110404 + u * -0.00004686)))))) / x;
+  }
+  const t = 2 / x;
+  return Math.exp(-x) / Math.sqrt(x) * (1.25331414 + t * (0.23498619 + t * (-0.03655620 + t * (0.01504268 + t * (-0.00780353
+    + t * (0.00325614 + t * -0.00068245))))));
+}
+// Ursell reflection coefficient squared for kd (k wavenumber, d draft).
+export function ursellR2(kd) {
+  if (!(kd > 0)) return 0;
+  if (kd > 30) return 1;
+  const I = besselI1(kd), K = besselK1(kd);
+  return (Math.PI * Math.PI * I * I) / (K * K + Math.PI * Math.PI * I * I);
+}
+// Stokes drift of a component averaged over the top d metres: ω k a² (1 − e^{−2kd}) / (2kd); surface value when d = 0.
+export function stokesDriftMean(w, k, a, d) {
+  const s = w * k * a * a;
+  const x = 2 * k * Math.max(d, 0);
+  return x < 1e-9 ? s : s * (1 - Math.exp(-x)) / x;
+}

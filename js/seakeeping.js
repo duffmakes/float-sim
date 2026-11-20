@@ -74,6 +74,13 @@ export function initSeakeeping(api) {
   $('ssHeadN').onchange = () => { $('ssHead').value = $('ssHeadN').value; onInputs(); };
   for (const id of ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5', 'hDiffH', 'hDiffV']) $(id).addEventListener('change', () => { K.prep = null; onInputs(); });
   $('hReset').onclick = () => { for (const id of ['hA11', 'hA22', 'hA33', 'hA55']) $(id).value = ''; $('hA44').value = 0.2; $('hZ3').value = 0.15; $('hZ4').value = 0.08; $('hZ5').value = 0.15; $('hDiffH').checked = true; $('hDiffV').checked = false; K.prep = null; onInputs(); };
+  // wave drift settings (apply to the next run; restart a running one so the change shows straight away)
+  const driftParams = (s) => ($('driftOn').checked
+    ? { on: true, Cd: Math.max(0, parseFloat($('driftCd').value) || 0) }
+    : { on: false, holdPeriod: Math.max(60, 10 * (s.T0 || 6)) });
+  for (const id of ['driftOn', 'driftCd']) $(id).addEventListener('change', () => { $('driftCd').disabled = !$('driftOn').checked; if (K.running) { stopRun(); startRun(); } });
+  $('waveRestart').onclick = () => { if (K.running) { stopRun(); startRun(); } };
+  $('waveFollow').onchange = () => { if (!$('waveFollow').checked) return; if (K.sim) api.follow(K.sim.p[0], K.sim.p[1]); };
   $('waveSpeed').oninput = (e) => { $('waveSpeedV').textContent = `${e.target.value}×`; };
 
   // Current wave inputs. Common fields: mode, heading, active (waves present), T0 (characteristic period),
@@ -209,20 +216,20 @@ export function initSeakeeping(api) {
     K.sim = new WaveSim({
       hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
       A: P.coeffs.A, Bd: P.model.Bd, dt: dtFor(P, field), ramp: s.T0 > 0 ? Math.min(2 * s.T0, 20) : 0, vanishDeg: P.vanish || 180,
-      volQ: hull.volQ, diffModes: P.diffModes,
+      volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s),
     });
     K.field = field; K.hull = hull; K.running = true;
     K.runSea = s; K.runLin = s.mode === 'regular' && s.active ? [2, 3, 4].map((j) => regularLinear(P, s, j)) : null;
     sizeWaveMesh(s.mode === 'regular' && s.active ? Math.max(P.st.model.diag * 8, Math.min(2 * 2 * Math.PI / waveNumber(2 * Math.PI / s.T), P.st.model.diag * 40)) : P.st.model.diag * 8);
     waveMesh.visible = true; api.water.visible = false; api.waterDepth.visible = false;
     api.setStaticOverlays(false); wl3.visible = true;
-    $('waveRun').textContent = '❚❚ Stop';
+    $('waveRun').textContent = '❚❚ Stop'; $('waveRestart').disabled = false;
     showTab('tabSea');
   }
   function stopRun() {
     if (!K.running) return;
     K.running = false;
-    $('waveRun').textContent = '▶ Run in waves';
+    $('waveRun').textContent = '▶ Run in waves'; $('waveRestart').disabled = true;
     waveMesh.visible = false; wl3.visible = false;
     api.water.visible = api.waterDepth.visible = $('showWater').checked;
     api.setStaticOverlays(true);
@@ -240,8 +247,9 @@ export function initSeakeeping(api) {
     sim.advance(span, Math.min(budget, Math.ceil(span / sim.dt)));
     const R = quatToMat3(sim.q);
     api.setBodyPose(R, sim.p);
-    api.follow(sim.p[0], sim.p[1]);
-    updateWaveMesh(field, sim.t, sim.p[0], sim.p[1]);
+    if ($('waveFollow').checked) api.follow(sim.p[0], sim.p[1]);
+    const vc = api.viewCenter();   // the wave patch stays under the camera's view, wherever the body goes
+    updateWaveMesh(field, sim.t, vc[0], vc[1]);
     // instantaneous wetted waterline
     const wf = waveForces(sim.world, K.hull.idx, field, sim.t, sim.rho, sim.p, { segments: true });
     const segs = wf.segs;
@@ -258,12 +266,23 @@ export function initSeakeeping(api) {
       const ramping = sim.t < sim.ramp;
       $('waveInfo').innerHTML = `t = <b>${f(sim.t, 4)} s</b>${ramping ? ' (waves ramping up)' : ''} · roll <b>${f(r.roll[n - 1], 3)}°</b> · pitch <b>${f(r.pitch[n - 1], 3)}°</b><br>
         so far: roll σ ${f(rs.sd)}°, max ${f(sim.stats.maxRoll)}° · pitch max ${f(sim.stats.maxPitch)}° · green-water events ${sim.stats.greenWater}<br>
-        ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}drift ${f(Math.hypot(sim.p[0], sim.p[1]))} m (free-floating, no mooring or viscous drag, so the drift speed is indicative only; the camera follows)
+        ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}${driftLine(sim)}
         ${sim.stats.capsized ? `<br><span class="bad">✕ Capsized at t = ${f(sim.stats.capsizeT)} s</span>` : ''}
         <br><span class="hint">${(K.hull.idx.length / 3).toLocaleString()} panels · ${field.n} wave components · dt ${f(sim.dt * 1000)} ms</span>`;
     }
   }
 
+  function driftLine(sim) {
+    const dist = Math.hypot(sim.p[0], sim.p[1]);
+    if (!sim.drift || !sim.drift.on) return `wave drift off: held on station by a soft spring (period ${f(sim.drift ? sim.drift.holdPeriod : 0)} s) · offset ${f(dist)} m`;
+    const r = sim.rec, n = r.t.length, i0 = Math.max(0, n - Math.round(30 / sim.dt));
+    const dt = n > 1 ? r.t[n - 1] - r.t[i0] : 0;
+    const vx = dt > 0 ? (r.x[n - 1] - r.x[i0]) / dt : 0, vy = dt > 0 ? (r.y[n - 1] - r.y[i0]) / dt : 0;
+    const u = sim.dr.uNow || [0, 0];
+    const far = dist > 10 * K.prep.st.model.diag;
+    return `drift ${f(Math.hypot(vx, vy))} m/s toward ${f(((Math.atan2(vy, vx) * 180 / Math.PI) + 360) % 360)}° (last 30 s) · Stokes drift over the draft ${f(Math.hypot(...u))} m/s · distance ${f(dist)} m
+      ${far ? `<br><span class="warn">The body has drifted ${f(dist / K.prep.st.model.diag, 2)} body lengths. Use ↺ Restart run to start again from the original position.</span>` : ''}`;
+  }
   function drawHistories(r) {
     if ($('tabSea').classList.contains('hidden')) return;
     lineChart($('thRot'), { series: [
@@ -328,6 +347,7 @@ export function initSeakeeping(api) {
         ${row('Pitch σ', stats.pitch.sd, sp.sigma, '°')}
         ${row('Heave σ', stats.heave.sd, sh.sigma, 'm')}
         <tr><td>Wave Hs from record (4σ)</td><td>${f(4 * stats.eta.sd)} m</td><td>${f(s.Hs)} m</td></tr>
+        <tr><td>Mean drift</td><td colspan="2">${driftRow(stats)}</td></tr>
         <tr><td>Green water on deck</td><td colspan="2">${stats.greenWater} events, ${f(100 * greenFrac, 2)} % of the time</td></tr>
         <tr><td>Capsize</td><td colspan="2">${stats.capsized ? `<span class="bad">✕ yes, at t = ${f(stats.capsizeT)} s</span>` : '<span class="good">✓ no</span>'}</td></tr>
       </table><span class="hint">Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · ${field.n} components · dt ${f(stats.dt * 1000)} ms.
@@ -337,10 +357,13 @@ export function initSeakeeping(api) {
     K.worker.postMessage({
       verts: hull.verts.buffer.slice(0), idx: hull.idx.buffer.slice(0), mass: P.st.m, IGb: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw,
       fieldParams: { ...s }, A: P.coeffs.A, Bd: P.model.Bd, dt, duration, ramp, vanishDeg: P.vanish || 180,
-      volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes,
+      volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes, drift: driftParams(s),
     });
   };
 
+  const driftRow = (st) => (!st.drift ? '—' : st.drift.on
+    ? `${f(st.drift.speed)} m/s toward ${f(st.drift.dir)}°, ${f(st.drift.dist)} m in the run`
+    : `off (held on station; max offset ${f(st.drift.maxOffset)} m)`);
   function showRegularStats(P, s, stats, hull, field, t0) {
     const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
     const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
@@ -354,6 +377,7 @@ export function initSeakeeping(api) {
       ${row('Roll', st.roll, regularLinear(P, s, 3), '°')}
       ${row('Pitch', st.pitch, regularLinear(P, s, 4), '°')}
       <tr><td>Max roll / pitch (whole run)</td><td colspan="3">${f(stats.maxRoll)}° / ${f(stats.maxPitch)}°</td></tr>
+      <tr><td>Mean drift</td><td colspan="3">${driftRow(stats)}</td></tr>
       <tr><td>Green water on deck</td><td colspan="3">${stats.greenWater} events, ${f(100 * greenFrac, 2)} % of the time</td></tr>
       <tr><td>Capsize</td><td colspan="3">${stats.capsized ? `<span class="bad">✕ yes, at t = ${f(stats.capsizeT)} s</span>` : '<span class="good">✓ no</span>'}</td></tr>
     </table><span class="hint">Steady state is half the peak-to-peak over the last half of the run. Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · dt ${f(stats.dt * 1000)} ms.
