@@ -114,15 +114,43 @@ expect('20-min SS3 run: heave σ time domain ≈ spectral (±15 %)', Math.abs(hT
 expect('sea-state verdict shown', /SS3: max roll/.test(await page.locator('#seaVerdict').innerText()));
 if (shots) await page.screenshot({ path: `${shots}/sea-stats.png` });
 
-// 7 — RAO sweep
-await page.click('#raoRun'); await page.waitForTimeout(1500);
+// 7 — RAO sweep (Hz inputs, progress, async)
+expect('RAO range shown in Hz → rad/s', (await page.locator('#raoRange').innerText()).includes('rad/s'));
+await page.click('#raoRun');
+await page.waitForFunction(() => !document.querySelector('#raoProgWrap').classList.contains('hidden'), null, { timeout: 10000 });
+expect('progress bar shown while computing', true);
+await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
 expect('RAO sweep computed', (await page.locator('#raoInfo').innerText()).includes('5 headings'));
+expect('natural frequencies reported in Hz', /heave [\d.]+ Hz/.test(await page.locator('#raoInfo').innerText()));
 expect('RAO response table (5 headings)', (await page.locator('#raoResp tr').count()) === 6);
 const dl = page.waitForEvent('download');
 await page.click('#raoCsv');
 const csv = await (await dl).createReadStream().then((st) => new Promise((res) => { let d = ''; st.on('data', (c) => { d += c; }); st.on('end', () => res(d)); }));
 expect('RAO CSV export (5 × 80 rows + header)', csv.trim().split('\n').length === 401, `${csv.trim().split('\n').length} lines`);
+const dl2 = page.waitForEvent('download');
+await page.click('#raoRaw');
+const raw = await (await dl2).createReadStream().then((st) => new Promise((res) => { let d = ''; st.on('data', (c) => { d += c; }); st.on('end', () => res(d)); }));
+const rawLines = raw.trim().split('\n'), dataLines = rawLines.filter((l) => !l.startsWith('#'));
+expect('raw CSV: header comments + 41 columns × 400 rows', rawLines[0].startsWith('# Float Sim raw RAO export') && dataLines.length === 401 && dataLines[0].split(',').length === 41, `${dataLines.length} lines, ${dataLines[0].split(',').length} cols`);
+// leaving and re-opening the RAO tab shows the loading overlay, then the plots
+await page.click('#tabs button[data-tab="tabHydro"]');
+await page.click('#tabs button[data-tab="tabRao"]');
+await page.waitForFunction(() => document.querySelector('#raoLoading').classList.contains('hidden'), null, { timeout: 30000 });
+expect('RAO tab re-renders after loading overlay', (await page.locator('#raoResp tr').count()) === 6);
 if (shots) await page.screenshot({ path: `${shots}/sea-rao.png` });
+
+// 8 — custom moments of inertia (STEP barge: roll period T = 2π√(Ixx / (ρgV·GM_T)), dry, no added mass)
+await page.setInputFiles('#file', MODEL);
+await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
+for (const [id, v] of [['mass', '3200'], ['cgx', '2000'], ['cgy', '0'], ['cgz', '500']]) { await page.fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+await page.click('#tabs button[data-tab="tabHydro"]');
+await page.selectOption('#inMode', 'custom');
+expect('custom inertia prefilled with computed values', num(await page.inputValue('#inXX')) > 0);
+await page.fill('#inXX', '2000'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
+const Troll = 2 * Math.PI * Math.sqrt(2000 / (1000 * 9.80665 * 3.2 * (0.2 + 4 / (12 * 0.4) - 0.5)));
+expect(`custom Ixx = 2000 kg·m² → roll period ${Troll.toFixed(3)} s`, near(num(await stat('Roll')), Troll, 0.01), await stat('Roll'));
+await page.fill('#inXX', '99999'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
+expect('non-physical inertia rejected (triangle inequality)', (await page.locator('#inInfo').innerText()).includes('triangle inequality'));
 
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();

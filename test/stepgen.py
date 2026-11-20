@@ -65,6 +65,27 @@ class Cylinder:
         return out
 
 
+class Sphere:
+    """Sphere of radius r about center c, built from two hemispherical faces joined along a great circle
+    perpendicular to `axis` (choose a horizontal axis so the seam is not the waterline)."""
+    def __init__(self, center, r, axis=(1, 0, 0), ref=(0, 1, 0)):
+        self.c, self.r, self.axis, self.ref = list(center), r, _unit(axis), _unit(ref)
+
+    def tris(self, n=96):
+        out = []
+        a, x = self.axis, self.ref
+        y = _cross(a, x)
+        P = lambda th, ph: _add(self.c, _add(_mul(a, self.r * math.cos(th)), _add(_mul(x, self.r * math.sin(th) * math.cos(ph)), _mul(y, self.r * math.sin(th) * math.sin(ph)))))
+        for i in range(n):
+            t0, t1 = math.pi * i / n, math.pi * (i + 1) / n
+            for j in range(2 * n):
+                p0, p1 = 2 * math.pi * j / (2 * n), 2 * math.pi * (j + 1) / (2 * n)
+                A, B, C, D = P(t0, p0), P(t1, p0), P(t1, p1), P(t0, p1)
+                if i > 0: out += A + B + D
+                if i < n - 1: out += B + C + D
+        return out
+
+
 def box(lx, ly, lz, origin=(0, 0, 0)):
     """axis-aligned box with its min corner at origin"""
     o = origin
@@ -151,6 +172,15 @@ class StepWriter:
         topf = self.face([(et, True)], self.add(f"PLANE('',{self.ax2(top, a, x)})"))
         return [side, bot, topf]
 
+    def sphere(self, Sp):
+        pv = _add(Sp.c, _mul(Sp.ref, Sp.r))
+        v = self.vtx(pv)
+        circ = self.add(f"CIRCLE('',{self.ax2(Sp.c, Sp.axis, Sp.ref)},{_r(Sp.r)})")
+        e = self.add(f"EDGE_CURVE('',{v},{v},{circ},.T.)")
+        surf = self.add(f"SPHERICAL_SURFACE('',{self.ax2(Sp.c, Sp.axis, Sp.ref)},{_r(Sp.r)})")
+        # +axis hemisphere: loop counter-clockwise seen from +axis; −axis hemisphere: reversed
+        return [self.face([(e, True)], surf), self.face([(e, False)], surf)]
+
     def write(self, path, solid, name):
         self.lines = []
         L = self.add
@@ -169,7 +199,8 @@ class StepWriter:
         unc = L(f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),{lu},'distance_accuracy_value','confusion accuracy')")
         ctx = L(f"(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(({unc}))"
                 f"GLOBAL_UNIT_ASSIGNED_CONTEXT(({lu},{au},{su}))REPRESENTATION_CONTEXT('Context','3D'))")
-        faces = self.polyhedron(solid) if isinstance(solid, Polyhedron) else self.cylinder(solid)
+        faces = (self.polyhedron(solid) if isinstance(solid, Polyhedron) else
+                 self.sphere(solid) if isinstance(solid, Sphere) else self.cylinder(solid))
         shell = L(f"CLOSED_SHELL('',({','.join(faces)}))")
         brep = L(f"MANIFOLD_SOLID_BREP('{name}',{shell})")
         origin = self.ax2([0, 0, 0], [0, 0, 1], [1, 0, 0])

@@ -1,9 +1,9 @@
 // Sea-state simulation, spectral stability estimates and RAO sweeps (UI glue).
-import { mat3, transformTris, solveWaterline, hydrostatics, inertiaAbout, gzCurve, gzSummary, quatToMat3 } from './physics.js';
+import { mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, quatToMat3 } from './physics.js';
 import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G } from './waves.js';
 import {
-  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweep, spectralResponse,
-  diffractionCheck, waterplaneExtent, DOF,
+  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, spectralResponse, spectralFromSweep,
+  diffractionCheck, waterplaneExtent, bodyFrameVolQ, DOF,
 } from './hydro.js';
 import { WaveSim, seriesStats } from './sim.js';
 import { lineChart, heatmap, SERIES, rampColor } from './charts.js';
@@ -60,8 +60,8 @@ export function initSeakeeping(api) {
   });
   $('ssHead').oninput = () => { $('ssHeadN').value = $('ssHead').value; onInputs(); };
   $('ssHeadN').onchange = () => { $('ssHead').value = $('ssHeadN').value; onInputs(); };
-  for (const id of ['hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5']) $(id).addEventListener('change', () => { K.prep = null; onInputs(); });
-  $('hReset').onclick = () => { K.coeffOverride = false; $('hA33').value = ''; $('hA55').value = ''; $('hA44').value = 0.2; $('hZ3').value = 0.15; $('hZ4').value = 0.08; $('hZ5').value = 0.15; K.prep = null; onInputs(); };
+  for (const id of ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5', 'hDiffH', 'hDiffV']) $(id).addEventListener('change', () => { K.prep = null; onInputs(); });
+  $('hReset').onclick = () => { for (const id of ['hA11', 'hA22', 'hA33', 'hA55']) $(id).value = ''; $('hA44').value = 0.2; $('hZ3').value = 0.15; $('hZ4').value = 0.08; $('hZ5').value = 0.15; $('hDiffH').checked = true; $('hDiffV').checked = false; K.prep = null; onInputs(); };
   $('waveSpeed').oninput = (e) => { $('waveSpeedV').textContent = `${e.target.value}×`; };
 
   const sea = () => {
@@ -77,31 +77,33 @@ export function initSeakeeping(api) {
   function prepare() {
     const st = api.getState();
     if (!st || st.H.status === 'sinks') return null;
-    const key = JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler(), ['hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value)]);
+    const key = JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler(), api.inertiaKey(), $('raoFmax').value,
+      ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value), $('hDiffH').checked, $('hDiffV').checked]);
     if (K.prep && K.prep.key === key) return K.prep;
     const R = st.R, yaw = Math.atan2(R[3], R[0]);
     const Rsk = mat3.mul(mat3.rotZ(-yaw), R);
     const rel = transformTris(st.model.tris, Rsk, st.G);
     const sol = solveWaterline(rel, st.m / st.rho);
     const H = hydrostatics(rel, sol.zw, st.m, st.rho);
-    const IGb = inertiaAbout(st.model.mp, st.m, st.G);
+    const IGb = api.getInertiaBody();
     const IGw = mat3.mul(Rsk, mat3.mul(IGb, mat3.transpose(Rsk)));
     const coeffs = defaultHydroCoeffs(H, st.m, IGw, st.rho);
     // user overrides
     const num = (id) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : null; };
-    if (num('hA33') !== null) coeffs.A[2] = num('hA33'); else $('hA33').placeholder = coeffs.A[2].toPrecision(4);
+    for (const [id, j] of [['hA11', 0], ['hA22', 1], ['hA33', 2]]) { if (num(id) !== null) coeffs.A[j] = num(id); else $(id).placeholder = coeffs.A[j].toPrecision(4); }
     if (num('hA55') !== null) coeffs.A[4] = num('hA55'); else $('hA55').placeholder = coeffs.A[4].toPrecision(4);
     coeffs.A[3] = (num('hA44') ?? 0.2) * IGw[0];
     coeffs.zeta[2] = num('hZ3') ?? 0.15; coeffs.zeta[3] = num('hZ4') ?? 0.08; coeffs.zeta[4] = num('hZ5') ?? 0.15;
     const size = Math.max(...waterplaneExtent(H.segs), 1e-6);
     // frequency-domain mesh: resolve the shortest RAO wavelength by ~10 panels
-    const wMaxRao = Math.max(parseFloat($('raoWmax').value) || 4, 1);
+    const wMaxRao = 2 * Math.PI * Math.max(parseFloat($('raoFmax').value) || 0.65, 0.16);
     const lamMin = 2 * Math.PI * G / (wMaxRao * wMaxRao);
     const relFine = refineTris(rel, Math.max(Math.min(lamMin / 10, size / 15), st.model.diag / 200), 40000);
-    const model = linearModel(relFine, hydrostatics(relFine, sol.zw, st.m, st.rho), st.m, IGw, st.rho, coeffs);
+    const diffModes = [$('hDiffH').checked, $('hDiffH').checked, $('hDiffV').checked];
+    const model = linearModel(relFine, hydrostatics(relFine, sol.zw, st.m, st.rho), st.m, IGw, st.rho, coeffs, { diffraction: diffModes });
     const gz = gzSummary(gzCurve(rel, H.V, 'x'));
     const offset = Math.hypot(...H.offset);
-    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {} };
+    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {} };
     return K.prep;
   }
   // time-domain hull: panels ~ λ_min/9 of the current sea, capped for speed
@@ -109,7 +111,12 @@ export function initSeakeeping(api) {
     const lam = Math.min(field.minWavelength, P.size * 4);
     const h = Math.max(lam / 9, P.st.model.diag / 60);
     const key = h.toPrecision(3);
-    if (!P.hulls[key]) P.hulls[key] = indexMesh(refineTris(transformTris(P.st.model.tris, mat3.identity(), P.st.G), h, 6000), P.st.model.diag * 1e-7);
+    if (!P.hulls[key]) {
+      const hull = indexMesh(refineTris(transformTris(P.st.model.tris, mat3.identity(), P.st.G), h, 6000), P.st.model.diag * 1e-7);
+      // volume quadrature of the mean submerged volume (body frame) for the diffraction correction
+      hull.volQ = P.diffModes.some(Boolean) ? bodyFrameVolQ(refineTris(P.rel, h, 3000), P.zw, P.H.B, P.Rsk) : null;
+      P.hulls[key] = hull;
+    }
     return P.hulls[key];
   }
   const dtFor = (P, field) => Math.min(2 * Math.PI / Math.max(field.maxOmega || 1, ...P.model.wn) / 60, 0.05);
@@ -154,6 +161,7 @@ export function initSeakeeping(api) {
     K.sim = new WaveSim({
       hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
       A: P.coeffs.A, Bd: P.model.Bd, dt: dtFor(P, field), ramp: s.Tp > 0 ? Math.min(2 * s.Tp, 20) : 0, vanishDeg: P.vanish || 180,
+      volQ: hull.volQ, diffModes: P.diffModes,
     });
     K.field = field; K.hull = hull; K.running = true;
     sizeWaveMesh(P.st.model.diag * 8);
@@ -277,6 +285,7 @@ export function initSeakeeping(api) {
     K.worker.postMessage({
       verts: hull.verts.buffer.slice(0), idx: hull.idx.buffer.slice(0), mass: P.st.m, IGb: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw,
       fieldParams: { ...s }, A: P.coeffs.A, Bd: P.model.Bd, dt, duration, ramp, vanishDeg: P.vanish || 180,
+      volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes,
     });
   };
 
@@ -306,73 +315,181 @@ export function initSeakeeping(api) {
     if (m) { const [a, st, b] = m.slice(1).map(Number); const out = []; for (let v = a; v <= b + 1e-9 && out.length < 73; v += st || 1) out.push(+v.toFixed(6)); return out; }
     return txt.split(/[,\s]+/).map(Number).filter(Number.isFinite).slice(0, 73);
   }
-  $('raoRun').onclick = () => {
-    K.prep = null;  // RAO ω-range sets the mesh resolution
-    const P = prepare(); if (!P) return;
-    const w0 = Math.max(0.01, parseFloat($('raoWmin').value) || 0.2), w1 = Math.max(w0 * 1.01, parseFloat($('raoWmax').value) || 4);
+  const TWO_PI = 2 * Math.PI;
+  const raoRange = () => {
+    const f0 = Math.max(0.001, parseFloat($('raoFmin').value) || 0.03), f1 = Math.max(f0 * 1.01, parseFloat($('raoFmax').value) || 0.65);
+    $('raoRange').textContent = `= ω ${f(TWO_PI * f0)}–${f(TWO_PI * f1)} rad/s · wave periods ${f(1 / f1)}–${f(1 / f0)} s · deep-water wavelengths ${f(G / (TWO_PI * f1 * f1))}–${f(G / (TWO_PI * f0 * f0))} m`;
+    return [f0, f1];
+  };
+  for (const id of ['raoFmin', 'raoFmax']) $(id).addEventListener('input', raoRange);
+  raoRange();
+  const progress = (frac, text) => {
+    $('raoProgWrap').classList.toggle('hidden', frac === null);
+    if (frac === null) return;
+    $('raoProgBar').style.width = `${Math.round(frac * 100)}%`;
+    $('raoProgText').textContent = text;
+    $('raoLoadingText').textContent = text;
+  };
+  const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  let raoBusy = false;
+  $('raoRun').onclick = async () => {
+    if (raoBusy) return;
+    const [f0, f1] = raoRange();
     const n = Math.max(5, Math.min(400, parseInt($('raoN').value) || 80));
-    const omegas = Array.from({ length: n }, (_, i) => w0 + (w1 - w0) * i / (n - 1));
     const heads = parseHeadings($('raoHead').value);
     if (!heads.length) { $('raoInfo').textContent = 'Enter at least one heading.'; return; }
-    const t0 = performance.now();
-    K.rao = { omegas, heads, sweep: raoSweep(P.model, omegas, heads), P };
-    $('raoCsv').disabled = false;
-    $('raoInfo').innerHTML = `${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${P.model.quads.length.toLocaleString()} wetted panels.
-      Natural frequencies: heave ${f(P.model.wn[2])}, roll ${f(P.model.wn[3])}, pitch ${f(P.model.wn[4])} rad/s.`;
-    showTab('tabRao');
+    raoBusy = true; $('raoRun').disabled = true; $('raoCsv').disabled = true; $('raoRaw').disabled = true;
+    showTab('tabRao', { skipDraw: true });
+    $('raoLoading').classList.remove('hidden'); $('raoEmpty').classList.add('hidden');
+    try {
+      progress(0, 'Preparing the hydrodynamic mesh…');
+      await nextPaint();
+      const t0 = performance.now();
+      K.prep = null;  // the RAO frequency range sets the mesh resolution
+      const P = prepare();
+      if (!P) throw new Error('No floating body to analyse (the model sinks or none is loaded).');
+      const freqs = Array.from({ length: n }, (_, i) => f0 + (f1 - f0) * i / (n - 1));
+      const omegas = freqs.map((x) => TWO_PI * x);
+      const sweep = await raoSweepAsync(P.model, omegas, heads, (p) => progress(p, `Computing RAOs… ${Math.round(p * 100)} % (${heads.length} headings × ${n} frequencies)`));
+      K.rao = { freqs, omegas, heads, sweep, P, resp: new Map() };
+      $('raoCsv').disabled = false; $('raoRaw').disabled = false;
+      const wn = P.model.wn;
+      $('raoInfo').innerHTML = `${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${P.model.quads.length.toLocaleString()} wetted panels.<br>
+        Natural frequencies: heave ${f(wn[2] / TWO_PI)} Hz, roll ${f(wn[3] / TWO_PI)} Hz, pitch ${f(wn[4] / TWO_PI)} Hz.
+        Diffraction correction: ${P.diffModes[0] ? 'surge/sway on' : 'surge/sway off'}, ${P.diffModes[2] ? 'heave on' : 'heave off'}.`;
+      progress(1, 'Rendering plots…');
+      await nextPaint();
+      await drawRaoAsync();
+    } catch (err) {
+      console.error(err);
+      $('raoInfo').innerHTML = `<span class="bad">${err.message || err}</span>`;
+      $('raoLoading').classList.add('hidden');
+    } finally {
+      raoBusy = false; $('raoRun').disabled = false; progress(null);
+    }
   };
-  $('raoDof').onchange = drawRao; $('raoNorm').onchange = drawRao;
+  $('raoDof').onchange = () => drawRaoAsync(); $('raoNorm').onchange = () => drawRaoAsync();
+
+  // RAO tab: show a loading overlay, let it paint, then draw (charts) and fill the sea-state response table.
+  async function drawRaoAsync() {
+    if (!K.rao) { $('raoEmpty').classList.remove('hidden'); $('raoLoading').classList.add('hidden'); return; }
+    $('raoEmpty').classList.add('hidden');
+    $('raoLoadingText').textContent = 'Rendering RAO plots…';
+    $('raoLoading').classList.remove('hidden');
+    await nextPaint();
+    try { drawRao(); await drawResponse(); } finally { $('raoLoading').classList.add('hidden'); }
+  }
   function drawRao() {
     if (!K.rao || $('tabRao').classList.contains('hidden')) return;
-    const { omegas, heads, sweep, P } = K.rao;
+    const { freqs, heads, sweep, P } = K.rao;
     const j = +$('raoDof').value, rot = j >= 3, slope = $('raoNorm').value === 'slope';
     const val = (p) => (rot ? (slope ? p.perSlope[j] : p.degPerM[j]) : p.amp[j]);
     const unit = rot ? (slope ? 'deg/deg' : 'deg/m') : 'm/m';
     const color = (i) => (heads.length === 1 ? SERIES[0] : rampColor(i / (heads.length - 1)));
-    const series = sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: omegas, y: h.points.map(val) }));
-    const vl = P.model.wn[j] > 0 ? [{ x: P.model.wn[j], label: `${DOF[j]} ωn` }] : [];
-    lineChart($('raoCv'), { series, xLabel: 'ω (rad/s)', yLabel: `${DOF[j]} RAO (${unit})`, vlines: vl, height: 180 });
+    const series = sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: freqs, y: h.points.map(val) }));
+    const vl = P.model.wn[j] > 0 ? [{ x: P.model.wn[j] / TWO_PI, label: `${DOF[j]} fn` }] : [];
+    const rampLegend = heads.length > 5 ? { label: 'heading', from: `β ${heads[0]}°`, to: `β ${heads[heads.length - 1]}°`, color: (t) => rampColor(t) } : null;
+    lineChart($('raoCv'), { series, xLabel: 'f (Hz)', yLabel: `${DOF[j]} RAO (${unit})`, vlines: vl, height: 180, rampLegend });
     // phase is meaningless where the response vanishes (e.g. roll in head seas), so mask it there
     const ampMax = Math.max(1e-30, ...sweep.flatMap((h) => h.points.map((p) => p.amp[j])));
-    lineChart($('raoPh'), { series: sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: omegas, y: h.points.map((p) => (p.amp[j] > 1e-4 * ampMax ? p.phase[j] : NaN)) })),
-      xLabel: 'ω (rad/s)', yLabel: 'phase (deg)', yMin: -180, yMax: 180, height: 130, legend: false });
-    heatmap($('raoHeat'), { rows: heads, cols: omegas, values: sweep.map((h) => h.points.map(val)), rowLabel: 'β (deg)', colLabel: 'ω (rad/s)', valueLabel: `${DOF[j]} (${unit})`, height: 150 });
-    // response in the current sea state
-    const s = sea();
-    if (s.Hs > 0) {
-      const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma), wp = 2 * Math.PI / s.Tp;
-      const rows = heads.map((b) => { const r = spectralResponse(P.model, S, b, j, 0.4 * wp, Math.max(4 * wp, P.model.wn[j] * 1.5 || 0), 300, 3 * 3600); return `<tr><td>β ${b}°</td><td>${f(r.sig)} ${rot ? '°' : 'm'}</td><td>${f(r.mpm)} ${rot ? '°' : 'm'}</td></tr>`; });
-      $('raoResp').innerHTML = `<b>${DOF[j]} in SS${ssSel.value} (Hs ${s.Hs} m, Tp ${s.Tp} s):</b><table><tr><td></td><td>significant (2σ)</td><td>most-probable max, 3 h</td></tr>${rows.join('')}</table>`;
-    } else $('raoResp').innerHTML = '';
+    lineChart($('raoPh'), { series: sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: freqs, y: h.points.map((p) => (p.amp[j] > 1e-4 * ampMax ? p.phase[j] : NaN)) })),
+      xLabel: 'f (Hz)', yLabel: 'phase (deg)', yMin: -180, yMax: 180, height: 130, legend: false });
+    heatmap($('raoHeat'), { rows: heads, cols: freqs, values: sweep.map((h) => h.points.map(val)), rowLabel: 'β (deg)', colLabel: 'f (Hz)', valueLabel: `${DOF[j]} (${unit})`, height: 150 });
   }
+  // Response in the current sea state, from the computed sweep (cached). Falls back to re-solving on a
+  // dedicated grid only when the sweep misses a large part of the wave energy.
+  async function drawResponse() {
+    const { heads, sweep, P, resp } = K.rao;
+    const j = +$('raoDof').value, rot = j >= 3, s = sea();
+    if (!(s.Hs > 0 && s.Tp > 0)) { $('raoResp').innerHTML = ''; return; }
+    const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma), wp = TWO_PI / s.Tp;
+    const m0Wave = s.Hs * s.Hs / 16;
+    const rows = [];
+    let fallback = false;
+    for (let i = 0; i < heads.length; i++) {
+      const key = JSON.stringify([s, j, heads[i]]);
+      let r = resp.get(key);
+      if (!r) {
+        r = spectralFromSweep(sweep[i].points, S, j, 3 * 3600, m0Wave);
+        if (r.coverage < 0.9) {
+          fallback = true;
+          $('raoLoadingText').textContent = `Sweep range covers ${Math.round(r.coverage * 100)} % of the sea's energy; re-solving on a full grid… (${i + 1}/${heads.length})`;
+          await nextPaint();
+          r = { ...spectralResponse(P.model, S, heads[i], j, 0.4 * wp, Math.max(4 * wp, P.model.wn[j] * 1.5 || 0), 200, 3 * 3600), coverage: 1 };
+        }
+        resp.set(key, r);
+      }
+      rows.push(`<tr><td>β ${heads[i]}°</td><td>${f(r.sig)} ${rot ? '°' : 'm'}</td><td>${f(r.mpm)} ${rot ? '°' : 'm'}</td></tr>`);
+    }
+    $('raoResp').innerHTML = `<b>${DOF[j]} in SS${ssSel.value} (Hs ${s.Hs} m, Tp ${s.Tp} s):</b><table><tr><td></td><td>significant (2σ)</td><td>most-probable max, 3 h</td></tr>${rows.join('')}</table>
+      ${fallback ? '<span class="hint">The RAO frequency range did not cover this sea state, so these were computed on a separate full grid.</span>' : ''}`;
+  }
+  const download = (name, text) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const num6 = (v) => +(+v).toPrecision(8);
   $('raoCsv').onclick = () => {
     if (!K.rao) return;
-    const head = ['beta_deg', 'omega_rad_s', 'period_s', 'wavelength_m', ...DOF.map((d, j) => (j < 3 ? `${d}_m_per_m` : `${d}_deg_per_m`)), ...DOF.slice(3).map((d) => `${d}_deg_per_deg_slope`), ...DOF.map((d) => `${d}_phase_deg`)];
+    const head = ['beta_deg', 'f_Hz', 'omega_rad_s', 'period_s', 'wavelength_m', ...DOF.map((d, j) => (j < 3 ? `${d}_m_per_m` : `${d}_deg_per_m`)), ...DOF.slice(3).map((d) => `${d}_deg_per_deg_slope`), ...DOF.map((d) => `${d}_phase_deg`)];
     const lines = [head.join(',')];
-    for (const h of K.rao.sweep) for (const p of h.points) lines.push([h.beta, p.w, p.T, p.lambda, ...p.degPerM, ...p.perSlope.slice(3), ...p.phase].map((v) => +(+v).toPrecision(6)).join(','));
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
-    a.download = 'rao.csv'; a.click(); URL.revokeObjectURL(a.href);
+    for (const h of K.rao.sweep) for (const p of h.points) lines.push([h.beta, p.f, p.w, p.T, p.lambda, ...p.degPerM, ...p.perSlope.slice(3), ...p.phase].map(num6).join(','));
+    download('rao.csv', lines.join('\n'));
+  };
+  // Raw export: complex RAOs and excitation per DOF, plus the linear model's matrices as comment lines.
+  $('raoRaw').onclick = () => {
+    if (!K.rao) return;
+    const { P } = K.rao, M = P.model, st = P.st;
+    const mat = (name, A) => A.map((row, i) => `# ${name}[${i + 1},:] = ${row.map(num6).join(' ')}`);
+    const hdr = [
+      '# Float Sim raw RAO export',
+      `# model: ${st.model.name}; mass ${num6(st.m)} kg; water density ${st.rho} kg/m^3; g 9.80665 m/s^2; deep water; zero forward speed`,
+      '# axes: about the CoG G, world axes with the model +X along world X (yaw removed); z up; roll about x, pitch about y',
+      '# wave: eta = A cos(k(x cos beta + y sin beta) - omega t); complex amplitudes use exp(+i omega t), per unit wave amplitude A',
+      '# units: translations m/m, rotations rad/m; excitation forces N/m, moments N*m/m',
+      `# diffraction correction (surge, sway, heave): ${M.diffraction.join(', ')}`,
+      `# natural frequencies (rad/s, uncoupled): ${M.wn.map(num6).join(' ')}`,
+      `# added mass A (diagonal; kg, kg*m^2): ${M.Am.map(num6).join(' ')}`,
+      `# linear damping B (diagonal; N*s/m, N*m*s/rad): ${M.Bd.map(num6).join(' ')}`,
+      ...mat('mass matrix M', M.Mm), ...mat('restoring matrix C', M.Cm),
+    ];
+    const cols = ['beta_deg', 'f_Hz', 'omega_rad_s', 'k_rad_per_m', 'wavelength_m'];
+    for (const d of DOF) cols.push(`${d}_xi_re`, `${d}_xi_im`, `${d}_xi_abs`, `${d}_xi_phase_deg`, `${d}_F_re`, `${d}_F_im`);
+    const lines = [...hdr, cols.join(',')];
+    for (const h of K.rao.sweep) for (const p of h.points) {
+      const row = [h.beta, p.f, p.w, p.k, p.lambda];
+      for (let j = 0; j < 6; j++) row.push(p.xi[j][0], p.xi[j][1], p.amp[j], p.phase[j], p.F[j][0], p.F[j][1]);
+      lines.push(row.map(num6).join(','));
+    }
+    download('rao_raw.csv', lines.join('\n'));
   };
 
   // ------------------------------------------------------------ tabs
-  function showTab(id) {
+  function showTab(id, { skipDraw = false } = {}) {
     for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.tab === id);
     for (const t of ['tabHydro', 'tabSea', 'tabRao']) $(t).classList.toggle('hidden', t !== id);
     if (id === 'tabSea') { drawSpectrum(); if (K.stats && !K.running) drawHistories(K.stats.series); }
-    if (id === 'tabRao') drawRao();
+    if (id === 'tabRao' && !skipDraw) drawRaoAsync();
   }
   $('tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) showTab(b.dataset.tab); });
 
   function onInputs() {
     if (!$('tabSea').classList.contains('hidden')) drawSpectrum();
-    if (!$('tabRao').classList.contains('hidden')) drawRao();
+    if (!$('tabRao').classList.contains('hidden') && K.rao) { K.rao.resp.clear(); drawRaoAsync(); }
   }
 
   applySS();
   return {
     frame,
-    onModelChange() { stopRun(); K.prep = null; K.stats = null; onInputs(); },
+    onModelChange() {
+      stopRun(); K.prep = null; K.stats = null; onInputs();
+      if (K.rao && !K.rao.stale && !raoBusy) {
+        K.rao.stale = true;
+        $('raoInfo').insertAdjacentHTML('afterbegin', '<span class="warn">⚠ Inputs changed since these RAOs were computed. Click Compute RAOs to update them.</span><br>');
+      }
+    },
+    clearRao() { K.rao = null; $('raoCsv').disabled = true; $('raoRaw').disabled = true; },
     get running() { return K.running; },
   };
 }
