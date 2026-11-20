@@ -166,7 +166,7 @@ const dropRow = async (label) => page.evaluate((l) => { const r = [...document.q
 const entry = await dropRow('Water entry speed');
 const vEntry = num(entry.split(' m/s')[0]), vFree = Math.sqrt(2 * 9.80665 * 2.5);   // keel 0.5 m below the CoG → falls 2.5 m
 expect('drop from 3 m: entry speed ≈ √(2gh) (air drag ≤ 2 %)', vEntry < vFree && vEntry > 0.98 * vFree, `${vEntry} m/s vs ${vFree.toFixed(3)} m/s`);
-expect('drop: plunges, then settles at the float height (CoG 100 mm above water: draft 400, KG 500)', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && near(num((await dropRow('Settled')).split(' at ')[1]), 100, 3), await dropRow('Settled'));
+expect('drop: plunges, then settles at the float height (CoG 100 mm above water: draft 400, KG 500)', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && near(parseFloat((await dropRow('Settled')).split(' at ')[1]), 100, 3), await dropRow('Settled'));
 await page.fill('#dzH', '-3000'); await page.dispatchEvent('#dzH', 'input');
 await page.click('#dzPlace'); await page.click('#dzRun');
 await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
