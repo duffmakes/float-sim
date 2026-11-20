@@ -7,10 +7,12 @@ import {
 } from './physics.js';
 import { FloatSim } from './sim.js';
 import { readCad, soupFromIndexed, concat } from './loader.js';
+import { initSeakeeping } from './seakeeping.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------------ state
+let sea = null;   // seakeeping module, initialised after the scene is built
 const S = {
   model: null,        // { name, raw: Float64Array (file units), tris (m), geo, mp, diag, open }
   rho: 1000,
@@ -284,10 +286,11 @@ function update() {
     ? '<span class="bad">denser than water — it will sink</span>'
     : `floats with <b>${fmt(100 * Vneed / S.model.mp.volume, 1)}%</b> of its volume submerged`}`;
 
-  if (!S.preview && !S.simRunning) placeStatic(R, H);
+  if (!S.preview && !S.simRunning && !(sea && sea.running)) placeStatic(R, H);
   renderStats(H, S.preview ? 'preview' : 'static');
   scheduleGZ();
   $('simApply').disabled = !S.sim;
+  if (sea) sea.onModelChange();
 }
 
 // world = rel + (0,0,-zw)  (water surface at z = 0)
@@ -629,6 +632,7 @@ const tmp = new THREE.Vector3();
 function frame(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
   if (S.simRunning && S.sim) simFrame(dt);
+  if (sea && sea.running) sea.frame(dt);
   controls.update();
   renderer.render(scene, camera);
   const r = canvas.getBoundingClientRect();
@@ -645,5 +649,21 @@ function frame(t) {
 }
 resize();
 $('tMode').dispatchEvent(new Event('change'));
+// ------------------------------------------------------------------ seakeeping (waves, RAOs)
+const staticOverlays = [mB, mMt, mMl, arrW, arrB, vertLine, gLine, wlLines];
+sea = initSeakeeping({
+  THREE, scene, water, waterDepth, mG,
+  getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
+  getEuler, setBodyPose,
+  stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
+  setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
+  refresh: () => update(),
+  // keep the camera on the body while it drifts in waves (pan camera and orbit target together)
+  follow: (x, y) => {
+    const dx = x - controls.target.x, dy = y - controls.target.y;
+    controls.target.x += dx; controls.target.y += dy; camera.position.x += dx; camera.position.y += dy;
+  },
+  recenter: () => frameCamera(),
+});
 loadDemo('hull');
 requestAnimationFrame(frame);
