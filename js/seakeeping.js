@@ -180,7 +180,7 @@ export function initSeakeeping(api) {
     api.refresh();
     api.recenter();
   }
-  $('waveRun').onclick = () => (K.running ? stopRun() : startRun());
+  $('waveRun').onclick = () => { if (K.locked) return; K.running ? stopRun() : startRun(); };
 
   function frame(dtReal) {
     if (!K.running || !K.sim) return;
@@ -245,6 +245,7 @@ export function initSeakeeping(api) {
 
   // ------------------------------------------------------------ statistics run (worker)
   $('waveStats').onclick = () => {
+    if (K.locked) return;
     const P = prepare(); if (!P) return;
     const s = sea();
     if (!(s.Hs > 0)) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
@@ -291,6 +292,7 @@ export function initSeakeeping(api) {
 
   // ------------------------------------------------------------ sea-state sweep (spectral)
   $('ssSweep').onclick = () => {
+    if (K.locked) return;
     const P = prepare(); if (!P) return;
     const s = sea();
     const rows = SEA_STATES.filter((x) => x.Hs > 0).map((x) => {
@@ -333,7 +335,7 @@ export function initSeakeeping(api) {
   const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   let raoBusy = false;
   $('raoRun').onclick = async () => {
-    if (raoBusy) return;
+    if (raoBusy || K.locked) return;
     const [f0, f1] = raoRange();
     const n = Math.max(5, Math.min(400, parseInt($('raoN').value) || 80));
     const heads = parseHeadings($('raoHead').value);
@@ -468,9 +470,10 @@ export function initSeakeeping(api) {
   // ------------------------------------------------------------ tabs
   function showTab(id, { skipDraw = false } = {}) {
     for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.tab === id);
-    for (const t of ['tabHydro', 'tabSea', 'tabRao']) $(t).classList.toggle('hidden', t !== id);
+    for (const t of ['tabHydro', 'tabSea', 'tabRao', 'tabDrop']) $(t).classList.toggle('hidden', t !== id);
     if (id === 'tabSea') { drawSpectrum(); if (K.stats && !K.running) drawHistories(K.stats.series); }
     if (id === 'tabRao' && !skipDraw) drawRaoAsync();
+    if (api.onTabShown) api.onTabShown(id);
   }
   $('tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) showTab(b.dataset.tab); });
 
@@ -488,6 +491,14 @@ export function initSeakeeping(api) {
         K.rao.stale = true;
         $('raoInfo').insertAdjacentHTML('afterbegin', '<span class="warn">⚠ Inputs changed since these RAOs were computed. Click Compute RAOs to update them.</span><br>');
       }
+    },
+    showTab,
+    // drop/rise test placement locks the wave and RAO tools (they assume the body floats at rest)
+    setLocked(on) {
+      K.locked = on;
+      if (on) stopRun();
+      for (const id of ['waveRun', 'waveStats', 'ssSweep', 'raoRun']) { $(id).disabled = on; $(id).title = on ? 'Reset the drop-test position (section 9) first' : ''; }
+      for (const n of document.querySelectorAll('.lock-note')) n.classList.toggle('hidden', !on);
     },
     clearRao() { K.rao = null; $('raoCsv').disabled = true; $('raoRaw').disabled = true; },
     get running() { return K.running; },

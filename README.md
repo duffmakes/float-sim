@@ -42,6 +42,16 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 - **Long-wave diffraction correction** (G.I. Taylor): Froude–Krylov alone captures only ρ∫a dV (C_m = 1). The correction adds A<sub>jj</sub> × the incident acceleration averaged over the submerged volume, computed with an exact cone quadrature. It is applied identically in the RAO solver and the time-domain simulator. Defaults are on for surge and sway, off for heave, as justified by the trade study below.
 - **Added-mass defaults** (editable): heave uses a floating elliptic disk of the waterplane's area and aspect ratio, (2/3)πρab²/E(e) (Lamb §373). Surge and sway use whichever strip direction suits the body's proportions. A spar gets ρπa²T (C<sub>a</sub> = 1) and a ship-like hull gets ρπT²L/2.
 
+## Drop / rise test
+
+Section 9 releases the body from a chosen CoG height, above or below the still-water surface, at the current orientation, with an optional initial vertical speed. You can watch it fall in, plunge and recover, or rise from depth, break the surface and settle. It's deliberately simple:
+- gravity, water buoyancy at B, and air buoyancy at the dry-volume centroid
+- quadratic drag ½ρC<sub>d</sub>A⊥|v|v on the CoG velocity, with A⊥ the hull's projected area normal to the motion, and water/air blended by the submerged fraction. Water and air C<sub>d</sub> are editable, with presets from Hoerner, *Fluid-Dynamic Drag*.
+- added mass and rotational water damping scaled by submergence
+- linear wave-making damping while the body pierces the surface
+
+The **Drop test** tab plots CoG height, vertical speed and attitude, and reports water-entry speed, deepest plunge, surface breach, overshoot and settle time. While the body is placed, the sea-state, statistics, sea-state table, RAO and calm-simulate tools are locked until **Reset position**. No slamming pressures, splash or air-cavity effects are modelled.
+
 ## Method
 
 The body is triangulated and each triangle is clipped to the part below the waterplane. Tetrahedra are taken from a point *on* the waterplane, so the waterplane "cap" adds nothing and the clipped surface gives the exact submerged volume and B. The cut edges form the waterplane boundary, and Green's theorem on them gives area, centroid and second moments (I<sub>xx</sub>, I<sub>yy</sub>, I<sub>xy</sub>). The waterline is solved by safeguarded Newton (dV/dz = waterplane area). `test/verify_physics.py` is a direct Python port of the core routine, checked against closed-form results (cube, box barge upright and heeled, half-submerged cylinder).
@@ -68,9 +78,9 @@ The body is triangulated and each triangle is clipped to the part below the wate
 |---|---|---|
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
-| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks | 234/234 |
-| http://localhost:8765/test/validate.html | Same checks, in the browser | 234/234 in headless Chromium, all three qualities |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, console errors | 37/37 |
+| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 244/244 |
+| http://localhost:8765/test/validate.html | Same checks, in the browser | 244/244 in headless Chromium, all three qualities |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | see PR (re-run in progress) |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
@@ -91,6 +101,7 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | Floating hemisphere heave RAO with Hulme A₃₃(ω), B₃₃(ω), ka ≤ 0.7 | Hulme 1982 | ≤ 2.8 % |
 | Deep-draft spar sway force and RAO (FK + correction), ka ≤ 0.7; FK alone = ½ (C_m 1 vs 2) | MacCamy & Fuchs 1954 | ≤ 4.6 % |
 | Time domain vs RAO with the diffraction correction on (sphere, 2 mm waves) | solver consistency | ≤ 0.5 % |
+| Drop test: drag-free fall, terminal speed in air and water (sphere C<sub>d</sub> 0.47), initial underwater acceleration with added mass ½ρV, settling at the static float height | Newton drag; Hoerner 1965; Lamb §92 | ≤ 1 % |
 
 ### RAO trade study
 

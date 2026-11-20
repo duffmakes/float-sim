@@ -8,11 +8,13 @@ import {
 import { FloatSim } from './sim.js';
 import { readCad, soupFromIndexed, concat } from './loader.js';
 import { initSeakeeping } from './seakeeping.js';
+import { initDropTest } from './droptest.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------------ state
 let sea = null;   // seakeeping module, initialised after the scene is built
+let drop = null;  // drop / rise test module
 const S = {
   model: null,        // { name, raw: Float64Array (file units), tris (m), geo, mp, diag, open }
   rho: 1000,
@@ -148,6 +150,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
   }
   frameCamera();
   update();
+  if (drop) drop.onNewModel();
 }
 
 function rescaleModel() {
@@ -288,12 +291,14 @@ function update() {
     ? '<span class="bad">denser than water — it will sink</span>'
     : `floats with <b>${fmt(100 * Vneed / S.model.mp.volume, 1)}%</b> of its volume submerged`}`;
 
-  if (!S.preview && !S.simRunning && !(sea && sea.running)) placeStatic(R, H);
+  if (!S.preview && !S.simRunning && !(sea && sea.running) && !(drop && drop.placed)) placeStatic(R, H);
   renderStats(H, S.preview ? 'preview' : 'static');
   scheduleGZ();
   $('simApply').disabled = !S.sim;
   if (sea) sea.onModelChange();
+  if (drop) drop.onModelChange();
   renderInertiaInfo();
+  document.querySelectorAll('.unitLabel').forEach((e) => { e.textContent = unitName(); });
 }
 
 // world = rel + (0,0,-zw)  (water surface at z = 0)
@@ -684,6 +689,7 @@ function frame(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
   if (S.simRunning && S.sim) simFrame(dt);
   if (sea && sea.running) sea.frame(dt);
+  if (drop && drop.running) drop.frame(dt);
   controls.update();
   renderer.render(scene, camera);
   const r = canvas.getBoundingClientRect();
@@ -709,12 +715,30 @@ sea = initSeakeeping({
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
   refresh: () => update(),
+  onTabShown: (id) => { if (id === 'tabDrop' && drop) drop.onTab(); },
   // keep the camera on the body while it drifts in waves (pan camera and orbit target together)
-  follow: (x, y) => {
-    const dx = x - controls.target.x, dy = y - controls.target.y;
-    controls.target.x += dx; controls.target.y += dy; camera.position.x += dx; camera.position.y += dy;
+  follow: (x, y, z = null) => {
+    const dx = x - controls.target.x, dy = y - controls.target.y, dz = z === null ? 0 : z - controls.target.z;
+    controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
+    camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
   },
   recenter: () => frameCamera(),
+});
+drop = initDropTest({
+  THREE, scene, mG, mB,
+  getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
+  getInertiaBody: () => inertiaG(), setBodyPose, unitScale, unitName, diag: () => S.model.diag,
+  stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
+  setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
+  setLocked: (on) => { sea.setLocked(on); for (const id of ['simRun', 'simSettle']) $(id).disabled = on; },
+  showTab: (id) => sea.showTab(id),
+  refresh: () => update(),
+  recenter: () => frameCamera(),
+  follow: (x, y, z) => {
+    const dx = x - controls.target.x, dy = y - controls.target.y, dz = z - controls.target.z;
+    controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
+    camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+  },
 });
 loadDemo('hull');
 requestAnimationFrame(frame);
