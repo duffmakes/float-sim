@@ -97,9 +97,10 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
     onCase(c, rows, meta);
   }
   if (waves) {
-    const getTris = async (file) => {
-      if (!cache[file]) cache[file] = concat(await readCad(await fetchBytes(`models/${file}`), 'step', quality, vendorDir)).map((v) => v * 0.001);
-      return cache[file];
+    const getTris = async (file, q = quality) => {
+      const key = q === quality ? file : `${file}@${q}`;
+      if (!cache[key]) cache[key] = concat(await readCad(await fetchBytes(`models/${file}`), 'step', q, vendorDir)).map((v) => v * 0.001);
+      return cache[key];
     };
     const chkFactory = () => {
       const rows = [];
