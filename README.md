@@ -80,7 +80,7 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
 | `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 244/244 |
 | http://localhost:8765/test/validate.html | Same checks, in the browser | 244/244 in headless Chromium, all three qualities |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | see PR (re-run in progress) |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | 43/43 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
