@@ -152,6 +152,29 @@ expect(`custom Ixx = 2000 kg·m² → roll period ${Troll.toFixed(3)} s`, near(n
 await page.fill('#inXX', '99999'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
 expect('non-physical inertia rejected (triangle inequality)', (await page.locator('#inInfo').innerText()).includes('triangle inequality'));
 
+// 9 — drop / rise test (barge STEP still loaded, custom inertia back to computed)
+await page.selectOption('#inMode', 'auto');
+await page.fill('#dzH', '3000'); await page.dispatchEvent('#dzH', 'input');   // mm: CoG 3 m above the water
+await page.click('#dzPlace'); await page.waitForTimeout(300);
+const lockState = async () => page.evaluate(() => ['waveRun', 'waveStats', 'ssSweep', 'raoRun', 'simRun'].map((id) => document.getElementById(id).disabled));
+expect('placing locks waves, statistics, sea-state table, RAOs and calm simulate', (await lockState()).every(Boolean));
+expect('lock notes visible', await page.locator('.lock-note:not(.hidden)').count() === 2);
+await page.fill('#dzSpeed', '8'); await page.dispatchEvent('#dzSpeed', 'input');
+await page.click('#dzRun');
+await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
+const dropRow = async (label) => page.evaluate((l) => { const r = [...document.querySelectorAll('#dzStats tr')].find((t) => t.cells[0].innerText.startsWith(l)); return r ? r.cells[1].innerText : ''; }, label);
+const entry = await dropRow('Water entry speed');
+const vEntry = num(entry.split(' m/s')[0]), vFree = Math.sqrt(2 * 9.80665 * 2.5);   // keel 0.5 m below the CoG → falls 2.5 m
+expect('drop from 3 m: entry speed ≈ √(2gh) (air drag ≤ 2 %)', vEntry < vFree && vEntry > 0.98 * vFree, `${vEntry} m/s vs ${vFree.toFixed(3)} m/s`);
+expect('drop: plunges, then settles at the float height (CoG 100 mm above water: draft 400, KG 500)', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && near(parseFloat((await dropRow('Settled')).split(' at ')[1]), 100, 3), await dropRow('Settled'));
+await page.fill('#dzH', '-3000'); await page.dispatchEvent('#dzH', 'input');
+await page.click('#dzPlace'); await page.click('#dzRun');
+await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
+expect('rise from 3 m depth: breaks the surface and stabilizes', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && (await dropRow('Broke the surface')).length > 0);
+if (shots) await page.screenshot({ path: `${shots}/drop.png` });
+await page.click('#dzReset'); await page.waitForTimeout(300);
+expect('reset position unlocks the tools', (await lockState()).every((d) => !d));
+
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
