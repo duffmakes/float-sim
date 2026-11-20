@@ -77,16 +77,16 @@
     </div>
     <div id="inCustom" class="hidden">
       <div class="row three">
-        <label>I<sub>xx</sub> <input id="inXX" type="number" step="any"></label>
-        <label>I<sub>yy</sub> <input id="inYY" type="number" step="any"></label>
-        <label>I<sub>zz</sub> <input id="inZZ" type="number" step="any"></label>
+        <label><span>I<sub>xx</sub></span> <input id="inXX" type="number" step="any"></label>
+        <label><span>I<sub>yy</sub></span> <input id="inYY" type="number" step="any"></label>
+        <label><span>I<sub>zz</sub></span> <input id="inZZ" type="number" step="any"></label>
       </div>
       <div class="row three">
-        <label>I<sub>xy</sub> <input id="inXY" type="number" step="any" value="0"></label>
-        <label>I<sub>xz</sub> <input id="inXZ" type="number" step="any" value="0"></label>
-        <label>I<sub>yz</sub> <input id="inYZ" type="number" step="any" value="0"></label>
+        <label><span>I<sub>xy</sub></span> <input id="inXY" type="number" step="any" value="0"></label>
+        <label><span>I<sub>xz</sub></span> <input id="inXZ" type="number" step="any" value="0"></label>
+        <label><span>I<sub>yz</sub></span> <input id="inYZ" type="number" step="any" value="0"></label>
       </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="inProdSign" type="checkbox"> Products entered as P<sub>xy</sub> = +∫xy dm (negate into the tensor)</label>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="inProdSign" type="checkbox"> <span>Products entered as P<sub>xy</sub> = +∫xy dm (negate into the tensor)</span></label>
       <p class="hint">kg·m², about the CoG, in the CAD model's axes. Inertia-tensor convention: I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm; tick the box for those.</p>
     </div>
     <div id="inInfo" class="info"></div>
@@ -179,10 +179,10 @@
       <div class="row three">
         <label>A11 (kg) <input id="hA11" type="number" step="any"></label>
         <label>A22 (kg) <input id="hA22" type="number" step="any"></label>
-        <label>&nbsp;</label>
+        <label><span>&nbsp;</label>
       </div>
       <div class="row three">
-        <label>A33 (kg) <input id="hA33" type="number" step="any"></label>
+        <label>A33 (kg)</span> <input id="hA33" type="number" step="any"></label>
         <label>A44 / I44 <input id="hA44" type="number" step="any" value="0.2"></label>
         <label>A55 (kg·m²) <input id="hA55" type="number" step="any"></label>
       </div>
@@ -200,6 +200,7 @@
       <button id="waveRun" class="primary">▶ Run in waves</button>
       <button id="waveStats">Run statistics (20 min)</button>
     </div>
+    <div class="lock-note hidden">Locked: the body is placed for a drop / rise test. Use <b>Reset position</b> in section 9 to run waves.</div>
     <div class="slider"><span>Speed</span><input id="waveSpeed" type="range" min="0.25" max="8" step="0.25" value="1"><output id="waveSpeedV">1×</output></div>
     <div id="waveInfo" class="info"></div>
   </section>
@@ -220,8 +221,44 @@
       <button id="raoCsv" class="ghost" disabled title="Amplitudes and phases per heading and frequency">Export CSV</button>
       <button id="raoRaw" class="ghost" disabled title="Complex RAOs, excitation forces and the model matrices">Export raw CSV</button>
     </div>
+    <div class="lock-note hidden">Locked: the body is placed for a drop / rise test. Use <b>Reset position</b> in section 9 to compute RAOs.</div>
     <div id="raoProgWrap" class="progress hidden"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
     <div id="raoInfo" class="info"></div>
+  </section>
+  <section>
+    <h2>9 · Drop / rise test</h2>
+    <p class="hint">Release the body from a chosen height to watch it fall into the water, plunge and recover, or rise from below the surface and settle. Uses the mass, CoG, inertia and orientation above. It does not affect the RAO or sea-state tools, which are locked while the body is placed away from its float position.</p>
+    <label><span>Start height of the CoG above the still-water surface (<span class="unitLabel">mm</span>; negative = below)</span>
+      <input id="dzH" type="number" step="any" value="0">
+    </label>
+    <div class="row"><button id="dzUseEq" class="ghost">Use float height</button></div>
+    <div id="dzWhere" class="hint"></div>
+    <div class="row">
+      <label>Initial vertical speed (m/s, + up) <input id="dzV0" type="number" step="any" value="0"></label>
+    </div>
+    <div class="row three">
+      <label><span>Water C<sub>d</sub></span> <input id="dzCdW" type="number" step="any" min="0" value="1.0"></label>
+      <label><span>Air C<sub>d</sub></span> <input id="dzCdA" type="number" step="any" min="0" value="1.0"></label>
+      <label>Air ρ (kg/m³) <input id="dzRhoA" type="number" step="any" min="0" value="1.225"></label>
+    </div>
+    <label><span>Drag coefficient preset (Hoerner, <i>Fluid-Dynamic Drag</i>)</span>
+      <select id="dzPreset">
+        <option value="custom">Custom</option>
+        <option value="sphere">Sphere: 0.47</option>
+        <option value="cube">Cube, face-on: 1.05</option>
+        <option value="cylAxial">Cylinder, end-on: 0.82</option>
+        <option value="cylSide">Long cylinder, side-on: 1.2</option>
+        <option value="plate">Flat plate, face-on: 1.28</option>
+        <option value="streamlined">Streamlined body: 0.04</option>
+      </select>
+    </label>
+    <div class="row">
+      <button id="dzPlace">Place at start height</button>
+      <button id="dzRun" class="primary" disabled>▶ Release</button>
+      <button id="dzReset" class="ghost" disabled>Reset position</button>
+    </div>
+    <div class="slider"><span>Speed</span><input id="dzSpeed" type="range" min="0.1" max="8" step="0.1" value="1"><output id="dzSpeedV">1×</output></div>
+    <div id="dzInfo" class="info"></div>
   </section>
   <footer>Hydrostatics: rigid body, uniform density for inertia. Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), estimated added mass and damping, no diffraction or radiation, zero forward speed, deep water.</footer>
 </aside>
@@ -242,12 +279,13 @@
       <button data-tab="tabHydro" class="on">Hydrostatics</button>
       <button data-tab="tabSea">Seakeeping</button>
       <button data-tab="tabRao">RAO</button>
+      <button data-tab="tabDrop">Drop test</button>
     </div>
     <div id="tabHydro" class="tab">
     <div class="rhead">
       <h2>Hydrostatics</h2>
       <label class="tog"><input id="showWater" type="checkbox" checked> water</label>
-      <label class="tog"><input id="showMl" type="checkbox" checked> M<sub>L</sub></label>
+      <label class="tog"><input id="showMl" type="checkbox" checked> <span>M<sub>L</sub></span></label>
     </div>
     <div id="verdict" class="verdict"></div>
     <table id="stats"></table>
@@ -292,6 +330,16 @@
       <div class="rhead"><h2>Heading × frequency</h2></div>
       <canvas id="raoHeat" class="chart"></canvas>
       <div id="raoResp" class="info"></div>
+    </div>
+    <div id="tabDrop" class="tab hidden">
+      <div id="dropVerdict" class="verdict"><b>Not placed</b>Set a start height in section 9 and press Place.</div>
+      <div class="rhead"><h2>CoG height</h2></div>
+      <canvas id="dzCvZ" class="chart"></canvas>
+      <div class="rhead"><h2>Vertical speed</h2></div>
+      <canvas id="dzCvV" class="chart"></canvas>
+      <div class="rhead"><h2>Attitude</h2></div>
+      <canvas id="dzCvA" class="chart"></canvas>
+      <div id="dzStats" class="info"></div>
     </div>
   </div>
   <div id="busy" class="hidden">Loading…</div>
