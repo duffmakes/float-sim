@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Float Sim Validation</title>
+<script src="../vendor/occt-import-js.js"></script>
+<style>
+  :root { --bg:#0d1420; --panel:#131c2b; --line:#26344f; --text:#dfe7f3; --muted:#8a9ab5; --good:#47e08a; --bad:#ff5a5a; --warn:#f0b84a;
+          font:13px/1.45 system-ui, sans-serif; color-scheme:dark; }
+  body { margin:0; background:var(--bg); color:var(--text); padding:20px 16px 60px; }
+  main { max-width:980px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 16px; }
+  #summary { padding:10px 14px; border-radius:8px; background:var(--panel); border-left:4px solid var(--muted); margin-bottom:18px; font-size:14px; }
+  #summary.pass { border-color:var(--good); } #summary.fail { border-color:var(--bad); }
+  .case { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  .case h2 { font-size:14px; margin:0 0 2px; }
+  .ref { color:var(--muted); font-size:12px; margin-bottom:8px; }
+  .meta { color:var(--muted); font-size:11.5px; margin-bottom:6px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { padding:3px 6px; border-bottom:1px solid #1c2840; text-align:right; }
+  th { color:var(--muted); font-weight:500; font-size:11.5px; }
+  th:first-child, td:first-child { text-align:left; }
+  .p { color:var(--good); font-weight:600; } .f { color:var(--bad); font-weight:600; }
+  .controls { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; color:var(--muted); }
+  select, button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 9px; font:inherit; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Float Sim validation</h1>
+  <p class="sub">Runs every STEP body in <code>test/models/</code> through the real app pipeline: OpenCascade STEP import, then the hydrostatics solver, the GZ curve, the target-plane inverse and the free-float simulator. Results are compared with closed-form textbook answers.</p>
+  <div class="controls">
+    Mesh quality
+    <select id="q"><option>coarse</option><option>normal</option><option selected>fine</option></select>
+    <button id="run">Re-run</button>
+    <button id="copy">Copy results JSON</button>
+  </div>
+  <div id="summary">Running…</div>
+  <div id="cases"></div>
+</main>
+<script type="module" src="validate.js"></script>
+</body>
+</html>

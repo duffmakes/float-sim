@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Float Sim</title>
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script src="vendor/occt-import-js.js"></script>
+</head>
+<body>
+<aside id="panel">
+  <header>
+    <h1>Float Sim</h1>
+    <p class="sub">Hydrostatics &amp; stability for CAD bodies</p>
+  </header>
+
+  <section>
+    <h2>1 · Model</h2>
+    <label class="file">
+      <input id="file" type="file" accept=".step,.stp,.iges,.igs,.brep,.stl">
+      <span>Load STEP / IGES / STL…</span>
+    </label>
+    <div class="row">
+      <label>Model units
+        <select id="units">
+          <option value="0.001" selected>mm</option>
+          <option value="0.01">cm</option>
+          <option value="1">m</option>
+          <option value="0.0254">in</option>
+          <option value="0.3048">ft</option>
+        </select>
+      </label>
+      <label>Mesh quality
+        <select id="quality">
+          <option value="coarse">Coarse</option>
+          <option value="normal">Normal</option>
+          <option value="fine" selected>Fine</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label>Demo
+        <select id="demo">
+          <option value="">—</option>
+          <option value="hull">Barge hull</option>
+          <option value="box">1 m cube</option>
+          <option value="log">Log (cylinder)</option>
+        </select>
+      </label>
+    </div>
+    <div id="modelInfo" class="info">No model loaded.</div>
+  </section>
+
+  <section>
+    <h2>2 · Mass &amp; centre of gravity</h2>
+    <div class="row">
+      <label>Mass (kg) <input id="mass" type="number" step="any" min="0" value="1000"></label>
+    </div>
+    <div class="row three">
+      <label>CoG X <input id="cgx" type="number" step="any" value="0"></label>
+      <label>CoG Y <input id="cgy" type="number" step="any" value="0"></label>
+      <label>CoG Z <input id="cgz" type="number" step="any" value="0"></label>
+    </div>
+    <p class="hint">CoG in the CAD model's own coordinates, in model units.</p>
+    <button id="useCentroid" class="ghost">Use geometric centroid (uniform density)</button>
+    <div id="massInfo" class="info"></div>
+  </section>
+
+  <section>
+    <h2>3 · Water</h2>
+    <div class="seg" id="water">
+      <button data-rho="1000" class="on">Fresh 1000</button>
+      <button data-rho="1025">Salt 1025</button>
+      <button data-rho="custom">Custom</button>
+    </div>
+    <label id="rhoWrap" class="hidden">Density (kg/m³) <input id="rho" type="number" step="any" value="1000"></label>
+  </section>
+
+  <section>
+    <h2>4 · Initial orientation</h2>
+    <div class="slider"><span>Roll (X)</span><input id="roll" type="range" min="-180" max="180" step="0.5" value="0"><input id="rollN" type="number" step="any" value="0"></div>
+    <div class="slider"><span>Pitch (Y)</span><input id="pitch" type="range" min="-90" max="90" step="0.5" value="0"><input id="pitchN" type="number" step="any" value="0"></div>
+    <div class="slider"><span>Yaw (Z)</span><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0"><input id="yawN" type="number" step="any" value="0"></div>
+    <div class="row">
+      <button id="resetOri" class="ghost">Reset</button>
+      <button id="quarterX" class="ghost">+90° X</button>
+      <button id="quarterY" class="ghost">+90° Y</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>5 · Free-float simulation</h2>
+    <p class="hint">Releases the body from the orientation above and lets weight &amp; buoyancy settle it to a stable floating attitude.</p>
+    <div class="row">
+      <button id="simRun" class="primary">▶ Simulate</button>
+      <button id="simSettle">Settle (fast)</button>
+      <button id="simReset" class="ghost">Reset</button>
+    </div>
+    <div class="slider"><span>Damping ζ</span><input id="zeta" type="range" min="0.02" max="1" step="0.01" value="0.25"><output id="zetaV">0.25</output></div>
+    <div class="slider"><span>Speed</span><input id="speed" type="range" min="0.1" max="20" step="0.1" value="1"><output id="speedV">1×</output></div>
+    <div id="simInfo" class="info"></div>
+    <button id="simApply" class="ghost" disabled>Use simulated attitude as orientation</button>
+  </section>
+
+  <section>
+    <h2>6 · Target float plane → required mass</h2>
+    <div class="row">
+      <label>Specify by
+        <select id="tMode">
+          <option value="draft">Draft (depth of lowest point)</option>
+          <option value="modelZ">Waterline at model Z</option>
+          <option value="frac">Submerged volume %</option>
+        </select>
+      </label>
+      <label><span id="tLabel">Draft</span> <input id="tVal" type="number" step="any" value="0"></label>
+    </div>
+    <div class="row">
+      <button id="tCalc" class="primary">Compute</button>
+      <button id="tPreview">Preview plane</button>
+      <button id="tApply" class="ghost" disabled>Apply mass</button>
+    </div>
+    <div id="tOut" class="info"></div>
+  </section>
+  <footer>Assumes rigid body, calm water, uniform density for inertia, no added mass. Righting arms are computed at fixed trim.</footer>
+</aside>
+
+<main id="view">
+  <canvas id="gl"></canvas>
+  <div id="labels"></div>
+  <div id="banner" class="hidden"></div>
+  <div id="legend">
+    <span><i style="background:#ff5a5a"></i>G · CoG</span>
+    <span><i style="background:#4aa8ff"></i>B · buoyancy</span>
+    <span><i style="background:#47e08a"></i>M<sub>T</sub> roll metacentre</span>
+    <span><i style="background:#e0c547"></i>M<sub>L</sub> pitch metacentre</span>
+    <span><i style="background:#ffffff"></i>waterline</span>
+  </div>
+  <div id="results">
+    <div class="rhead">
+      <h2>Hydrostatics</h2>
+      <label class="tog"><input id="showWater" type="checkbox" checked> water</label>
+      <label class="tog"><input id="showMl" type="checkbox" checked> M<sub>L</sub></label>
+    </div>
+    <div id="verdict" class="verdict"></div>
+    <table id="stats"></table>
+    <div class="rhead">
+      <h2>Righting arm GZ</h2>
+      <div class="seg small" id="gzAxis">
+        <button data-axis="x" class="on">Roll</button>
+        <button data-axis="y">Pitch</button>
+      </div>
+    </div>
+    <canvas id="gz" width="360" height="170"></canvas>
+    <div id="gzInfo" class="info"></div>
+  </div>
+  <div id="busy" class="hidden">Loading…</div>
+</main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

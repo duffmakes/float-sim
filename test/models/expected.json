@@ -1,0 +1,499 @@
+{
+ "units_in_file": "mm",
+ "g": 9.80665,
+ "cases": [
+  {
+   "id": "box_fresh",
+   "file": "box_4x2x1.step",
+   "curved": false,
+   "title": "Box barge 4\u00d72\u00d71 m, 3200 kg, KG 0.5 m, fresh water",
+   "ref": "[ARC] T = m/(\u03c1LB); [BD] KB = T/2, BM_T = B\u00b2/12T, BM_L = L\u00b2/12T, TPC = \u03c1\u00b7Awp/100",
+   "rho": 1000.0,
+   "mass": 3200.0,
+   "cog": [
+    2.0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "V": 3.2,
+    "draft": 0.4,
+    "Awp": 8.0,
+    "KB": 0.2,
+    "BMt": 0.8333333333333333,
+    "BMl": 3.333333333333333,
+    "GMt": 0.5333333333333332,
+    "GMl": 3.033333333333333,
+    "offset": 0.0,
+    "kg_per_cm": 80.0,
+    "B_model": [
+     2.0,
+     0,
+     0.2
+    ]
+   },
+   "gz": {
+    "axis": "x",
+    "ref": "[RT] wall-sided formula",
+    "points": [
+     [
+      5,
+      0.04676102665700911
+     ],
+     [
+      10,
+      0.09486191597982506
+     ],
+     [
+      15,
+      0.14577947879698533
+     ],
+     [
+      20,
+      0.2012894472000543
+     ]
+    ]
+   },
+   "target": {
+    "mode": "draft",
+    "value": 0.25,
+    "mass": 2000.0,
+    "ref": "[ARC] m = \u03c1\u00b7L\u00b7B\u00b7T"
+   }
+  },
+  {
+   "id": "box_salt",
+   "file": "box_4x2x1.step",
+   "curved": false,
+   "title": "Box barge 4\u00d72\u00d71 m, 3200 kg, KG 0.5 m, salt water",
+   "ref": "[ARC] T = m/(\u03c1LB); [BD] KB = T/2, BM_T = B\u00b2/12T, BM_L = L\u00b2/12T, TPC = \u03c1\u00b7Awp/100",
+   "rho": 1025.0,
+   "mass": 3200.0,
+   "cog": [
+    2.0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "V": 3.1219512195121952,
+    "draft": 0.3902439024390244,
+    "Awp": 8.0,
+    "KB": 0.1951219512195122,
+    "BMt": 0.8541666666666665,
+    "BMl": 3.416666666666666,
+    "GMt": 0.5492886178861787,
+    "GMl": 3.1117886178861784,
+    "offset": 0.0,
+    "kg_per_cm": 82.0,
+    "B_model": [
+     2.0,
+     0,
+     0.1951219512195122
+    ]
+   }
+  },
+  {
+   "id": "box_list",
+   "file": "box_4x2x1.step",
+   "curved": false,
+   "title": "Box barge with CoG 50 mm off centreline \u2192 list 5.320\u00b0",
+   "ref": "[RT] wall-sided: tan\u03c6\u00b7(GM + \u00bd\u00b7BM\u00b7tan\u00b2\u03c6) = GG'",
+   "rho": 1000.0,
+   "mass": 3200.0,
+   "cog": [
+    2.0,
+    0.05,
+    0.5
+   ],
+   "euler": [
+    -5.3199943594845855,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "V": 3.2,
+    "offset": 0.0
+   },
+   "sim": {
+    "start_euler": [
+     0,
+     0,
+     0
+    ],
+    "expect_roll": -5.3199943594845855,
+    "tol_deg": 0.15
+   }
+  },
+  {
+   "id": "cube_s015",
+   "file": "cube_1m.step",
+   "curved": false,
+   "title": "1 m cube, s.g. 0.15 (upright stable)",
+   "ref": "[ESH] upright cube stable only for s < 0.2113 or s > 0.7887; [BD] GM = T/2 + 1/(12T) \u2212 \u00bd",
+   "rho": 1000.0,
+   "mass": 150.0,
+   "cog": [
+    0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.15,
+    "KB": 0.075,
+    "BMt": 0.5555555555555556,
+    "BMl": 0.5555555555555556,
+    "GMt": 0.13055555555555554,
+    "GMl": 0.13055555555555554,
+    "stable": true
+   }
+  },
+  {
+   "id": "cube_s050",
+   "file": "cube_1m.step",
+   "curved": false,
+   "title": "1 m cube, s.g. 0.5 (upright UNSTABLE)",
+   "ref": "[ESH] upright cube stable only for s < 0.2113 or s > 0.7887; [BD] GM = T/2 + 1/(12T) \u2212 \u00bd",
+   "rho": 1000.0,
+   "mass": 500.0,
+   "cog": [
+    0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.5,
+    "KB": 0.25,
+    "BMt": 0.16666666666666666,
+    "BMl": 0.16666666666666666,
+    "GMt": -0.08333333333333337,
+    "GMl": -0.08333333333333337,
+    "stable": false
+   }
+  },
+  {
+   "id": "cube_s085",
+   "file": "cube_1m.step",
+   "curved": false,
+   "title": "1 m cube, s.g. 0.85 (upright stable)",
+   "ref": "[ESH] upright cube stable only for s < 0.2113 or s > 0.7887; [BD] GM = T/2 + 1/(12T) \u2212 \u00bd",
+   "rho": 1000.0,
+   "mass": 850.0,
+   "cog": [
+    0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.85,
+    "KB": 0.425,
+    "BMt": 0.09803921568627452,
+    "BMl": 0.09803921568627452,
+    "GMt": 0.02303921568627454,
+    "GMl": 0.02303921568627454,
+    "stable": true
+   }
+  },
+  {
+   "id": "cube_corner_s050",
+   "file": "cube_1m.step",
+   "curved": false,
+   "title": "1 m cube, s.g. \u00bd, corner-down (body diagonal vertical): the attitude the simulator settles into",
+   "ref": "hexagonal mid-section: draft = \u221a3/2, Awp = 3\u221a3/4, BM = (5\u221a3/16)a\u2074/V; BG from Irwin\u2013Hall(3) mean deviation",
+   "rho": 1000.0,
+   "mass": 500.0,
+   "cog": [
+    0,
+    0,
+    0.5
+   ],
+   "euler": [
+    45,
+    35.264389682754654,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.8660254037844386,
+    "Awp": 1.299038105676658,
+    "offset": 0.0,
+    "BMt": 0.2706329386826371,
+    "BMl": 0.2706329386826371,
+    "GMt": 0.036084391824351636,
+    "GMl": 0.036084391824351636,
+    "stable": true
+   }
+  },
+  {
+   "id": "square_log_45",
+   "file": "square_log_3x1x1.step",
+   "curved": false,
+   "title": "Square log 3\u00d71\u00d71 m, s.g. \u00bd, rolled 45\u00b0 (corner down)",
+   "ref": "[ESH] s = \u00bd square log rests corner-down; triangle section: draft = \u221a2/2, GM = w\u00b3/(12A) \u2212 h/3 = \u221a2/6",
+   "rho": 1000.0,
+   "mass": 1500.0,
+   "cog": [
+    1.5,
+    0,
+    0.5
+   ],
+   "euler": [
+    45,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.7071067811865476,
+    "offset": 0.0,
+    "BMt": 0.4714045207910318,
+    "GMt": 0.23570226039551592,
+    "stable": true
+   },
+   "sim": {
+    "start_euler": [
+     20,
+     0,
+     0
+    ],
+    "expect_roll": 45.0,
+    "tol_deg": 0.3
+   }
+  },
+  {
+   "id": "vcyl_tall",
+   "file": "vcyl_tall.step",
+   "curved": true,
+   "title": "Upright cylinder r=0.25 H=1.0 m, s.g. \u00bd (r/H=0.25 < 0.707 \u2192 UNSTABLE)",
+   "ref": "[BI] circular waterplane I = \u03c0r\u2074/4 \u21d2 BM = r\u00b2/4T; upright stable iff r/H > \u221a(2s(1\u2212s))",
+   "rho": 1000.0,
+   "mass": 98.17477042468103,
+   "cog": [
+    0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.5,
+    "Awp": 0.19634954084936207,
+    "KB": 0.25,
+    "BMt": 0.03125,
+    "BMl": 0.03125,
+    "GMt": -0.21875,
+    "GMl": -0.21875,
+    "stable": false
+   }
+  },
+  {
+   "id": "vcyl_squat",
+   "file": "vcyl_squat.step",
+   "curved": true,
+   "title": "Upright cylinder r=0.5 H=0.4 m, s.g. \u00bd (r/H=1.25 > 0.707 \u2192 stable)",
+   "ref": "[BI] circular waterplane I = \u03c0r\u2074/4 \u21d2 BM = r\u00b2/4T; upright stable iff r/H > \u221a(2s(1\u2212s))",
+   "rho": 1000.0,
+   "mass": 157.07963267948966,
+   "cog": [
+    0,
+    0,
+    0.2
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.2,
+    "Awp": 0.7853981633974483,
+    "KB": 0.1,
+    "BMt": 0.3125,
+    "BMl": 0.3125,
+    "GMt": 0.21249999999999997,
+    "GMl": 0.21249999999999997,
+    "stable": true
+   }
+  },
+  {
+   "id": "hcyl_log",
+   "file": "hcyl_log.step",
+   "curved": true,
+   "title": "Log \u00d80.4\u00d73 m half-submerged, CoG 50 mm below axis",
+   "ref": "[BI] circular section: M is at the axis for every heel \u21d2 GM = axis \u2212 G and GZ = GM\u00b7sin\u03c6 exactly; B = 4r/3\u03c0 below axis",
+   "rho": 1000.0,
+   "mass": 188.4955592153876,
+   "cog": [
+    1.5,
+    0,
+    0.15000000000000002
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.2,
+    "Awp": 1.2000000000000002,
+    "KB": 0.11511736368432249,
+    "BMt": 0.08488263631567752,
+    "GMt": 0.04999999999999999,
+    "BMl": 4.77464829275686,
+    "stable": true
+   },
+   "gz": {
+    "axis": "x",
+    "ref": "[BI] GZ = GM\u00b7sin\u03c6",
+    "points": [
+     [
+      10,
+      0.008682408883346515
+     ],
+     [
+      30,
+      0.02499999999999999
+     ],
+     [
+      60,
+      0.04330127018922192
+     ],
+     [
+      90,
+      0.04999999999999999
+     ],
+     [
+      135,
+      0.03535533905932737
+     ]
+    ]
+   },
+   "target": {
+    "mode": "frac",
+    "value": 25.0,
+    "mass": 94.2477796076938,
+    "draft": 0.11920544934009654,
+    "ref": "segment area (r\u00b2/2)(\u03b8 \u2212 sin\u03b8) = \u00bc\u03c0r\u00b2  \u21d2  T = r(1 \u2212 cos \u03b8/2)"
+   }
+  },
+  {
+   "id": "v_prism",
+   "file": "v_prism.step",
+   "curved": false,
+   "title": "V-section prism, 30\u00b0 half-angle, 3 m long, draft 0.6 m",
+   "ref": "[BI] triangle section: A = T\u00b2tan\u03b1, KB = 2T/3, b = 2T\u00b7tan\u03b1, BM = Lb\u00b3/12V = (2/3)\u00b7T\u00b7tan\u00b2\u03b1",
+   "rho": 1000.0,
+   "mass": 623.5382907247957,
+   "cog": [
+    1.5,
+    0,
+    0.35
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "floats",
+    "V": 0.6235382907247957,
+    "draft": 0.6,
+    "Awp": 2.0784609690826525,
+    "KB": 0.39999999999999997,
+    "BMt": 0.13333333333333333,
+    "GMt": 0.18333333333333335,
+    "BMl": 2.5
+   }
+  },
+  {
+   "id": "box_moved",
+   "file": "box_moved.step",
+   "curved": false,
+   "title": "Box barge 4\u00d72\u00d71 m, placed off-origin and yawed 30\u00b0 in the CAD file (yaw \u221230\u00b0 to realign)",
+   "ref": "same closed form as box_fresh; checks model \u2194 water frame transforms",
+   "rho": 1000.0,
+   "mass": 3200.0,
+   "cog": [
+    3.2320508075688776,
+    0.29999999999999993,
+    0.75
+   ],
+   "euler": [
+    0,
+    0,
+    -30
+   ],
+   "expect": {
+    "status": "floats",
+    "draft": 0.4,
+    "KB": 0.2,
+    "BMt": 0.8333333333333333,
+    "BMl": 3.333333333333333,
+    "GMt": 0.5333333333333332,
+    "B_model": [
+     3.2320508075688776,
+     0.29999999999999993,
+     0.45
+    ]
+   }
+  },
+  {
+   "id": "box_sinks",
+   "file": "box_4x2x1.step",
+   "curved": false,
+   "title": "Box barge 9000 kg (> \u03c1V = 8000 kg) \u2192 sinks",
+   "ref": "[ARC] floats only if m < \u03c1\u00b7V_total",
+   "rho": 1000.0,
+   "mass": 9000.0,
+   "cog": [
+    2.0,
+    0,
+    0.5
+   ],
+   "euler": [
+    0,
+    0,
+    0
+   ],
+   "expect": {
+    "status": "sinks"
+   }
+  }
+ ]
+}
