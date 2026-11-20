@@ -158,18 +158,88 @@ function meanWettedSurface(rel, zw) {
   return quads;
 }
 
+// Volume quadrature of the submerged region (relative to G, waterline at zw) for volume averages such as
+// the incident-fluid acceleration. Cone construction: each wetted triangle forms a tetrahedron with an apex P0
+// on the waterplane (the waterplane cap then contributes nothing, exactly as in submerged()); along each
+// cone ∫ f dV = 6·vol·∫₀¹ f(P0 + s(c − P0)) s² ds, done with 4-point Gauss–Legendre in s. Signed volumes make
+// this exact for any closed hull, not only star-shaped ones. Returns [x, y, z, w] rows with Σw = V.
+const GL4 = [[0.0694318442029737, 0.1739274225687269], [0.3300094782075719, 0.3260725774312731],
+  [0.6699905217924281, 0.3260725774312731], [0.9305681557970263, 0.1739274225687269]];
+export function volumeQuadrature(rel, zw, apexXY = [0, 0]) {
+  const P0 = [apexXY[0], apexXY[1], zw], out = [];
+  for (const { tri } of meanWettedTris(rel, zw)) {
+    const [a, b, c] = tri;
+    const u = a.map((v, i) => v - P0[i]), v = b.map((x, i) => x - P0[i]), w = c.map((x, i) => x - P0[i]);
+    const vol = (u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6;
+    if (vol === 0) continue;
+    const cen = [0, 1, 2].map((i) => (a[i] + b[i] + c[i]) / 3);
+    for (const [sq, wq] of GL4) out.push(P0[0] + sq * (cen[0] - P0[0]), P0[1] + sq * (cen[1] - P0[1]), P0[2] + sq * (cen[2] - P0[2]), 3 * vol * wq * sq * sq);
+  }
+  return new Float64Array(out);
+}
+// Volume quadrature for the time-domain sim: computed in the floating (equilibrium) frame, then rotated
+// back into the body frame (relative to G) so it can move with the body. R0: world ← body attitude.
+export function bodyFrameVolQ(rel, zw, B, R0) {
+  const q = volumeQuadrature(rel, zw, [B[0], B[1]]);
+  for (let o = 0; o < q.length; o += 4) {
+    const x = q[o], y = q[o + 1], z = q[o + 2];
+    q[o] = R0[0] * x + R0[3] * y + R0[6] * z; q[o + 1] = R0[1] * x + R0[4] * y + R0[7] * z; q[o + 2] = R0[2] * x + R0[5] * y + R0[8] * z;
+  }
+  return q;
+}
+
+function meanWettedTris(rel, zw) {
+  const out = [];
+  for (let i = 0; i < rel.length; i += 9) {
+    const z = [rel[i + 2] - zw, rel[i + 5] - zw, rel[i + 8] - zw];
+    if (z[0] >= 0 && z[1] >= 0 && z[2] >= 0) continue;
+    const pts = [];
+    for (let a = 0; a < 3; a++) {
+      const b = (a + 1) % 3;
+      const A = [rel[i + a * 3], rel[i + a * 3 + 1], rel[i + a * 3 + 2]];
+      const B = [rel[i + b * 3], rel[i + b * 3 + 1], rel[i + b * 3 + 2]];
+      if (z[a] < 0) pts.push(A);
+      if ((z[a] < 0) !== (z[b] < 0)) { const s = z[a] / (z[a] - z[b]); pts.push(A.map((v, k) => v + s * (B[k] - v))); }
+    }
+    for (let k = 1; k + 1 < pts.length; k++) out.push({ tri: [pts[0], pts[k], pts[k + 1]] });
+  }
+  return out;
+}
+
 // Default added-mass / damping estimates (editable). Labelled as estimates in the UI.
-//  A33: 2-D semicircle, ρπB²/8 per unit length (Lewis/strip theory, high-frequency limit)
-//  A22: 2-D flat plate of depth 2T, ρπT²/2 per unit length;  A11: 5 % of mass
-//  A44: fraction of dry roll inertia (typ. 0.1–0.3);  A55 = A33·L²/12;  A66 = A22·L²/12
+// Strip theory, choosing for each mode the strip direction that suits the body's proportions
+// (the smaller estimate wins: long horizontal strips for ship-like bodies, vertical strips for columns):
+//  A33 = floating elliptic disk of the waterplane's area and aspect ratio (see diskHeaveAddedMass)
+//  A22 = min( ρπT²L/2 [horizontal strips: flat plate of depth 2T],  ρπ(L/2)²T [vertical strips: ellipse ⟂ motion] )
+//  A11 = the same with L and B swapped;  A44 = 0.2·I44;  A55 = A33·L²/12;  A66 = A22·L²/12
 //  Damping: fraction of critical per mode, typical magnitudes for an unappended body at zero speed.
+// Complete elliptic integral of the second kind E(e) (modulus e), by the arithmetic–geometric mean.
+export function ellipticE(e) {
+  let a = 1, b = Math.sqrt(1 - e * e), c = e, sum = 0.5 * c * c, p = 0.5;
+  for (let i = 0; i < 40 && Math.abs(c) > 1e-16; i++) {
+    const an = (a + b) / 2; c = (a - b) / 2; b = Math.sqrt(a * b); a = an; p *= 2; sum += p * c * c;
+  }
+  return Math.PI / (2 * a) * (1 - sum);
+}
+
+// Heave added mass of the waterplane as a floating elliptic disk (half the infinite-fluid value of a disk
+// moving broadside, Lamb §373 / Newman Marine Hydrodynamics §4.13): A = (2/3)πρ a b² / E(e), a ≥ b semi-axes.
+// The ellipse has the waterplane's aspect ratio and area, so a circle gives (4/3)ρr³ and a slender
+// waterplane approaches the 2-D strip value ρπB²/8 per unit length.
+export function diskHeaveAddedMass(area, L, B, rho) {
+  const ratio = Math.min(L, B) / Math.max(L, B);
+  const a = Math.sqrt(area / (Math.PI * ratio)), b = a * ratio;
+  return (2 / 3) * Math.PI * rho * a * b * b / ellipticE(Math.sqrt(1 - ratio * ratio));
+}
+
 export function defaultHydroCoeffs(H, mass, IG, rho) {
   const ext = waterplaneExtent(H.segs);
   const L = Math.max(ext[0], 1e-6), B = Math.max(ext[1], 1e-6), T = Math.max(H.draft, 1e-6);
-  const A33 = rho * Math.PI * B * B / 8 * L;
-  const A22 = rho * Math.PI * T * T / 2 * L;
+  const A33 = diskHeaveAddedMass(Math.abs(H.wp.area) || L * B, L, B, rho);
+  const A22 = Math.min(rho * Math.PI * T * T / 2 * L, rho * Math.PI * (L / 2) ** 2 * T);
+  const A11 = Math.min(rho * Math.PI * T * T / 2 * B, rho * Math.PI * (B / 2) ** 2 * T);
   return {
-    A: [0.05 * mass, A22, A33, 0.2 * IG[0], A33 * L * L / 12, A22 * L * L / 12],
+    A: [A11, A22, A33, 0.2 * IG[0], A33 * L * L / 12, A22 * L * L / 12],
     zeta: [0.05, 0.05, 0.15, 0.08, 0.15, 0.05],
     L, B, T,
   };
@@ -212,26 +282,52 @@ export function linearModel(rel, H, mass, IG, rho, coeffs, opts = {}) {
   const wRef = wn[2] || wn[3] || 1;
   const Bd = [0, 1, 2, 3, 4, 5].map((i) => 2 * zeta[i] * (Mm[i][i] + Am[i]) * (wn[i] > 0 ? wn[i] : wRef));
   const quads = meanWettedSurface(rel, zw);
-  return { Cm, Mm, Am, Bd, wn, quads, zw, rho, V, depth: opts.depth ?? Infinity };
+  // flatten quadrature points for a fast excitation loop: per point (x, y, z', n1..n6 · weight)
+  const nq = quads.length * 3, qp = new Float64Array(nq * 9);
+  let o = 0;
+  for (const { S, mids } of quads) for (const r of mids) {
+    qp[o++] = r[0]; qp[o++] = r[1]; qp[o++] = r[2] - zw;
+    qp[o++] = S[0] / 3; qp[o++] = S[1] / 3; qp[o++] = S[2] / 3;
+    qp[o++] = (r[1] * S[2] - r[2] * S[1]) / 3; qp[o++] = (r[2] * S[0] - r[0] * S[2]) / 3; qp[o++] = (r[0] * S[1] - r[1] * S[0]) / 3;
+  }
+  const vq = volumeQuadrature(rel, zw, [H.B[0], H.B[1]]);
+  // diffraction: per-mode [surge, sway, heave] long-wave correction flags (a single boolean sets all three)
+  const d = opts.diffraction, diffraction = Array.isArray(d) ? d.map(Boolean) : [!!d, !!d, !!d];
+  return { Cm, Mm, Am, Bd, wn, quads, qp, vq, zw, rho, V, B: H.B.slice(), diffraction, depth: opts.depth ?? Infinity };
 }
 
-// Complex Froude–Krylov excitation per unit wave amplitude, η = Re{e^{iωt} e^{−i k·x}}.
-// F_j = −∫ p̂ n_j dS, p̂ = ρg e^{k z'} e^{−ik(x cosβ + y sinβ)}, z' = depth below still water; moments about G.
+// Complex wave excitation per unit wave amplitude, η = Re{e^{iωt} e^{−i k·x}}.
+// Froude–Krylov: F_j = −∫ p̂ n_j dS over the mean wetted surface, p̂ = ρg e^{k z'} e^{−ik(x cosβ + y sinβ)},
+// moments about G. Optional long-wave diffraction correction (G.I. Taylor 1928; Newman, Marine Hydrodynamics
+// §4.18): add A_jj × the incident-fluid acceleration averaged over the submerged volume, for surge, sway and
+// heave. Froude–Krylov alone is ρ∫a dV (C_m = 1); the correction restores C_m = 1 + C_a.
 export function fkExcitation(model, w, headingDeg) {
   const k = waveNumber(w, model.depth);
   const cb = Math.cos(headingDeg * Math.PI / 180), sb = Math.sin(headingDeg * Math.PI / 180);
-  const F = new Array(6).fill(0).map(() => [0, 0]);
-  const rg = model.rho * G0;
-  for (const { S, mids } of model.quads) {
-    for (const r of mids) {
-      const amp = rg * Math.exp(k * (r[2] - model.zw)) / 3;
-      const ph = -k * (r[0] * cb + r[1] * sb);
-      const p = [amp * Math.cos(ph), amp * Math.sin(ph)];
-      const n6 = [S[0], S[1], S[2], r[1] * S[2] - r[2] * S[1], r[2] * S[0] - r[0] * S[2], r[0] * S[1] - r[1] * S[0]];
-      for (let j = 0; j < 6; j++) { F[j][0] -= p[0] * n6[j]; F[j][1] -= p[1] * n6[j]; }
-    }
+  const kx = k * cb, ky = k * sb, rg = model.rho * G0, qp = model.qp;
+  const Fr = [0, 0, 0, 0, 0, 0], Fi = [0, 0, 0, 0, 0, 0];
+  for (let o = 0; o < qp.length; o += 9) {
+    const amp = rg * Math.exp(k * qp[o + 2]);
+    const ph = -(kx * qp[o] + ky * qp[o + 1]);
+    const pr = amp * Math.cos(ph), pi = amp * Math.sin(ph);
+    for (let j = 0; j < 6; j++) { const n = qp[o + 3 + j]; Fr[j] -= pr * n; Fi[j] -= pi * n; }
   }
-  return { F, k };
+  if (model.diffraction.some(Boolean)) {
+    // A_jj × volume-averaged incident acceleration:  ∫_V a dV with a = (i g kₓ, i g k_y, −g k) e^{kz} e^{−ik·x}
+    const vq = model.vq;
+    let sr = 0, si = 0, cr = 0, ci = 0;
+    for (let o = 0; o < vq.length; o += 4) {
+      const e = vq[o + 3] * Math.exp(k * Math.min(0, vq[o + 2] - model.zw)), ph = -(kx * vq[o] + ky * vq[o + 1]);
+      const c = Math.cos(ph), s = Math.sin(ph);
+      sr += e * c; si += e * s;
+    }
+    cr = sr; ci = si;   // ∫ e^{kz} e^{iph} dV
+    const g = G0, V = model.V;
+    // a_x: i g kₓ (cr + i ci) = g kₓ (−ci + i cr) ; a_z: −g k (cr + i ci)
+    const acc = [[-g * kx * ci, g * kx * cr], [-g * ky * ci, g * ky * cr], [-g * k * cr, -g * k * ci]];
+    for (let j = 0; j < 3; j++) if (model.diffraction[j]) { Fr[j] += model.Am[j] / V * acc[j][0]; Fi[j] += model.Am[j] / V * acc[j][1]; }
+  }
+  return { F: Fr.map((r, j) => [r, Fi[j]]), k };
 }
 
 // Response amplitude operators at one frequency/heading. Returns complex ξ per unit wave amplitude.
@@ -265,6 +361,47 @@ export function raoSweep(model, omegas, headings) {
       };
     }),
   }));
+}
+
+// Same as raoSweep, but yields to the event loop every ~25 ms and reports progress (0–1).
+export async function raoSweepAsync(model, omegas, headings, onProgress = () => {}) {
+  const total = omegas.length * headings.length;
+  let done = 0, last = performance.now();
+  const out = [];
+  for (const beta of headings) {
+    const points = [];
+    for (const w of omegas) {
+      const { xi, F, k } = raoAt(model, w, beta);
+      const amp = xi.map((z) => C.abs(z));
+      points.push({
+        w, k, f: w / (2 * Math.PI), T: 2 * Math.PI / w, lambda: 2 * Math.PI / k, xi, F, amp,
+        degPerM: amp.map((a, j) => (j >= 3 ? a * 180 / Math.PI : a)),
+        perSlope: amp.map((a, j) => (j >= 3 ? a / k : a)),
+        phase: xi.map((z) => Math.atan2(z[1], z[0]) * 180 / Math.PI),
+      });
+      done++;
+      if (performance.now() - last > 25) { onProgress(done / total); await new Promise((r) => setTimeout(r, 0)); last = performance.now(); }
+    }
+    out.push({ beta, points });
+  }
+  onProgress(1);
+  return out;
+}
+
+// Spectral response from an already computed RAO sweep (no re-solving): trapezoid over the sweep grid,
+// |RAO|² S on [max(wLo, ω₀), min(wHi, ω_N)]. Returns null if the grid misses most of the energy.
+export function spectralFromSweep(points, S, dof, duration = 3 * 3600, m0Wave = null) {
+  let m0 = 0, m2 = 0, e = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i], dw = b.w - a.w;
+    const fa = a.amp[dof] ** 2 * S(a.w), fb = b.amp[dof] ** 2 * S(b.w);
+    m0 += 0.5 * (fa + fb) * dw; m2 += 0.5 * (fa * a.w * a.w + fb * b.w * b.w) * dw; e += 0.5 * (S(a.w) + S(b.w)) * dw;
+  }
+  const coverage = m0Wave ? e / m0Wave : 1;
+  const Tz = m2 > 0 ? 2 * Math.PI * Math.sqrt(m0 / m2) : Infinity;
+  const N = isFinite(Tz) ? Math.max(1, duration / Tz) : 1;
+  const k = dof >= 3 ? 180 / Math.PI : 1;
+  return { m0, sigma: Math.sqrt(m0) * k, sig: 2 * Math.sqrt(m0) * k, mpm: Math.sqrt(2 * m0 * Math.log(N)) * k, Tz, coverage };
 }
 
 // Linear spectral response: S_R(ω) = |RAO(ω)|² S(ω) (long-crested, zero speed).

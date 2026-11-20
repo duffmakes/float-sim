@@ -134,6 +134,8 @@ function setModel(name, raw, nParts = 1, opts = {}) {
   stopSim(); S.sim = null; S.preview = null; hideBanner();
   $('simInfo').textContent = '';
   if (!opts.keepAttitude) setEuler([0, 0, 0]);   // a new body starts upright
+  $('inMode').value = 'auto'; $('inCustom').classList.add('hidden');   // custom inertia belonged to the old body
+  IN_IDS.forEach((id, k) => { $(id).value = k < 3 ? '' : 0; });
   rescaleModel(opts.keepCog);
   if (!opts.keepCog) {
     const c = S.model.mp.centroid;
@@ -291,6 +293,7 @@ function update() {
   scheduleGZ();
   $('simApply').disabled = !S.sim;
   if (sea) sea.onModelChange();
+  renderInertiaInfo();
 }
 
 // world = rel + (0,0,-zw)  (water surface at z = 0)
@@ -345,9 +348,57 @@ function drawMarkers(off, H) {
   wlLines.geometry.setAttribute('position', new THREE.BufferAttribute(pts, 3));
 }
 
-function inertiaG() {
-  return inertiaAbout(S.model.mp, getMass(), getCogM());
+// ------------------------------------------------------------------ inertia (computed or user-entered)
+const autoInertiaG = () => inertiaAbout(S.model.mp, getMass(), getCogM());
+const IN_IDS = ['inXX', 'inYY', 'inZZ', 'inXY', 'inXZ', 'inYZ'];
+// Body-frame inertia tensor about the CoG (kg·m², model axes). Custom values: tensor convention I_xy = −∫xy dm,
+// or +∫xy dm when the "products of inertia" box is ticked (then negated into the tensor).
+function customInertia() {
+  const v = IN_IDS.map((id) => parseFloat($(id).value));
+  if (![0, 1, 2].every((i) => Number.isFinite(v[i]))) return null;
+  const sg = $('inProdSign').checked ? -1 : 1;
+  const [xx, yy, zz] = v, [xy, xz, yz] = v.slice(3).map((x) => sg * (Number.isFinite(x) ? x : 0));
+  return [xx, xy, xz, xy, yy, yz, xz, yz, zz];
 }
+function inertiaCheck(I) {
+  const [a, b, c] = [I[0], I[4], I[8]];
+  const m2 = a * I[4] - I[1] * I[3];
+  const det = I[0] * (I[4] * I[8] - I[5] * I[7]) - I[1] * (I[3] * I[8] - I[5] * I[6]) + I[2] * (I[3] * I[7] - I[4] * I[6]);
+  if (!(a > 0 && m2 > 0 && det > 0)) return 'not positive-definite (check the products of inertia and their sign)';
+  const tol = 1e-9 * (a + b + c);
+  if (a + b < c - tol || a + c < b - tol || b + c < a - tol) return 'violates the triangle inequality (each moment must be ≤ the sum of the other two)';
+  return null;
+}
+function inertiaG() {
+  if (!S.model) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  if ($('inMode').value === 'custom') { const I = customInertia(); if (I && !inertiaCheck(I)) return I; }
+  return autoInertiaG();
+}
+function renderInertiaInfo() {
+  if (!S.model) return;
+  const custom = $('inMode').value === 'custom';
+  const I = inertiaG(), m = Math.max(getMass(), 1e-12);
+  const bad = custom ? (customInertia() ? inertiaCheck(customInertia()) : 'enter at least Ixx, Iyy and Izz') : null;
+  const kg = [0, 4, 8].map((i) => Math.sqrt(Math.max(I[i], 0) / m));
+  $('inInfo').innerHTML = `${custom ? (bad ? `<span class="bad">Custom inertia ${bad}. Using the computed values instead.</span>` : '<span class="good">Using custom inertia.</span>') : 'Computed for uniform density.'}
+    I<sub>xx</sub>, I<sub>yy</sub>, I<sub>zz</sub> = <b>${[0, 4, 8].map((i) => fmt(I[i], 4)).join(', ')}</b> kg·m² ·
+    radii of gyration ${kg.map((k) => L(k)).join(', ')}`;
+  for (const [k, id] of IN_IDS.entries()) {
+    const auto = autoInertiaG(), idx = [0, 4, 8, 1, 2, 5][k];
+    $(id).placeholder = (k < 3 ? auto[idx] : ($('inProdSign').checked ? -1 : 1) * auto[idx]).toPrecision(4);
+  }
+}
+$('inMode').addEventListener('change', () => {
+  const custom = $('inMode').value === 'custom';
+  $('inCustom').classList.toggle('hidden', !custom);
+  if (custom && S.model && !customInertia()) {
+    // prefill with the computed tensor so the user only edits what they know
+    const I = autoInertiaG(), sg = $('inProdSign').checked ? -1 : 1;
+    [I[0], I[4], I[8], sg * I[1], sg * I[2], sg * I[5]].forEach((v, k) => { $(IN_IDS[k]).value = +v.toPrecision(6); });
+  }
+  onAttitude();
+});
+for (const id of [...IN_IDS, 'inProdSign']) $(id).addEventListener('change', () => onAttitude());
 
 function renderStats(H, mode) {
   const { R, m, rho } = S.last;
@@ -654,7 +705,7 @@ const staticOverlays = [mB, mMt, mMl, arrW, arrB, vertLine, gLine, wlLines];
 sea = initSeakeeping({
   THREE, scene, water, waterDepth, mG,
   getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
-  getEuler, setBodyPose,
+  getEuler, setBodyPose, getInertiaBody: () => inertiaG(), inertiaKey: () => JSON.stringify(inertiaG()),
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
   refresh: () => update(),

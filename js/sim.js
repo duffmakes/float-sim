@@ -77,12 +77,17 @@ export class FloatSim {
 // hull: { verts, idx } welded mesh relative to G in the body frame.  R0: equilibrium attitude (world←body).
 // A, Bd: 6-vectors in equilibrium world axes (surge, sway, heave, roll, pitch, yaw).
 export class WaveSim {
-  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0 }) {
+  // volQ: optional [x,y,z,w] volume quadrature of the mean submerged volume (body frame, relative to G; see
+  // hydro.volumeQuadrature). When given, adds A_jj × volume-averaged incident acceleration (long-wave
+  // diffraction correction, as in hydro.fkExcitation) to surge, sway and heave.
+  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0, volQ = null, diffModes = [true, true, true] }) {
     this.hull = hull; this.m = mass; this.rho = rho; this.g = g; this.field = field;
     this.world = new Float64Array(hull.verts.length);
     this.etaBuf = new Float64Array(hull.verts.length / 3); this.pBuf = new Float64Array(hull.verts.length / 3);
     this.R0 = R0; this.q = mat3ToQuat(R0); this.p = [0, 0, z0]; this.v = [0, 0, 0]; this.w = [0, 0, 0];
     this.A = A; this.Bd = Bd; this.dt = dt; this.t = 0; this.ramp = ramp; this.vanishDeg = vanishDeg;
+    this.volQ = volQ; this.diffModes = diffModes;
+    if (volQ) { let V = 0; for (let o = 3; o < volQ.length; o += 4) V += volQ[o]; this.volQV = V; }
     const R0t = mat3.transpose(R0);
     const diag = (a, b, c) => [a, 0, 0, 0, b, 0, 0, 0, c];
     // rotational added inertia / damping are attached to the body (given in equilibrium world axes)
@@ -114,6 +119,15 @@ export class WaveSim {
     const wf = waveForces(this.world, idx, this.field, this.t, this.rho, this.p, { etaBuf: this.etaBuf, pBuf: this.pBuf, segments: !record });
     const { A, Bd, m } = this;
     const F = [wf.F[0] - Bd[0] * this.v[0], wf.F[1] - Bd[1] * this.v[1], wf.F[2] - m * this.g - Bd[2] * this.v[2]];
+    if (this.volQ && this.field.n) {
+      const q = this.volQ, sum = [0, 0, 0];
+      for (let o = 0; o < q.length; o += 4) {
+        const x = q[o], y = q[o + 1], z = q[o + 2];
+        const acc = this.field.accel(R[0] * x + R[1] * y + R[2] * z + this.p[0], R[3] * x + R[4] * y + R[5] * z + this.p[1], R[6] * x + R[7] * y + R[8] * z + this.p[2], this.t);
+        sum[0] += q[o + 3] * acc[0]; sum[1] += q[o + 3] * acc[1]; sum[2] += q[o + 3] * acc[2];
+      }
+      for (let k = 0; k < 3; k++) if (this.diffModes[k]) F[k] += A[k] / this.volQV * sum[k];
+    }
     const IwDry = mat3.mul(R, mat3.mul(this.IbDry, mat3.transpose(R)));
     const Iw = mat3.mul(R, mat3.mul(this.IbDry.map((v, i) => v + this.IbAdd[i]), mat3.transpose(R)));
     const Bw = mat3.mul(R, mat3.mul(this.BbRot, mat3.transpose(R)));

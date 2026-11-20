@@ -3,6 +3,8 @@ import { mat3, transformTris, solveWaterline, hydrostatics, inertiaAbout, massPr
 import { pmSpectrum, jonswapSpectrum, spectrumFn, spectralMoments, WaveField, SEA_STATES, pmFullyDevelopedTp } from '../js/waves.js';
 import { refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoAt, spectralResponse } from '../js/hydro.js';
 import { WaveSim, seriesStats } from '../js/sim.js';
+import { hemisphereStudy, sparStudy } from './trade-study.js';
+import { bodyFrameVolQ } from '../js/hydro.js';
 
 // Build the floating barge exactly as the app does (rel geometry about G, hydrostatics, linear model).
 export function setupBody(tris, c, { maxEdge = 0.25, maxEdgeTD = 0.6, zeta = null } = {}) {
@@ -25,6 +27,9 @@ export function setupBody(tris, c, { maxEdge = 0.25, maxEdgeTD = 0.6, zeta = nul
 
 // Least-squares fit of x(t) ≈ a cos ωt + b sin ωt + c over t ≥ t0; returns amplitude √(a²+b²).
 export function fitAmplitude(t, x, w, t0) {
+  // removes a linear trend first (a free body with no restoring, e.g. sway, may drift slowly)
+  { let n = 0, st = 0, sx = 0, stt = 0, stx = 0; for (let i = 0; i < t.length; i++) if (t[i] >= t0) { n++; st += t[i]; sx += x[i]; stt += t[i] * t[i]; stx += t[i] * x[i]; }
+    const b = (n * stx - st * sx) / (n * stt - st * st || 1), a0 = (sx - b * st) / n; x = x.map((v, i) => v - a0 - b * t[i]); }
   let Scc = 0, Sss = 0, Scs = 0, Sc = 0, Ss = 0, S1 = 0, Sxc = 0, Sxs = 0, Sx = 0;
   for (let i = 0; i < t.length; i++) {
     if (t[i] < t0) continue;
@@ -132,7 +137,7 @@ export async function runWaveValidation({ exp, getTris, chkFactory }) {
     chk('head seas: roll ≈ 0', Math.hypot(...r.xi[3]) / k, 0, 0, 1e-6);
     // undamped heave peak at ω_n = √(C33/(m+A33))
     const und = setupBody(tris, box, { maxEdge: 0.1, zeta: [0, 0, 0, 0, 0, 0] });
-    chk('default A33 = ρπB²L/8', und.coeffs.A[2], W.box_heave_wn.A33, 1e-6);
+    chk('default A33 = elliptic-disk value', und.coeffs.A[2], W.box_heave_wn.A33, 1e-6);
     let best = 0, bw = 0;
     for (let w = 2.0; w < 4.0; w += 1e-4) { const a = Math.hypot(...raoAt(und.model, w, 180).xi[2]); if (a > best) { best = a; bw = w; } }
     chk('undamped heave peak at ω_n', bw, W.box_heave_wn.wn, 0.002);
@@ -184,6 +189,45 @@ export async function runWaveValidation({ exp, getTris, chkFactory }) {
       chk(`SS3 beam: ${name} σ, time domain vs spectral`, td.sd, sp.sigma, 0.12);
     }
     out.push({ id: 'wave_spectral_vs_td', title: 'Irregular sea SS3 (JONSWAP), beam: 20 min simulation vs |RAO|²·S', ref: 'S_R = |RAO|² S;  σ² = m0 (random-phase sampling variance → ~10 % tolerance)', rows, meta: `${sim.rec.t.length.toLocaleString()} steps, dt ${(sim.dt * 1000).toFixed(1)} ms, ${(body.hull.idx.length / 3).toLocaleString()} hull panels` });
+  }
+
+  // 8 — literature benchmarks (RAO trade study): Hulme hemisphere heave, MacCamy–Fuchs spar sway
+  {
+    const { rows, chk } = chkFactory();
+    const hs = hemisphereStudy(await getTris(W.lit_hemisphere.file, 'fine'), W.lit_hemisphere);
+    for (const r of hs.rows.filter((r) => r.ka <= 0.6)) chk(`hemisphere ka=${r.ka}: |X3| FK+corr. vs Haskind`, r.X_dc, r.Xexact, 0.01);
+    for (const r of hs.rows.filter((r) => r.ka <= 0.7)) chk(`hemisphere ka=${r.ka}: RAO (Hulme A,B + corr.) vs exact`, r.hulmeAB_dc, r.exact, 0.03);
+    for (const r of hs.rows.filter((r) => r.ka <= 0.1)) chk(`hemisphere ka=${r.ka}: RAO tool defaults vs exact`, r.default, r.exact, 0.05);
+    out.push({ id: 'lit_hemisphere', title: 'Floating hemisphere, heave: Float Sim vs Hulme (1982) exact potential flow', ref: W.lit_hemisphere.ref + ' · full table: docs/rao-trade-study.md', rows, meta: `${hs.panels.toLocaleString()} panels; tool default A33 = ${hs.defaults.A33_norm.toFixed(2)} ρV` });
+  }
+  {
+    const { rows, chk } = chkFactory();
+    const ss = sparStudy(await getTris(W.lit_spar.file, 'fine'), W.lit_spar);
+    for (const r of ss.rows.filter((r) => r.ka <= 0.1)) chk(`spar ka=${r.ka}: Froude–Krylov alone = ½ MF force (C_m 1 vs 2)`, r.F_fk / r.exactF, 0.5, 0.03);
+    for (const r of ss.rows.filter((r) => r.ka <= 0.7)) chk(`spar ka=${r.ka}: sway force FK+corr. vs MacCamy–Fuchs`, r.F_dc, r.exactF, 0.05);
+    for (const r of ss.rows.filter((r) => r.ka <= 0.7)) chk(`spar ka=${r.ka}: sway RAO FK+corr. vs reference`, r.rao_dc, r.exact, 0.05);
+    chk('spar default A22 = ρπa²T (C_a = 1)', ss.defaults.A22, ss.defaults.A22_exact, 0.01);
+    out.push({ id: 'lit_spar', title: 'Deep-draft spar, sway: Float Sim vs MacCamy & Fuchs (1954)', ref: W.lit_spar.ref + ' · full table: docs/rao-trade-study.md', rows, meta: `${ss.panels.toLocaleString()} panels` });
+  }
+
+  // 9 — time domain vs frequency domain with the diffraction correction switched on
+  {
+    const { rows, chk } = chkFactory();
+    const c = W.lit_hemisphere, A = 0.002;
+    const tr = await getTris(c.file, 'normal');
+    const b = setupBody(tr, { ...c }, { maxEdge: 0.08, maxEdgeTD: 0.25 });
+    const modes = [true, true, true];
+    const model = linearModel(b.relFine, hydrostatics(b.relFine, b.zw, c.mass, c.rho), c.mass, b.IGw, c.rho, b.coeffs, { diffraction: modes });
+    const volQ = bodyFrameVolQ(refineTris(b.rel, 0.25), b.zw, b.H.B, b.R);
+    for (const w of [1.4, 2.2]) {
+      const lin = raoAt(model, w, 90), T = 2 * Math.PI / w;
+      const sim = new WaveSim({ hull: b.hull, mass: c.mass, inertiaG: b.IGb, rho: c.rho, R0: b.R, z0: -b.zw, field: WaveField.regular(A, w, 90),
+        A: b.coeffs.A, Bd: model.Bd, dt: Math.min(T, 2 * Math.PI / Math.max(...model.wn)) / 200, ramp: 3 * T, volQ, diffModes: modes });
+      sim.advance(40 * T, 1e9);
+      const t0 = sim.t - 15 * T;
+      chk(`ω=${w}: heave TD vs FD (correction on)`, fitAmplitude(sim.rec.t, sim.rec.heave, w, t0) / A, Math.hypot(...lin.xi[2]), 0.03);
+    }
+    out.push({ id: 'wave_td_vs_fd_diffraction', title: 'Time domain vs RAO with the long-wave diffraction correction (sphere, A = 2 mm)', ref: 'both solvers use A_jj × volume-averaged incident acceleration', rows });
   }
   return out;
 }
