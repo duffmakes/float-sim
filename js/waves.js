@@ -160,6 +160,19 @@ export class WaveField {
     return e * this.scale;
   }
 
+  // Incident fluid acceleration at (x, y, z) below still water (z ≤ 0): −∇p_dyn/ρ for p_dyn = ρg a e^{kz} cos ψ.
+  //   a_x = g a kₓ e^{kz} sin ψ,  a_y = g a k_y e^{kz} sin ψ,  a_z = −g a k e^{kz} cos ψ
+  accel(x, y, z, t) {
+    let ax = 0, ay = 0, az = 0;
+    const zc = Math.min(0, z);
+    for (let i = 0; i < this.n; i++) {
+      const psi = this.kx[i] * x + this.ky[i] * y - this.w[i] * t + this.phi[i];
+      const e = G * this.a[i] * Math.exp(this.k[i] * zc), sn = Math.sin(psi);
+      ax += e * this.kx[i] * sn; ay += e * this.ky[i] * sn; az -= e * this.k[i] * Math.cos(psi);
+    }
+    return [ax * this.scale, ay * this.scale, az * this.scale];
+  }
+
   // Wheeler-stretched linear Froude–Krylov pressure at depth z below a surface of elevation e = η(x,y,t)
   // (call eta() first at the same x,y,t):  p = ρg[ −z + Σ aᵢ e^{kᵢ(z−η)} cos ψᵢ ].  Vanishes exactly at z = η.
   pressureAfterEta(z, e, rho) {

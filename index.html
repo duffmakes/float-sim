@@ -67,6 +67,29 @@
     <p class="hint">CoG in the CAD model's own coordinates, in model units.</p>
     <button id="useCentroid" class="ghost">Use geometric centroid (uniform density)</button>
     <div id="massInfo" class="info"></div>
+    <div class="row">
+      <label>Moments of inertia
+        <select id="inMode">
+          <option value="auto" selected>Computed from geometry (uniform density)</option>
+          <option value="custom">Custom (enter values)</option>
+        </select>
+      </label>
+    </div>
+    <div id="inCustom" class="hidden">
+      <div class="row three">
+        <label>I<sub>xx</sub> <input id="inXX" type="number" step="any"></label>
+        <label>I<sub>yy</sub> <input id="inYY" type="number" step="any"></label>
+        <label>I<sub>zz</sub> <input id="inZZ" type="number" step="any"></label>
+      </div>
+      <div class="row three">
+        <label>I<sub>xy</sub> <input id="inXY" type="number" step="any" value="0"></label>
+        <label>I<sub>xz</sub> <input id="inXZ" type="number" step="any" value="0"></label>
+        <label>I<sub>yz</sub> <input id="inYZ" type="number" step="any" value="0"></label>
+      </div>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="inProdSign" type="checkbox"> Products entered as P<sub>xy</sub> = +∫xy dm (negate into the tensor)</label>
+      <p class="hint">kg·m², about the CoG, in the CAD model's axes. Inertia-tensor convention: I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm; tick the box for those.</p>
+    </div>
+    <div id="inInfo" class="info"></div>
   </section>
 
   <section>
@@ -154,6 +177,11 @@
       <p class="hint">Spreading 0 gives long-crested waves; s &gt; 0 applies cos<sup>2s</sup> short-crested spreading.</p>
       <p class="hint">Added mass and damping are <b>estimates</b> (no diffraction/radiation solver). Defaults: strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p>
       <div class="row three">
+        <label>A11 (kg) <input id="hA11" type="number" step="any"></label>
+        <label>A22 (kg) <input id="hA22" type="number" step="any"></label>
+        <label>&nbsp;</label>
+      </div>
+      <div class="row three">
         <label>A33 (kg) <input id="hA33" type="number" step="any"></label>
         <label>A44 / I44 <input id="hA44" type="number" step="any" value="0.2"></label>
         <label>A55 (kg·m²) <input id="hA55" type="number" step="any"></label>
@@ -163,6 +191,9 @@
         <label>ζ roll <input id="hZ4" type="number" step="any" value="0.08"></label>
         <label>ζ pitch <input id="hZ5" type="number" step="any" value="0.15"></label>
       </div>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hDiffH" type="checkbox" checked> Diffraction correction, surge &amp; sway</label>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hDiffV" type="checkbox"> Diffraction correction, heave</label>
+      <p class="hint">Long-wave (G.I. Taylor) correction: adds added mass × the incident acceleration averaged over the submerged volume. In the trade study (docs/rao-trade-study.md) it fixes the 50 % low horizontal force of Froude–Krylov (spar within 5 % of MacCamy–Fuchs). For heave it helps in long waves but overcorrects near resonance unless A33 is calibrated, so it is off by default.</p>
       <button id="hReset" class="ghost">Reset to estimates</button>
     </details>
     <div class="row">
@@ -176,17 +207,20 @@
   <section>
     <h2>8 · RAO sweep</h2>
     <div class="row three">
-      <label>ω min (rad/s) <input id="raoWmin" type="number" step="any" value="0.2"></label>
-      <label>ω max (rad/s) <input id="raoWmax" type="number" step="any" value="4"></label>
+      <label>f min (Hz) <input id="raoFmin" type="number" step="any" min="0.001" value="0.03"></label>
+      <label>f max (Hz) <input id="raoFmax" type="number" step="any" min="0.002" value="0.65"></label>
       <label>Points <input id="raoN" type="number" min="5" max="400" value="80"></label>
     </div>
+    <p class="hint" id="raoRange"></p>
     <label>Headings β (deg): a list "0,90,180" or a range "start:step:end"
       <input id="raoHead" type="text" value="0:45:180" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit">
     </label>
     <div class="row">
       <button id="raoRun" class="primary">Compute RAOs</button>
-      <button id="raoCsv" class="ghost" disabled>Export CSV</button>
+      <button id="raoCsv" class="ghost" disabled title="Amplitudes and phases per heading and frequency">Export CSV</button>
+      <button id="raoRaw" class="ghost" disabled title="Complex RAOs, excitation forces and the model matrices">Export raw CSV</button>
     </div>
+    <div id="raoProgWrap" class="progress hidden"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
     <div id="raoInfo" class="info"></div>
   </section>
   <footer>Hydrostatics: rigid body, uniform density for inertia. Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), estimated added mass and damping, no diffraction or radiation, zero forward speed, deep water.</footer>
@@ -240,6 +274,8 @@
       <div id="ssTable" class="info"></div>
     </div>
     <div id="tabRao" class="tab hidden">
+      <div id="raoLoading" class="tab-loading hidden"><div class="spinner"></div><span id="raoLoadingText">Rendering RAO plots…</span></div>
+      <div id="raoEmpty" class="info">No RAOs yet. Set the frequency range and headings in section 8, then click <b>Compute RAOs</b>.</div>
       <div class="rhead">
         <h2>Response amplitude operators</h2>
         <select id="raoDof" style="width:auto">

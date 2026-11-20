@@ -46,7 +46,9 @@ function tooltip(canvas) {
 }
 
 // series: [{ name, color, x: [], y: [], width?, dash? }] — one shared y unit (never dual axis)
-export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = '', vlines = [], yMin = null, yMax = null, legend = true, xFmt = fmt }) {
+// rampLegend: { label, from, to, color: (t) => css } draws a gradient key instead of per-series swatches
+// (used when many ordered series share one ramp, e.g. 13 wave headings).
+export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = '', vlines = [], yMin = null, yMax = null, legend = true, xFmt = fmt, rampLegend = null }) {
   const { ctx, W, H } = setup(canvas, height);
   const all = series.flatMap((s) => s.y.filter(Number.isFinite));
   const xs = series.flatMap((s) => s.x);
@@ -54,7 +56,7 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
   let lo = yMin ?? Math.min(0, ...all), hi = yMax ?? Math.max(...all);
   if (hi - lo < 1e-12) hi = lo + 1;
   const pad = (hi - lo) * 0.08; if (yMax === null) hi += pad; if (yMin === null && lo < 0) lo -= pad;
-  const x0 = 44, x1 = W - 10, y0 = legend && series.length > 1 ? 22 : 10, y1 = H - 26;
+  const x0 = 44, x1 = W - 10, y0 = legend && (series.length > 1 || rampLegend) ? 22 : 10, y1 = H - 26;
   const xa = Math.min(...xs), xb = Math.max(...xs);
   const X = (v) => x0 + (x1 - x0) * (v - xa) / (xb - xa || 1), Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
   ctx.font = '10px system-ui'; ctx.lineWidth = 1;
@@ -87,7 +89,13 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
     ctx.stroke(); ctx.setLineDash([]);
   }
   // legend (always for ≥ 2 series), text in ink colours with a colour swatch
-  if (legend && series.length > 1) {
+  if (legend && rampLegend) {
+    ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.fillStyle = INK.primary;
+    let lx = x0; ctx.fillText(rampLegend.label, lx, 12); lx += ctx.measureText(rampLegend.label).width + 8;
+    ctx.fillText(rampLegend.from, lx, 12); lx += ctx.measureText(rampLegend.from).width + 4;
+    for (let i = 0; i < 60; i++) { ctx.fillStyle = rampLegend.color(i / 59); ctx.fillRect(lx + i * 1.5, 6, 2, 6); }
+    lx += 94; ctx.fillStyle = INK.primary; ctx.fillText(rampLegend.to, lx, 12);
+  } else if (legend && series.length > 1) {
     let lx = x0; ctx.textAlign = 'left'; ctx.font = '11px system-ui';
     for (const s of series) {
       ctx.fillStyle = s.color; ctx.fillRect(lx, 7, 12, 3);

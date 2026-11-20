@@ -10,6 +10,7 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 
 - **Imports STEP / IGES / BREP** files (via `occt-import-js`, OpenCascade compiled to WASM) and **STL**. The STEP geometry is converted to millimetres; pick other units for STL.
 - **Inputs:** mass, CoG (x, y, z in model coordinates), fresh (1000 kg/m³), salt (1025 kg/m³) or custom water, and an initial roll/pitch/yaw.
+- **Moments of inertia:** computed from the geometry for uniform density, or entered as a custom tensor (kg·m² about the CoG, model axes). There's a sign option for CAD tools that report products of inertia as +∫xy dm. Custom values are checked for positive-definiteness and the triangle inequality, and are used by the hydrostatic periods, both simulators and the RAOs.
 - **Static float solve:** for the chosen attitude, finds the waterline where buoyancy = weight, then shows
   - the waterline outline, **G** (CoG), **B** (centre of buoyancy) and the weight/buoyancy force arrows
   - **M<sub>T</sub>, M<sub>L</sub>** (roll and pitch metacentres): BM = I<sub>waterplane</sub> / V
@@ -33,10 +34,13 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
   - **Run in waves** animates it in 3D. **Run statistics** simulates 20 min in a Web Worker and reports significant and maximum roll, pitch and heave, green water on deck and capsize. A verdict compares maximum roll against the GZ range of stability, e.g. "SS3: max roll 7.73° of 109° range: safe".
 - **Sea-state table:** a linear spectral estimate (|RAO|²·S) for SS1–5 at the chosen heading: significant amplitudes, most-probable 3-hour maximum roll, and a verdict. Sea states whose waves are short relative to the body (D/λ > 0.2) are flagged.
 - **RAOs:**
-  - Enter a frequency range and a list or range of incident headings (e.g. `0:15:180`).
+  - Enter a frequency range **in Hz** (the equivalent rad/s, periods and wavelengths are shown) and a list or range of incident headings (e.g. `0:15:180`). A progress bar shows the sweep, and the RAO tab shows a loading indicator while plots render.
   - The 6-DOF linear frequency-domain model about G is solved at every (ω, β): hydrostatic restoring matrix, mass and inertia, estimated added mass and damping, and Froude–Krylov excitation on the mean wetted surface (Faltinsen 1990; Journée & Massie 2001).
   - Plots: amplitude (m/m, deg/m or deg per degree of wave slope), phase, and a heading × frequency heatmap.
-  - Also reports the response in the current sea state, and exports CSV.
+  - Also reports the response in the current sea state, computed from the sweep and cached.
+  - **Export CSV** gives amplitudes and phases per heading and frequency. **Export raw CSV** gives complex RAOs (re/im), excitation forces per DOF, and the model's mass, added-mass, damping and restoring matrices as header comments.
+- **Long-wave diffraction correction** (G.I. Taylor): Froude–Krylov alone captures only ρ∫a dV (C_m = 1). The correction adds A<sub>jj</sub> × the incident acceleration averaged over the submerged volume, computed with an exact cone quadrature. It is applied identically in the RAO solver and the time-domain simulator. Defaults are on for surge and sway, off for heave, as justified by the trade study below.
+- **Added-mass defaults** (editable): heave uses a floating elliptic disk of the waterplane's area and aspect ratio, (2/3)πρab²/E(e) (Lamb §373). Surge and sway use whichever strip direction suits the body's proportions. A spar gets ρπa²T (C<sub>a</sub> = 1) and a ship-like hull gets ρπT²L/2.
 
 ## Method
 
@@ -46,8 +50,8 @@ The body is triangulated and each triangle is clipped to the part below the wate
 
 - Rigid body. The inertia assumes **uniform density**. The calm-water periods in the Hydrostatics tab ignore added mass, so they are indicative only. The seakeeping model includes estimated added mass.
 - **Waves:**
-  - Linear incident waves with Froude–Krylov loads only: **no diffraction or radiation solution**.
-  - Added mass and damping are editable *estimates*: strip-theory semicircle A33 = ρπB²L/8, A44 = 0.2·I44, damping as a fraction of critical.
+  - Linear incident waves with Froude–Krylov loads plus an optional long-wave diffraction correction: **no full diffraction/radiation (BEM) solution**.
+  - Added mass and damping are editable, frequency-independent *estimates*. Near resonance these estimates dominate the error, so enter known values where you have them (see the trade study).
   - Results are reliable when the body is small relative to the wavelength (D/λ ≤ 0.2). The app flags it when this isn't the case.
   - Zero forward speed, deep water, no breaking waves.
   - A free-floating body drifts downwave. With no mooring or viscous drag, the drift speed is indicative only.
@@ -64,9 +68,10 @@ The body is triangulated and each triangle is clipped to the part below the wate
 |---|---|---|
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
-| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves | 200/200 |
-| http://localhost:8765/test/validate.html | Same checks, in the browser | 200/200 in headless Chromium, all three qualities |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, sea-state table, RAO sweep and CSV, console errors | 29/29 |
+| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks | 234/234 |
+| http://localhost:8765/test/validate.html | Same checks, in the browser | 234/234 in headless Chromium, all three qualities |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, console errors | 37/37 |
+| `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
 
@@ -82,6 +87,14 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | Undamped heave resonance at √(C33/(m + A33)) | 1-DOF oscillator | 0.001 % |
 | Nonlinear time domain vs linear RAO, small regular waves (A = 2 mm) | solver consistency | ≤ 1.3 % |
 | 20 min irregular SS3 beam sea: σ time domain vs \|RAO\|²·S | spectral theory | heave 1.7 %, roll 7.2 % |
+| Floating hemisphere heave exciting force (FK + correction) vs Haskind, ka ≤ 0.6 | Hulme 1982 | ≤ 0.9 % |
+| Floating hemisphere heave RAO with Hulme A₃₃(ω), B₃₃(ω), ka ≤ 0.7 | Hulme 1982 | ≤ 2.8 % |
+| Deep-draft spar sway force and RAO (FK + correction), ka ≤ 0.7; FK alone = ½ (C_m 1 vs 2) | MacCamy & Fuchs 1954 | ≤ 4.6 % |
+| Time domain vs RAO with the diffraction correction on (sphere, 2 mm waves) | solver consistency | ≤ 0.5 % |
+
+### RAO trade study
+
+[docs/rao-trade-study.md](docs/rao-trade-study.md) compares the tool's RAOs with two literature benchmarks across modelling variants: tool defaults, with and without the diffraction correction, calibrated constant coefficients, and exact frequency-dependent coefficients. It lists every frequency point and summarises where the method can be trusted and which defaults it justified.
 
 At A = 2 cm the near-resonance roll differs from the linear RAO by about 5 %. That's the genuine moving-waterline nonlinearity, and it shrinks to about 1 % at A = 2 mm, so the comparison is made in the linear limit.
 

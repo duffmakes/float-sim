@@ -8,6 +8,7 @@ self.onmessage = (e) => {
   const sim = new WaveSim({
     hull: { verts: new Float64Array(c.verts), idx: new Uint32Array(c.idx) }, mass: c.mass, inertiaG: c.IGb, rho: c.rho,
     R0: c.R0, z0: c.z0, field, A: c.A, Bd: c.Bd, dt: c.dt, ramp: c.ramp, vanishDeg: c.vanishDeg,
+    volQ: c.volQ ? new Float64Array(c.volQ) : null, diffModes: c.diffModes,
   });
   const total = c.ramp + c.duration;
   const chunk = Math.max(50, Math.round(2 / c.dt));

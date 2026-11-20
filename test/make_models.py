@@ -17,7 +17,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stepgen import StepWriter, box, prism_x, transform, Cylinder, check_topology  # noqa: E402
+from stepgen import StepWriter, box, prism_x, transform, Cylinder, Sphere, check_topology  # noqa: E402
+import literature as LIT  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'models')
@@ -31,6 +32,8 @@ def mm(solid):
     """scale an SI solid to millimetres for writing"""
     if isinstance(solid, Cylinder):
         return Cylinder([c * MM for c in solid.base], solid.axis, solid.ref, solid.r * MM, solid.h * MM)
+    if isinstance(solid, Sphere):
+        return Sphere([c * MM for c in solid.c], solid.r * MM, solid.axis, solid.ref)
     return transform(solid, [[MM, 0, 0], [0, MM, 0], [0, 0, MM]], [0, 0, 0])
 
 
@@ -218,10 +221,43 @@ for beta in (180.0, 90.0, 135.0):
         kx, ky = k * math.cos(math.radians(beta)), k * math.sin(math.radians(beta))
         fk.append(dict(beta=beta, w=w, F3=rho_b * g * math.exp(-k * Tb) * Lb * Bb * abs(sinc(kx * Lb / 2)) * abs(sinc(ky * Bb / 2))))
 wave['box_fk'] = dict(case='box_fresh', ref='|F3|/A = ρg e^(−kT) L B |sinc(kₓL/2) sinc(k_y B/2)| (Faltinsen §3)', points=fk)
-# Undamped heave natural frequency with the default strip-theory added mass A33 = ρπB²L/8
-A33 = rho_b * math.pi * Bb ** 2 / 8 * Lb
+# Undamped heave natural frequency with the default added mass: floating elliptic disk of the waterplane's
+# area and aspect ratio, A33 = (2/3)πρ a b² / E(e)  (Lamb §373). E(e) by series for the check value.
+def ellipE(e, n=4000):
+    return sum(math.sqrt(1 - (e * math.sin(t)) ** 2) for t in ((i + 0.5) * (math.pi / 2) / n for i in range(n))) * (math.pi / 2) / n
+_r = Bb / Lb
+_a = math.sqrt(Lb * Bb / (math.pi * _r)); _b = _a * _r
+A33 = (2 / 3) * math.pi * rho_b * _a * _b * _b / ellipE(math.sqrt(1 - _r * _r))
 wave['box_heave_wn'] = dict(case='box_fresh', A33=A33, wn=math.sqrt(rho_b * g * Lb * Bb / (3200.0 + A33)),
-                            ref='ω_n = √(C33/(m + A33)), C33 = ρg·Awp, A33 = ρπB²L/8')
+                            ref='ω_n = √(C33/(m + A33)), C33 = ρg·Awp, A33 = floating elliptic disk (2/3)πρab²/E(e) of equal area')
+
+# ---------------------------------------------------------------- literature RAO benchmarks (trade study)
+# (1) Floating hemisphere, heave: exact linear potential theory from Hulme (1982) + Haskind.
+#     A sphere floating half-submerged has the same wetted geometry as a hemisphere.
+a_h = 1.0
+solids['sphere_r1'] = Sphere([0, 0, a_h], a_h, axis=(1, 0, 0), ref=(0, 1, 0))
+V_h = 2 / 3 * math.pi * a_h ** 3
+hemi = []
+for ka, a33, b33 in LIT.HULME:
+    rao, xnorm = LIT.hemisphere_heave(ka, a33, b33, a_h)
+    hemi.append(dict(ka=ka, w=math.sqrt(9.80665 * ka / a_h), a33=a33, b33=b33, rao=rao, X_norm=xnorm))
+# equivalent constant damping ratio at the heave natural frequency (for the "calibrated" trade-study variant)
+wave['lit_hemisphere'] = dict(
+    file='sphere_r1.step', a=a_h, rho=FRESH, mass=FRESH * V_h, cog=[0, 0, a_h - 0.3], euler=[0, 0, 0],
+    a33_zero=LIT.HULME_A33_ZERO, points=hemi,
+    ref='Hulme (1982) J. Fluid Mech. 121; exciting force from the Haskind relation |X3|² = 2ρg³B33/ω³ (Newman 1962)')
+# (2) Deep-draft spar, sway: MacCamy & Fuchs (1954) diffraction force integrated over the draft,
+#     freely floating with strip-theory added mass Ca = 1.
+a_s, T_s, H_s = 0.5, 6.0, 12.0
+solids['spar'] = Cylinder([0, 0, 0], [0, 0, 1], [1, 0, 0], a_s, H_s)
+spar = []
+for ka in (0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0):
+    F, rao = LIT.spar_sway(ka, a_s, T_s)
+    spar.append(dict(ka=ka, w=math.sqrt(9.80665 * ka / a_s), F=F, rao=rao, Cm_eff=F / (FRESH * math.pi * a_s ** 2 * 9.80665 * (ka / a_s) * (1 - math.exp(-ka / a_s * T_s)) / (ka / a_s))))
+wave['lit_spar'] = dict(
+    file='spar.step', a=a_s, T=T_s, rho=FRESH, mass=FRESH * math.pi * a_s ** 2 * T_s, cog=[0, 0, 1.0], euler=[0, 0, 0],
+    points=spar, A22_exact=FRESH * math.pi * a_s ** 2 * T_s,
+    ref='MacCamy & Fuchs (1954) diffraction force, deep water, integrated over the draft; sway RAO with Ca = 1')
 
 # ---------------------------------------------------------------- write
 if __name__ == '__main__':
