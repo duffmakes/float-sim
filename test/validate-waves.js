@@ -1,6 +1,6 @@
 // Sea-state / spectrum / Froude–Krylov / RAO validation, run by validate-core.js.
 import { mat3, transformTris, solveWaterline, hydrostatics, inertiaAbout, massProperties, submerged } from '../js/physics.js';
-import { pmSpectrum, jonswapSpectrum, spectrumFn, spectralMoments, WaveField, SEA_STATES, pmFullyDevelopedTp, G as G0 } from '../js/waves.js';
+import { pmSpectrum, jonswapSpectrum, spectrumFn, spectralMoments, WaveField, SEA_STATES, pmFullyDevelopedTp, G as G0, besselI1, besselK1, ursellR2, stokesDriftMean } from '../js/waves.js';
 import { refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoAt, spectralResponse } from '../js/hydro.js';
 import { WaveSim, seriesStats } from '../js/sim.js';
 import { hemisphereStudy, sparStudy } from './trade-study.js';
@@ -258,6 +258,42 @@ export async function runWaveValidation({ exp, getTris, chkFactory }) {
       chk(`ω=${w}: heave TD vs FD (correction on)`, fitAmplitude(sim.rec.t, sim.rec.heave, w, t0) / A, Math.hypot(...lin.xi[2]), 0.03);
     }
     out.push({ id: 'wave_td_vs_fd_diffraction', title: 'Time domain vs RAO with the long-wave diffraction correction (sphere, A = 2 mm)', ref: 'both solvers use A_jj × volume-averaged incident acceleration', rows });
+  }
+  // 10 — wave drift: Stokes drift, Ursell reflection, mean drift force; the simulator's drift speed and station keeping
+  {
+    const { rows, chk } = chkFactory();
+    // Abramowitz & Stegun Table 9.8 values
+    chk('I₁(1) (A&S table 9.8)', besselI1(1), 0.5651591, 1e-6);
+    chk('K₁(1) (A&S table 9.8)', besselK1(1), 0.6019072, 1e-6);
+    chk('I₁(5) (A&S table 9.8)', besselI1(5), 24.33564, 1e-6);
+    chk('K₁(5) (A&S table 9.8)', besselK1(5), 0.004044613, 1e-5);
+    chk('Ursell R², long waves → π²(kd)⁴/4 (leading term, kd = 0.02)', ursellR2(0.02), Math.PI ** 2 * 0.02 ** 4 / 4, 0.01);
+    chk('Ursell R², short waves → 1 (kd = 3)', ursellR2(3), 1, 1e-4);
+    const w = 2 * Math.PI / 5, k = w * w / G0;
+    chk('surface Stokes drift ω k a² (a = 0.5 m, T = 5 s)', stokesDriftMean(w, k, 0.5, 0), w * k * 0.25, 1e-12);
+    chk('depth-mean Stokes drift = ∫₋d⁰ ωka²e^{2kz}dz / d', stokesDriftMean(w, k, 0.5, 2), w * k * 0.25 * (1 - Math.exp(-4 * k)) / (4 * k), 1e-12);
+    const dB = setupBody(tris, box);
+    const mk = (field, drift, T) => new WaveSim({ hull: dB.hull, mass: box.mass, inertiaG: dB.IGb, rho: box.rho, R0: dB.R, z0: -dB.zw, field,
+      A: dB.coeffs.A, Bd: dB.model.Bd, dt: Math.min(T / 60, 0.05), ramp: 2 * T, drift });
+    const meanV = (sim, t0) => { const r = sim.rec, i = r.t.findIndex((t) => t >= t0), n = r.t.length - 1; return (r.y[n] - r.y[i]) / (r.t[n] - r.t[i]); };
+    for (const [H, T] of [[1, 4], [0.3, 2]]) {
+      const sim = mk(WaveField.fromParams({ mode: 'regular', H, T, heading: 90 }), { on: true, Cd: 1 }, T);
+      sim.advance(300, 1e9);
+      const sd = sim.steadyDrift(Math.PI / 2);
+      chk(`drift on, H ${H} m T ${T} s beam: mean drift speed vs steady balance`, meanV(sim, 150), sd.v, 0.08);
+    }
+    {
+      const sim = mk(WaveField.fromParams({ mode: 'regular', H: 1, T: 4, heading: 90 }), { on: false, holdPeriod: 120 }, 4);
+      sim.advance(300, 1e9);
+      chk('drift off: stays on station (|offset| < 1 m after 300 s)', Math.hypot(sim.p[0], sim.p[1]) < 1 ? 1 : 0, 1, 0, 0);
+    }
+    // the low-pass removal of the Froude–Krylov mean force leaves wave-frequency sway unchanged
+    {
+      const T = 3, w3 = 2 * Math.PI / T, A3 = 0.05;
+      const amp = (drift) => { const sim = mk(WaveField.regular(A3, w3, 90), drift, T); sim.advance(40 * T, 1e9); return fitAmplitude(sim.rec.t, sim.rec.y, w3, sim.t - 15 * T); };
+      chk('sway amplitude with drift on = without drift model (A = 5 cm, T = 3 s)', amp({ on: true, Cd: 1 }), amp(null), 0.02);
+    }
+    out.push({ id: 'wave_drift', title: 'Wave drift: Stokes drift, Ursell reflection, drift speed and station keeping (4×2 m box)', ref: 'Stokes (1847) u_s = ωka²e^{2kz}; Ursell (1947) barrier reflection; Longuet-Higgins (1977) F = ½ρga²R² per unit width; Abramowitz & Stegun §9.8', rows });
   }
   return out;
 }

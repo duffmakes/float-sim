@@ -8,7 +8,7 @@ self.onmessage = (e) => {
   const sim = new WaveSim({
     hull: { verts: new Float64Array(c.verts), idx: new Uint32Array(c.idx) }, mass: c.mass, inertiaG: c.IGb, rho: c.rho,
     R0: c.R0, z0: c.z0, field, A: c.A, Bd: c.Bd, dt: c.dt, ramp: c.ramp, vanishDeg: c.vanishDeg,
-    volQ: c.volQ ? new Float64Array(c.volQ) : null, diffModes: c.diffModes,
+    volQ: c.volQ ? new Float64Array(c.volQ) : null, diffModes: c.diffModes, drift: c.drift || null,
   });
   const total = c.ramp + c.duration;
   const chunk = Math.max(50, Math.round(2 / c.dt));
@@ -29,6 +29,13 @@ self.onmessage = (e) => {
       for (let i = 0; i < r.t.length; i++) if (r.t[i] >= t0) { lo = Math.min(lo, r[key][i]); hi = Math.max(hi, r[key][i]); }
       return [key, (hi - lo) / 2];
     })) : null,
+    drift: (() => {
+      if (!c.drift) return null;
+      const i0 = Math.max(0, r.t.findIndex((t) => t >= c.ramp)), n = r.t.length - 1, T = r.t[n] - r.t[i0];
+      const dx = r.x[n] - r.x[i0], dy = r.y[n] - r.y[i0];
+      let maxOffset = 0; for (let i = 0; i <= n; i++) maxOffset = Math.max(maxOffset, Math.hypot(r.x[i], r.y[i]));
+      return { on: c.drift.on, speed: T > 0 ? Math.hypot(dx, dy) / T : 0, dir: ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360, dist: Math.hypot(dx, dy), maxOffset };
+    })(),
     ...sim.stats, simulated: sim.t - c.ramp, dt: c.dt,
   };
   // down-sample for plotting (≤ 4000 points)
