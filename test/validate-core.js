@@ -7,6 +7,7 @@ import {
 } from '../js/physics.js';
 import { FloatSim } from '../js/sim.js';
 import { runWaveValidation } from './validate-waves.js';
+import { runDropValidation } from './validate-drop.js';
 
 export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, vendorDir, onCase = () => {}, waves = true }) {
   const results = [];
@@ -114,7 +115,7 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
     };
     try {
       const t1 = performance.now();
-      for (const c of await runWaveValidation({ exp, getTris, chkFactory })) {
+      for (const c of [...await runWaveValidation({ exp, getTris, chkFactory }), ...await runDropValidation({ getTris, chkFactory })]) {
         c.meta = c.meta || '';
         results.push(c); onCase(c, c.rows, c.meta);
       }
