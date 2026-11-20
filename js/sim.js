@@ -1,6 +1,7 @@
 // Rigid-body free-float simulation: weight at G, buoyancy at B, linear + angular damping.
 import { submerged, transformTris, quatToMat3, mat3ToQuat, mat3, G0 } from './physics.js';
 import { waveForces } from './hydro.js';
+import { ursellR2, stokesDriftMean } from './waves.js';
 
 export class FloatSim {
   // bodyTris: geometry relative to G in the body (model) frame, metres.
@@ -80,7 +81,12 @@ export class WaveSim {
   // volQ: optional [x,y,z,w] volume quadrature of the mean submerged volume (body frame, relative to G; see
   // hydro.volumeQuadrature). When given, adds A_jj × volume-averaged incident acceleration (long-wave
   // diffraction correction, as in hydro.fkExcitation) to surge, sway and heave.
-  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0, volQ = null, diffModes = [true, true, true] }) {
+  // drift: null (free-floating, first-order Froude–Krylov only, as before) or
+  //   { on: true, Cd }      wave drift: Stokes-drift current + reflection mean drift force, quadratic drag on the
+  //                          horizontal velocity relative to the drift current (see waves.js for the references)
+  //   { on: false, holdPeriod }  no drift: a soft horizontal spring (natural period holdPeriod, critically damped)
+  //                          keeps the body on station without touching wave-frequency surge and sway
+  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0, volQ = null, diffModes = [true, true, true], drift = null }) {
     this.hull = hull; this.m = mass; this.rho = rho; this.g = g; this.field = field;
     this.world = new Float64Array(hull.verts.length);
     this.etaBuf = new Float64Array(hull.verts.length / 3); this.pBuf = new Float64Array(hull.verts.length / 3);
@@ -99,7 +105,34 @@ export class WaveSim {
     for (let i = 0; i < hull.verts.length; i += 3) vz.push(R0[6] * hull.verts[i] + R0[7] * hull.verts[i + 1] + R0[8] * hull.verts[i + 2]);
     const zmax = Math.max(...vz), zmin = Math.min(...vz), h = zmax - zmin;
     this.deck = vz.map((z, i) => (z >= zmax - 0.03 * h ? i : -1)).filter((i) => i >= 0);
-    this.rec = { t: [], heave: [], roll: [], pitch: [], yaw: [], eta: [], wet: [] };
+    this.rec = { t: [], heave: [], roll: [], pitch: [], yaw: [], eta: [], wet: [], x: [], y: [] };
+    this.drift = drift;
+    if (drift) {
+      const f = field;
+      this.dr = { ux: 0, uy: 0, Fx: 0, Fy: 0, d: 0, widths: new Float64Array(36), next: 0, comps: [], lp1: [0, 0], lp2: [0, 0] };
+      let sa = 0, saw = 0;
+      for (let i = 0; i < f.n; i++) {
+        const k = f.k[i];
+        this.dr.comps.push({ w: f.w[i], k, a: f.a[i], ex: f.kx[i] / k, ey: f.ky[i] / k });
+        sa += f.a[i] ** 2; saw += f.a[i] ** 2 * f.w[i];
+      }
+      // low-pass time constant (each of two cascaded stages): 2 × the energy-mean wave period
+      this.dr.tau = drift.tau ?? (saw > 0 ? 2 * 2 * Math.PI * sa / saw : 10);
+      // equilibrium submerged geometry: draft below the mean surface and waterline-level widths (every 10°)
+      const V = hull.verts, xs = [], ys = [];
+      let zmin = 0;
+      for (let i = 0; i < V.length; i += 3) {
+        const z = R0[6] * V[i] + R0[7] * V[i + 1] + R0[8] * V[i + 2] + z0;
+        if (z < 0) { xs.push(R0[0] * V[i] + R0[1] * V[i + 1] + R0[2] * V[i + 2]); ys.push(R0[3] * V[i] + R0[4] * V[i + 1] + R0[5] * V[i + 2]); zmin = Math.min(zmin, z); }
+      }
+      this.dr.d = -zmin;
+      for (let j = 0; j < 36; j++) {
+        const th = j * Math.PI / 18, px = -Math.sin(th), py = Math.cos(th);   // perpendicular to direction θ
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < xs.length; i++) { const v = xs[i] * px + ys[i] * py; if (v < lo) lo = v; if (v > hi) hi = v; }
+        this.dr.widths[j] = xs.length ? hi - lo : 0;
+      }
+    }
     this.stats = { greenWater: 0, greenSteps: 0, steps: 0, capsized: false, capsizeT: null, maxRoll: 0, maxPitch: 0 };
     this.last = null;
   }
@@ -119,6 +152,7 @@ export class WaveSim {
     const wf = waveForces(this.world, idx, this.field, this.t, this.rho, this.p, { etaBuf: this.etaBuf, pBuf: this.pBuf, segments: !record });
     const { A, Bd, m } = this;
     const F = [wf.F[0] - Bd[0] * this.v[0], wf.F[1] - Bd[1] * this.v[1], wf.F[2] - m * this.g - Bd[2] * this.v[2]];
+    if (this.drift) this.driftForces(F, wf.F, dt);
     if (this.volQ && this.field.n) {
       const q = this.volQ, sum = [0, 0, 0];
       for (let o = 0; o < q.length; o += 4) {
@@ -162,7 +196,73 @@ export class WaveSim {
       const r = this.rec;
       r.t.push(this.t); r.heave.push(this.p[2] - this.z0ref()); r.roll.push(e[0]); r.pitch.push(e[1]); r.yaw.push(e[2]);
       r.eta.push(this.field.n ? this.field.eta(this.p[0], this.p[1], this.t) : 0); r.wet.push(wf.wetArea);
+      r.x.push(this.p[0]); r.y.push(this.p[1]);
     }
+  }
+
+  // Drift current and mean drift force for the current yaw (refreshed every 0.25 s; geometry from equilibrium).
+  updateDrift(yaw) {
+    const dr = this.dr;
+    let ux = 0, uy = 0, Fx = 0, Fy = 0;
+    for (const c of dr.comps) {
+      const us = stokesDriftMean(c.w, c.k, c.a, dr.d);
+      ux += us * c.ex; uy += us * c.ey;
+      const Fm = 0.5 * this.rho * this.g * c.a * c.a * ursellR2(c.k * dr.d) * this.widthAt(Math.atan2(c.ey, c.ex) - yaw);
+      Fx += Fm * c.ex; Fy += Fm * c.ey;
+    }
+    Object.assign(dr, { ux, uy, Fx, Fy });
+  }
+  // waterline width across direction theta (equilibrium axes), interpolated from the 10° table
+  widthAt(theta) {
+    const w = this.dr.widths, u = ((theta / (Math.PI / 18)) % 36 + 36) % 36, j = Math.floor(u), fr = u - j;
+    return w[j] * (1 - fr) + w[(j + 1) % 36] * fr;
+  }
+  driftForces(F, Ffk, dt) {
+    const D = this.drift, dr = this.dr;
+    // The pressure integration over the instantaneous wetted hull also yields a slowly varying horizontal force.
+    // With Froude–Krylov loads only (no diffracted or radiated waves) that mean force is not physical, so it is
+    // removed with two cascaded low-pass stages; the oscillating wave-frequency force passes untouched (< 1 % leak).
+    const al = Math.min(1, dt / dr.tau);
+    for (let k = 0; k < 2; k++) {
+      dr.lp1[k] += al * (Ffk[k] - dr.lp1[k]);
+      dr.lp2[k] += al * (dr.lp1[k] - dr.lp2[k]);
+      F[k] -= dr.lp2[k];
+    }
+    const m0 = this.m + this.A[0], m1 = this.m + this.A[1];
+    if (!D.on) {
+      // station keeping: x'' + 2ω_h x' + ω_h² x = 0 on the horizontal position, ω_h = 2π / holdPeriod
+      const wh = 2 * Math.PI / (D.holdPeriod || 120);
+      F[0] -= m0 * (wh * wh * this.p[0] + 2 * wh * this.v[0]);
+      F[1] -= m1 * (wh * wh * this.p[1] + 2 * wh * this.v[1]);
+      dr.uNow = [0, 0];
+      return;
+    }
+    if (this.t >= dr.next) {
+      const R = quatToMat3(this.q), Rr = mat3.mul(R, mat3.transpose(this.R0));
+      this.updateDrift(Math.atan2(Rr[3], Rr[0])); dr.next = this.t + 0.25;
+    }
+    const s2 = this.field.scale * this.field.scale;   // second-order: scales with amplitude²
+    const ux = dr.ux * s2, uy = dr.uy * s2;
+    dr.uNow = [ux, uy];
+    // linear surge/sway damping acts on the velocity relative to the drift current (not on riding the current)
+    F[0] += this.Bd[0] * ux; F[1] += this.Bd[1] * uy;
+    const rx = this.v[0] - ux, ry = this.v[1] - uy, sp = Math.hypot(rx, ry);
+    if (sp > 0) {
+      const R = quatToMat3(this.q), Rr = mat3.mul(R, mat3.transpose(this.R0));
+      const area = this.widthAt(Math.atan2(ry, rx) - Math.atan2(Rr[3], Rr[0])) * dr.d;   // submerged projected area ≈ width × draft
+      const q = 0.5 * this.rho * (D.Cd ?? 1) * area * sp;
+      F[0] -= q * rx; F[1] -= q * ry;
+    }
+    F[0] += dr.Fx * s2; F[1] += dr.Fy * s2;
+  }
+  // Steady drift speed of the model (closed form check): solve B(v−u) + ½ρC_dA|v−u|(v−u) = F along the wave direction.
+  steadyDrift(dirRad) {
+    const dr = this.dr; this.updateDrift(0);
+    const u = dr.ux * Math.cos(dirRad) + dr.uy * Math.sin(dirRad), F = dr.Fx * Math.cos(dirRad) + dr.Fy * Math.sin(dirRad);
+    const B = Math.abs(Math.cos(dirRad)) > 0.7 ? this.Bd[0] : this.Bd[1];
+    const c = 0.5 * this.rho * (this.drift.Cd ?? 1) * this.widthAt(dirRad) * dr.d;
+    const vr = c > 0 ? (-B + Math.sqrt(B * B + 4 * c * F)) / (2 * c) : F / B;
+    return { u, F, vRel: vr, v: u + vr };
   }
 
   z0ref() { if (this.z0 === undefined) this.z0 = this.p[2]; return this.z0; }

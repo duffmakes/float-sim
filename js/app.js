@@ -119,10 +119,13 @@ async function loadFile(file) {
       parts = [soupFromIndexed(geo.attributes.position.array, null)];
     } else {
       parts = await readCad(buf, ext, $('quality').value);
-      $('units').value = '0.001';  // STEP import is normalised to millimetres
       S.lastCad = file;
+      // the units the user last picked (mm by default); demos switch the menu to metres without counting as a choice
+      $('units').value = S.userUnits || '0.001'; S.dispScale = unitScale(); $('tMode').dispatchEvent(new Event('change'));
     }
-    setModel(file.name, concat(parts), parts.length);
+    // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known
+    // and the units menu only sets display units. STL has no units: the menu then gives the file's units.
+    setModel(file.name, concat(parts), parts.length, { rawScale: ext === 'stl' ? null : 0.001 });
   } catch (e) {
     console.error(e);
     alert(e.message || String(e));
@@ -132,7 +135,8 @@ async function loadFile(file) {
 function busy(msg) { $('busy').textContent = msg || ''; $('busy').classList.toggle('hidden', !msg); }
 
 function setModel(name, raw, nParts = 1, opts = {}) {
-  S.model = { name, raw, nParts };
+  S.model = { name, raw, nParts, rawScale: opts.rawScale ?? null };
+  unitsHint();
   stopSim(); S.sim = null; S.preview = null; hideBanner();
   $('simInfo').textContent = '';
   if (!opts.keepAttitude) setEuler([0, 0, 0]);   // a new body starts upright
@@ -155,7 +159,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
 
 function rescaleModel() {
   const M = S.model; if (!M) return;
-  const k = unitScale();
+  const k = M.rawScale ?? unitScale();
   M.tris = M.raw.map((v) => v * k);
   M.mp = massProperties(M.tris);
   const bb = bbox(M.tris);
@@ -233,11 +237,30 @@ $('quarterX').onclick = () => quarter(mat3.rotX(Math.PI / 2));
 $('quarterY').onclick = () => quarter(mat3.rotY(Math.PI / 2));
 
 for (const id of ['mass', 'cgx', 'cgy', 'cgz']) $(id).addEventListener('change', () => { stopSim(); S.sim = null; S.preview = null; update(); });
+// Units menu. For a model of known size (STEP, demos) it is the display/input unit: the geometry stays the same and
+// every length input is converted. For an STL it is the file's unit: the model is rescaled and the CoG numbers keep
+// their place on the model.
+S.dispScale = unitScale();
+function unitsHint() {
+  const known = S.model && S.model.rawScale != null;
+  $('unitsHint').textContent = !S.model ? '' : known
+    ? 'This model has known units, so this setting only changes how lengths are shown and entered. The model keeps its size.'
+    : 'STL files have no units: pick the units the file was drawn in. Changing this rescales the model.';
+}
 $('units').addEventListener('change', () => {
-  if (!S.model) return;
-  // keep CoG at the same place on the model (numbers stay in model units)
-  rescaleModel(); frameCamera(); update();
+  const prev = S.dispScale, now = unitScale();
+  S.dispScale = now; S.userUnits = $('units').value;
   $('tMode').dispatchEvent(new Event('change'));
+  if (!S.model) return;
+  if (S.model.rawScale != null) {
+    const conv = (id) => { const v = parseFloat($(id).value); if (Number.isFinite(v)) $(id).value = +(v * prev / now).toPrecision(6); };
+    ['cgx', 'cgy', 'cgz', 'dzH'].forEach(conv);
+    if ($('tMode').value !== 'frac') conv('tVal');
+    update();
+  } else {
+    rescaleModel(); frameCamera(); update();
+  }
+  unitsHint();
 });
 $('useCentroid').onclick = () => { if (S.model) { setCog(S.model.mp.centroid); onAttitude(); } };
 $('quality').addEventListener('change', async () => {
@@ -289,7 +312,8 @@ function update() {
   const avgRho = m / S.model.mp.volume;
   mi.innerHTML = `Average density <b>${fmt(avgRho, 1)} kg/m³</b> · ${avgRho > rho
     ? '<span class="bad">denser than water — it will sink</span>'
-    : `floats with <b>${fmt(100 * Vneed / S.model.mp.volume, 1)}%</b> of its volume submerged`}`;
+    : `floats with <b>${fmt(100 * Vneed / S.model.mp.volume, 1)}%</b> of its volume submerged`}${avgRho <= rho && Vneed < 0.01 * S.model.mp.volume
+    ? `<br><span class="warn">⚠ Under 1 % submerged: the body barely touches the water. Check the mass and the model units (size ${S.model.size.map((x) => fmt(x / unitScale(), 3)).join(' × ')} ${unitName()}).</span>` : ''}`;
 
   if (!S.preview && !S.simRunning && !(sea && sea.running) && !(drop && drop.placed)) placeStatic(R, H);
   renderStats(H, S.preview ? 'preview' : 'static');
@@ -610,7 +634,11 @@ function makeSim() {
 function startSim() {
   if (!S.model || getMass() <= 0) return;
   S.preview = null; hideBanner();
-  if (!S.sim) S.sim = makeSim();
+  if (!S.sim) {
+    S.sim = makeSim();
+    const H = S.last.H;
+    S.simFromRest = H.status !== 'sinks' && Math.hypot(...H.offset) < S.model.diag * 1e-4;
+  }
   S.simRunning = true; $('simRun').textContent = '❚❚ Pause';
 }
 function stopSim() {
@@ -648,7 +676,8 @@ function simFrame(dtReal) {
   const settled = sim.t > 1 && ke < 2e-4;
   $('simInfo').innerHTML = `t = <b>${fmt(sim.t, 2)} s</b> · roll <b>${fmt(e[0], 1)}°</b> pitch <b>${fmt(e[1], 1)}°</b> yaw <b>${fmt(e[2], 1)}°</b><br>
     draft <b>${L(H.draft)}</b> · GM<sub>T</sub> <b>${L(H.GMt)}</b> · B–G offset <b>${L(Math.hypot(...H.offset))}</b>
-    ${settled ? '<br><span class="good">Settled — this is a stable resting attitude.</span>' : ''}`;
+    ${settled ? '<br><span class="good">Settled — this is a stable resting attitude.</span>' : ''}
+    ${settled && S.simFromRest ? '<br><span class="hint">It started at rest in this attitude, so there was nothing to move. Tilt it in section 4 (Initial orientation) to watch it right itself.</span>' : ''}`;
   if (S.settling && !settled && sim.t > 900) {
     stopSim(); $('simInfo').innerHTML += '<br><span class="warn">Did not settle within 900 s of simulated time — try more damping.</span>';
   }
@@ -677,8 +706,8 @@ function loadDemo(kind) {
     mass = 1500; name = 'Barge hull 4×1.6×0.8 m (demo)';
   }
   const g2 = geo.index ? geo.toNonIndexed() : geo;
-  $('units').value = '1';
-  setModel(name, soupFromIndexed(g2.attributes.position.array, null), 1, { mass });
+  $('units').value = '1'; S.dispScale = 1; $('tMode').dispatchEvent(new Event('change'));
+  setModel(name, soupFromIndexed(g2.attributes.position.array, null), 1, { mass, rawScale: 1 });
   if (kind === 'hull') { const c = S.model.mp.centroid; setCog([c[0], c[1], 0.3]); update(); }
 }
 
@@ -723,6 +752,7 @@ sea = initSeakeeping({
     camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
   },
   recenter: () => frameCamera(),
+  viewCenter: () => [controls.target.x, controls.target.y],
 });
 drop = initDropTest({
   THREE, scene, mG, mB,
