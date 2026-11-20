@@ -6,8 +6,9 @@ import {
   mat3ToQuat, quatToMat3,
 } from '../js/physics.js';
 import { FloatSim } from '../js/sim.js';
+import { runWaveValidation } from './validate-waves.js';
 
-export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, vendorDir, onCase = () => {} }) {
+export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, vendorDir, onCase = () => {}, waves = true }) {
   const results = [];
   const exp = await fetchJSON('models/expected.json');
   const cache = {};
@@ -95,5 +96,34 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
     results.push({ id: c.id, title: c.title, rows, meta });
     onCase(c, rows, meta);
   }
-  return { pass, total, quality, cases: exp.cases.length, curvedTol: { coarse: 0.03, normal: 0.005, fine: 0.001 }[quality], seconds: (performance.now() - t0) / 1000, results };
+  if (waves) {
+    const getTris = async (file) => {
+      if (!cache[file]) cache[file] = concat(await readCad(await fetchBytes(`models/${file}`), 'step', quality, vendorDir)).map((v) => v * 0.001);
+      return cache[file];
+    };
+    const chkFactory = () => {
+      const rows = [];
+      const chk = (label, got, want, rel = 1e-6, absFloor = 0) => {
+        const err = Math.abs(got - want);
+        const ok = err <= Math.max(rel * Math.abs(want), absFloor);
+        rows.push({ label, got, want, err, rel: want !== 0 ? err / Math.abs(want) : null, ok });
+        total++; if (ok) pass++;
+      };
+      return { rows, chk };
+    };
+    try {
+      const t1 = performance.now();
+      for (const c of await runWaveValidation({ exp, getTris, chkFactory })) {
+        c.meta = c.meta || '';
+        results.push(c); onCase(c, c.rows, c.meta);
+      }
+      results.waveSeconds = (performance.now() - t1) / 1000;
+    } catch (err) {
+      console.error(err);
+      const rows = [{ label: 'ERROR', got: String(err.stack || err), want: '', ok: false }]; total++;
+      const c = { id: 'wave_error', title: 'Wave validation crashed', ref: '', rows };
+      results.push(c); onCase(c, rows, '');
+    }
+  }
+  return { pass, total, quality, cases: results.length, curvedTol: { coarse: 0.03, normal: 0.005, fine: 0.001 }[quality], seconds: (performance.now() - t0) / 1000, results };
 }

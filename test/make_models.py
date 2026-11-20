@@ -189,6 +189,40 @@ cases.append(dict(
     rho=FRESH, mass=9000.0, cog=[L / 2, 0, KG], euler=[0, 0, 0],
     expect=dict(status='sinks')))
 
+# ---------------------------------------------------------------- wave / seakeeping closed forms
+# Spectra [DNV-RP-C205 §3.5.5]. For two-parameter PM the moments are exact:
+#   m_n = Hs²/16 · (5/4)^(n/4) · ωp^n · Γ(1 − n/4)  ⇒  T1/Tp = 1/((5/4)^¼ Γ(¾)),  Tz/Tp = 1/√((5/4)^½ Γ(½))
+# JONSWAP period ratios from the DNV regressions (eq. 3.5.5.4), normalisation A_γ = 1 − 0.287 ln γ (≈ 1 % accurate).
+Hs_t, Tp_t = 2.0, 8.0
+gam = 3.3
+wave = dict(
+    spectra=[
+        dict(id='pm', type='pm', Hs=Hs_t, Tp=Tp_t, gamma=1, m0=Hs_t ** 2 / 16, tol=1e-3,
+             T1=Tp_t / ((1.25 ** 0.25) * math.gamma(0.75)), Tz=Tp_t / math.sqrt(1.25 ** 0.5 * math.gamma(0.5)),
+             ref='PM exact moments: T1 = 0.7718·Tp, Tz = 0.7104·Tp'),
+        dict(id='jonswap', type='jonswap', Hs=Hs_t, Tp=Tp_t, gamma=gam, m0=Hs_t ** 2 / 16, tol=0.02,
+             T1=Tp_t * (0.7303 + 0.04936 * gam - 0.006556 * gam ** 2 + 0.0002361 * gam ** 3),
+             Tz=Tp_t * (0.6673 + 0.05037 * gam - 0.006230 * gam ** 2 + 0.0003341 * gam ** 3),
+             ref='DNV-RP-C205 eq. 3.5.5.4 regressions; m0 = Hs²/16 to ~1 % with A_γ'),
+    ],
+)
+# Froude–Krylov heave force on a wall-sided box (only the flat bottom has n_z ≠ 0) [Faltinsen §3]:
+#   |F3| / A = ρ g e^{−kT} L B · |sinc(k_x L/2)| · |sinc(k_y B/2)|,  deep water k = ω²/g
+Lb, Bb, Tb, rho_b = 4.0, 2.0, 0.4, FRESH
+g = 9.80665
+sinc = lambda x: 1.0 if abs(x) < 1e-12 else math.sin(x) / x
+fk = []
+for beta in (180.0, 90.0, 135.0):
+    for w in (0.6, 1.2, 2.0, 3.0):
+        k = w * w / g
+        kx, ky = k * math.cos(math.radians(beta)), k * math.sin(math.radians(beta))
+        fk.append(dict(beta=beta, w=w, F3=rho_b * g * math.exp(-k * Tb) * Lb * Bb * abs(sinc(kx * Lb / 2)) * abs(sinc(ky * Bb / 2))))
+wave['box_fk'] = dict(case='box_fresh', ref='|F3|/A = ρg e^(−kT) L B |sinc(kₓL/2) sinc(k_y B/2)| (Faltinsen §3)', points=fk)
+# Undamped heave natural frequency with the default strip-theory added mass A33 = ρπB²L/8
+A33 = rho_b * math.pi * Bb ** 2 / 8 * Lb
+wave['box_heave_wn'] = dict(case='box_fresh', A33=A33, wn=math.sqrt(rho_b * g * Lb * Bb / (3200.0 + A33)),
+                            ref='ω_n = √(C33/(m + A33)), C33 = ρg·Awp, A33 = ρπB²L/8')
+
 # ---------------------------------------------------------------- write
 if __name__ == '__main__':
     w = StepWriter()
@@ -200,5 +234,5 @@ if __name__ == '__main__':
         if not ok:
             sys.exit(1)
     with open(os.path.join(OUT, 'expected.json'), 'w') as fh:
-        json.dump(dict(units_in_file='mm', g=9.80665, cases=cases), fh, indent=1)
+        json.dump(dict(units_in_file='mm', g=9.80665, cases=cases, wave=wave), fh, indent=1)
     print(f"wrote {len(cases)} cases → test/models/expected.json")
