@@ -8,7 +8,7 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 
 ## What it does
 
-- **Imports STEP / IGES / BREP** files (via `occt-import-js`, OpenCascade compiled to WASM) and **STL**. The STEP geometry is converted to millimetres; pick other units for STL.
+- **Imports STEP / IGES / BREP** files (via `occt-import-js`, OpenCascade compiled to WASM) and **STL**. STEP, IGES and BREP files carry their own units, so the **Units** menu only changes how lengths are shown and entered (mm, cm, m, in, ft); the body keeps its real size. STL files have no units, so for an STL the menu sets the units the file was drawn in and rescales it.
 - **Inputs:** mass, CoG (x, y, z in model coordinates), fresh (1000 kg/m³), salt (1025 kg/m³) or custom water, and an initial roll/pitch/yaw.
 - **Moments of inertia:** computed from the geometry for uniform density, or entered as a custom tensor (kg·m² about the CoG, model axes). There's a sign option for CAD tools that report products of inertia as +∫xy dm. Custom values are checked for positive-definiteness and the triangle inequality, and are used by the hydrostatic periods, both simulators and the RAOs.
 - **Static float solve:** for the chosen attitude, finds the waterline where buoyancy = weight, then shows
@@ -29,6 +29,11 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
   - JONSWAP (Hasselmann et al. 1973), with γ, σ = 0.07/0.09 and A<sub>γ</sub> = 1 − 0.287 ln γ, plus the DNV γ(Tp/√Hs) option.
   - The spectrum plot marks the body's natural heave, roll and pitch frequencies and warns when one falls inside the spectral peak.
 - **Irregular sea:** random-phase superposition (seeded), long-crested or cos<sup>2s</sup> short-crested.
+- **Wave drift** (toggle in section 7, on by default):
+  - **On:** the body is carried by the Stokes drift current, averaged over its draft: u = Σ ω k a² e^{2kz} (Stokes 1847). It is also pushed by the mean drift force of the waves it reflects, F = ½ρga²R² per unit width (Longuet-Higgins 1977), with R from Ursell's (1947) barrier solution at the body's draft. Quadratic drag ½ρC<sub>d</sub>A|v−u|(v−u) on the speed relative to the current sets the drift speed; C<sub>d</sub> is editable (default 1).
+  - The slowly varying horizontal force from the Froude–Krylov pressure integration is not physical without diffraction, so it is low-pass filtered out whenever the drift model is active. On a 4×2 m box this filter was the difference between 0.39 m/s of spurious drift and the expected 0.09 m/s.
+  - **Off:** a very soft, critically damped horizontal spring (natural period ≥ 60 s and ≥ 10 wave periods) holds the body on station. Wave-frequency surge and sway are unchanged.
+  - The live run shows drift speed, direction and distance. **Camera follows the body** can be switched off, and **↺ Restart run** starts again from the original position (suggested once the body has drifted more than 10 body lengths). Statistics runs report the mean drift.
 - **Regular waves** (the *Regular waves* switch in section 7): a single Airy wave from your own height, period and heading, not tied to any spectrum or sea state.
   - Height can mean the crest-to-trough height H (amplitude H/2) or a significant height Hs with the same energy (amplitude Hs/2√2, since a sinusoid has σ = A/√2).
   - Reports wavelength, celerity and steepness H/λ (warns above 1/20 and at the 1/7 breaking limit), and warns when the period is within 15 % of a natural period.
@@ -82,9 +87,9 @@ The body is triangulated and each triangle is clipped to the part below the wate
 |---|---|---|
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
-| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 252/252 |
-| http://localhost:8765/test/validate.html | Same checks, in the browser | 252/252 in headless Chromium, all three qualities |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | 53/53 |
+| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 264/264 |
+| http://localhost:8765/test/validate.html | Same checks, in the browser | 264/264 in headless Chromium, all three qualities |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | 65/65 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
@@ -95,6 +100,7 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | JONSWAP γ = 3.3: m0, T1, Tz vs the DNV regressions; γ = 1 reduces exactly to PM | DNV-RP-C205, Hasselmann 1973 | ≤ 0.5 % |
 | Fully developed PM: Tp(Hs) vs the integrated one-parameter spectrum (α = 0.0081, β = 0.74) | Pierson & Moskowitz 1964 | ≤ 0.08 % |
 | Synthesized sea: variance = Σa²/2 = Hs²/16 | linear theory | ≤ 1 % |
+| Wave drift: I₁, K₁ vs A&S tables; Ursell R² limits; Stokes drift; simulated drift speed vs the steady drag balance (2 waves); station keeping with drift off; sway amplitude unchanged by the filter | Stokes 1847, Ursell 1947, Longuet-Higgins 1977, A&S §9.8 | ≤ 8 % (speed) |
 | Regular wave from user inputs: crest-to-trough = H, period = T, wavelength gT²/2π along the heading; Hs input gives 4σ = Hs | Airy wave theory | ≤ 1e-6 |
 | Calm-water pressure integration = ρgV through B, all 13 floating cases | Archimedes | round-off |
 | Froude–Krylov heave force on a box, 3 headings × 4 frequencies | closed form, Faltinsen §3 | 1e-9 |

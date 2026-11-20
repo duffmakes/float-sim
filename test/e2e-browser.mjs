@@ -55,6 +55,18 @@ await page.click('#water button[data-rho="1025"]'); await page.waitForTimeout(20
 expect('salt-water draft 390.244 mm', near(num(await stat('Draft')), 390.244, 1e-3), await stat('Draft'));
 await page.click('#water button[data-rho="1000"]');
 
+// 2b — units menu is display-only for STEP (known size): mm → in keeps the body where it is
+await page.waitForTimeout(200);
+await page.selectOption('#units', '0.0254'); await page.waitForTimeout(300);
+expect('mm → in: same draft, shown as 15.748 in', near(num(await stat('Draft')), 400 / 25.4, 1e-3), await stat('Draft'));
+expect('mm → in: CoG X converted to 78.7402 in', near(num(await page.inputValue('#cgx')), 2000 / 25.4, 1e-3), await page.inputValue('#cgx'));
+expect('mm → in: still 40 % submerged', (await page.locator('#massInfo').innerText()).includes('40% of its volume'));
+await page.click('#simRun'); await page.waitForTimeout(3500);
+expect('simulate from rest explains why nothing moves', (await page.locator('#simInfo').innerText()).includes('started at rest'));
+await page.click('#simReset');
+await page.selectOption('#units', '0.001'); await page.waitForTimeout(300);
+expect('in → mm: back to 400 mm and CoG X 2000', near(num(await stat('Draft')), 400, 1e-3) && near(num(await page.inputValue('#cgx')), 2000, 1e-6), `${await stat('Draft')}, ${await page.inputValue('#cgx')}`);
+
 // 3 — target plane from upright: draft 250 mm → 2000 kg
 await page.fill('#tVal', '250'); await page.click('#tCalc'); await page.waitForTimeout(200);
 const tm = await page.evaluate(() => document.querySelector('#tOut tr td:last-child').innerText);
@@ -128,7 +140,20 @@ await page.click('#waveRun'); await page.waitForTimeout(4000);
 const rwi = await page.locator('#waveInfo').innerText();
 expect('regular real-time run advances with linear reference', num((rwi.match(/t = ([\d.]+) s/) || [])[1]) > 0.5 && rwi.includes('linear steady state'), rwi.split('\n')[0]);
 if (shots) await page.screenshot({ path: `${shots}/sea-regular-run.png` });
+expect('wave drift on by default: live drift speed and Stokes drift shown', rwi.includes('Stokes drift over the draft'));
+expect('restart button enabled while running', !(await page.locator('#waveRestart').isDisabled()));
+await page.click('#waveRestart'); await page.waitForTimeout(1500);
+expect('restart starts the run again from t ≈ 0', num(((await page.locator('#waveInfo').innerText()).match(/t = ([\d.]+) s/) || [])[1]) < 2.5);
+await page.uncheck('#driftOn'); await page.waitForTimeout(1500);
+expect('drift off: held on station', (await page.locator('#waveInfo').innerText()).includes('wave drift off'));
+await page.check('#driftOn');
+await page.uncheck('#waveFollow');
+const tgt0 = await page.evaluate(() => document.querySelector('#waveInfo').innerText);
+await page.waitForTimeout(800);
+expect('camera follow can be switched off while running', tgt0.length > 0 && !(await page.locator('#waveFollow').isChecked()));
+await page.check('#waveFollow');
 await page.click('#waveRun');
+expect('restart button disabled when stopped', await page.locator('#waveRestart').isDisabled());
 expect('statistics button reads 5 min in regular mode', (await page.locator('#waveStats').innerText()).includes('5 min'));
 await page.click('#waveStats');
 await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 300000 });
@@ -136,6 +161,8 @@ const [eTd, eIn] = (await statRow('Wave at G')).map(num), [rgTd, rgLin] = (await
 expect('regular run: measured wave amplitude = H/2 (±3 %)', Math.abs(eTd / 0.25 - 1) < 0.03 && Math.abs(eIn - 0.25) < 1e-9, `${eTd} m vs ${eIn} m`);
 expect('regular run: steady roll ≈ linear RAO × A (±15 %)', Math.abs(rgTd / rgLin - 1) < 0.15, `${rgTd}° vs ${rgLin}°`);
 expect('regular run: steady heave ≈ linear RAO × A (±15 %)', Math.abs(hgTd / hgLin - 1) < 0.15, `${hgTd} m vs ${hgLin} m`);
+const driftTxt = await page.evaluate(() => [...document.querySelectorAll('#seaStats tr')].find((t) => t.cells[0]?.innerText.startsWith('Mean drift'))?.cells[1]?.innerText || '');
+expect('statistics report the mean drift', /toward [\d.]+°/.test(driftTxt), driftTxt);
 expect('regular verdict names the wave', /Regular H 0\.5 m, T 8 s: max roll/.test(await page.locator('#seaVerdict').innerText()));
 if (shots) await page.screenshot({ path: `${shots}/sea-regular-stats.png` });
 await page.click('#waveMode button[data-mode="spectrum"]');

@@ -24,7 +24,7 @@
       <span>Load STEP / IGES / STL…</span>
     </label>
     <div class="row">
-      <label>Model units
+      <label>Units
         <select id="units">
           <option value="0.001" selected>mm</option>
           <option value="0.01">cm</option>
@@ -41,6 +41,7 @@
         </select>
       </label>
     </div>
+    <p id="unitsHint" class="hint"></p>
     <div class="row">
       <label>Demo
         <select id="demo">
@@ -64,7 +65,7 @@
       <label>CoG Y <input id="cgy" type="number" step="any" value="0"></label>
       <label>CoG Z <input id="cgz" type="number" step="any" value="0"></label>
     </div>
-    <p class="hint">CoG in the CAD model's own coordinates, in model units.</p>
+    <p class="hint">CoG in the model's own coordinates, in the units chosen above.</p>
     <button id="useCentroid" class="ghost">Use geometric centroid (uniform density)</button>
     <div id="massInfo" class="info"></div>
     <div class="row">
@@ -186,6 +187,12 @@
     </div>
     <div class="slider"><span>Heading β</span><input id="ssHead" type="range" min="0" max="360" step="5" value="90"><input id="ssHeadN" type="number" step="any" value="90"></div>
     <p class="hint">β = direction the waves travel, relative to the model's +X axis: 180° head seas, 90° beam seas, 0° following.</p>
+    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="driftOn" type="checkbox" checked> Wave drift (Stokes drift + mean drift force)</label>
+    <div class="row">
+      <label><span>Drift drag C<sub>d</sub></span> <input id="driftCd" type="number" step="any" min="0" value="1"></label>
+      <label>&nbsp;</label>
+    </div>
+    <p class="hint" id="driftHint">On: the body is carried by the Stokes drift current and pushed by waves it reflects (Ursell barrier reflection, Longuet-Higgins drift force), against drag on its speed relative to the current (C<sub>d</sub> ≈ 1 for a bluff hull, Hoerner). Off: a very soft horizontal spring keeps it on station; wave-frequency surge and sway are unchanged.</p>
     <details>
       <summary>Wave &amp; hydrodynamic settings</summary>
       <div id="specAdv">
@@ -220,6 +227,10 @@
     <div class="row">
       <button id="waveRun" class="primary">▶ Run in waves</button>
       <button id="waveStats">Run statistics (20 min)</button>
+    </div>
+    <div class="row">
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="waveFollow" type="checkbox" checked> Camera follows the body</label>
+      <button id="waveRestart" class="ghost" disabled title="Start the wave run again from the original position">↺ Restart run</button>
     </div>
     <div class="lock-note hidden">Locked: the body is placed for a drop / rise test. Use <b>Reset position</b> in section 9 to run waves.</div>
     <div class="slider"><span>Speed</span><input id="waveSpeed" type="range" min="0.25" max="8" step="0.25" value="1"><output id="waveSpeedV">1×</output></div>
