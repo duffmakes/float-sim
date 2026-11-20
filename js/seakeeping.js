@@ -1,8 +1,8 @@
 // Sea-state simulation, spectral stability estimates and RAO sweeps (UI glue).
 import { mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, quatToMat3 } from './physics.js';
-import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G } from './waves.js';
+import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G, regularAmplitude, waveNumber } from './waves.js';
 import {
-  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, spectralResponse, spectralFromSweep,
+  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, raoAt, spectralResponse, spectralFromSweep,
   diffractionCheck, waterplaneExtent, bodyFrameVolQ, DOF,
 } from './hydro.js';
 import { WaveSim, seriesStats } from './sim.js';
@@ -13,7 +13,7 @@ const f = (x, d = 3) => (Number.isFinite(x) ? (+x.toPrecision(d)).toLocaleString
 
 export function initSeakeeping(api) {
   const { THREE } = api;
-  const K = { prep: null, sim: null, running: false, worker: null, stats: null, rao: null, lastChart: 0, specType: 'jonswap' };
+  const K = { prep: null, sim: null, running: false, worker: null, stats: null, rao: null, lastChart: 0, specType: 'jonswap', waveMode: 'spectrum' };
 
   // ------------------------------------------------------------ wave surface mesh
   const waveMat = api.water.material.clone();
@@ -53,6 +53,18 @@ export function initSeakeeping(api) {
   ssSel.onchange = applySS;
   for (const id of ['ssHs', 'ssTp', 'ssGamma', 'ssN', 'ssSeed', 'ssSpread']) $(id).addEventListener('change', onInputs);
   $('ssDnvGamma').onchange = onInputs;
+  for (const id of ['rgH', 'rgT', 'rgKind']) $(id).addEventListener('change', onInputs);
+  $('waveMode').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    for (const x of $('waveMode').children) x.classList.toggle('on', x === b);
+    K.waveMode = b.dataset.mode;
+    const reg = K.waveMode === 'regular';
+    $('regInputs').classList.toggle('hidden', !reg); $('specInputs').classList.toggle('hidden', reg); $('specAdv').classList.toggle('hidden', reg);
+    $('waveStats').textContent = reg ? 'Run statistics (5 min)' : 'Run statistics (20 min)';
+    $('specTitle').textContent = reg ? 'Regular wave' : 'Wave spectrum';
+    if (K.running) stopRun();
+    K.stats = null; onInputs();
+  });
   $('specType').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     for (const x of $('specType').children) x.classList.toggle('on', x === b);
@@ -64,12 +76,22 @@ export function initSeakeeping(api) {
   $('hReset').onclick = () => { for (const id of ['hA11', 'hA22', 'hA33', 'hA55']) $(id).value = ''; $('hA44').value = 0.2; $('hZ3').value = 0.15; $('hZ4').value = 0.08; $('hZ5').value = 0.15; $('hDiffH').checked = true; $('hDiffV').checked = false; K.prep = null; onInputs(); };
   $('waveSpeed').oninput = (e) => { $('waveSpeedV').textContent = `${e.target.value}×`; };
 
-  const sea = () => {
+  // Current wave inputs. Common fields: mode, heading, active (waves present), T0 (characteristic period),
+  // label (for verdicts). Regular mode adds H, T, heightKind, A; spectrum mode adds type, Hs, Tp, gamma, N, seed, spread.
+  const sea = () => (K.waveMode === 'regular' ? regularSea() : spectrumSea());
+  const regularSea = () => {
+    const H = Math.max(0, parseFloat($('rgH').value) || 0), T = Math.max(0, parseFloat($('rgT').value) || 0), heightKind = $('rgKind').value;
+    const A = regularAmplitude(H, heightKind);
+    return { mode: 'regular', H, T, heightKind, A, heading: parseFloat($('ssHeadN').value) || 0, active: H > 0 && T > 0, T0: T,
+      label: `Regular H ${f(2 * A)} m, T ${f(T)} s` };
+  };
+  const spectrumSea = () => {
     const Hs = Math.max(0, parseFloat($('ssHs').value) || 0), Tp = Math.max(0, parseFloat($('ssTp').value) || 0);
     let gamma = Math.min(7, Math.max(1, parseFloat($('ssGamma').value) || 3.3));
     if ($('ssDnvGamma').checked && Hs > 0) { gamma = dnvGamma(Hs, Tp); $('ssGamma').value = +gamma.toFixed(2); }
     return { type: K.specType, Hs, Tp, gamma, heading: parseFloat($('ssHeadN').value) || 0,
-      N: Math.max(5, Math.min(300, parseInt($('ssN').value) || 50)), seed: parseInt($('ssSeed').value) || 1, spread: Math.max(0, parseFloat($('ssSpread').value) || 0) };
+      N: Math.max(5, Math.min(300, parseInt($('ssN').value) || 50)), seed: parseInt($('ssSeed').value) || 1, spread: Math.max(0, parseFloat($('ssSpread').value) || 0),
+      mode: 'spectrum', active: Hs > 0 && Tp > 0, T0: Tp, label: `SS${ssSel.value}` };
   };
 
   // ------------------------------------------------------------ body preparation (seakeeping frame)
@@ -120,11 +142,37 @@ export function initSeakeeping(api) {
     return P.hulls[key];
   }
   const dtFor = (P, field) => Math.min(2 * Math.PI / Math.max(field.maxOmega || 1, ...P.model.wn) / 60, 0.05);
-  const fieldFor = (P) => { const s = sea(); return WaveField.fromSpectrum({ ...s }); };
+  const fieldFor = () => WaveField.fromParams(sea());
+  // linear steady-state amplitude of DOF j in a regular wave (m, or deg for rotations)
+  const regularLinear = (P, s, j) => { const x = raoAt(P.model, 2 * Math.PI / s.T, s.heading).xi[j]; return Math.hypot(x[0], x[1]) * s.A * (j >= 3 ? 180 / Math.PI : 1); };
 
   // ------------------------------------------------------------ spectrum chart + warnings
+  function drawRegular(P, s) {
+    if (!s.active) { lineChart($('specCv'), { series: [] }); $('specInfo').innerHTML = 'Enter a wave height and period above zero.'; $('rgInfo').innerHTML = ''; return; }
+    const w = 2 * Math.PI / s.T, k = waveNumber(w), lam = 2 * Math.PI / k, Hw = 2 * s.A, steep = Hw / lam;
+    // incident elevation at G over three periods
+    const xs = Array.from({ length: 241 }, (_, i) => i * 3 * s.T / 240);
+    lineChart($('specCv'), { series: [{ name: 'wave η at G', color: SERIES[2], x: xs, y: xs.map((t) => s.A * Math.cos(-w * t)) }], xLabel: 't (s)', yLabel: 'η (m)', height: 160, legend: false });
+    const notes = [];
+    if (steep > 1 / 7) notes.push(`<span class="bad">✕ Steepness H/λ = ${f(steep, 2)} exceeds the breaking limit of about 1/7. A wave this steep cannot exist, so the linear results are not physical.</span>`);
+    else if (steep > 1 / 20) notes.push(`<span class="warn">⚠ Steepness H/λ = ${f(steep, 2)} is above about 1/20, where linear (Airy) theory starts to under-predict crests.</span>`);
+    if (P) {
+      const wn = P.model.wn;
+      for (const [n, j] of [['Heave', 2], ['Roll', 3], ['Pitch', 4]]) {
+        if (wn[j] > 0 && Math.abs(w / wn[j] - 1) < 0.15) notes.push(`<span class="warn">⚠ The wave period is within 15 % of the ${n.toLowerCase()} natural period (${f(2 * Math.PI / wn[j])} s): resonant ${n.toLowerCase()}.</span>`);
+      }
+      const d = diffractionCheck(P.size, w);
+      if (!d.ok) notes.push(`<span class="warn">⚠ Body ${f(P.size)} m is large relative to the wavelength ${f(lam)} m (D/λ = ${f(d.ratio, 2)} > 0.2): Froude–Krylov loads are approximate.</span>`);
+      if (P.offset > P.st.model.diag * 1e-3) notes.push(`<span class="warn">⚠ The current orientation is not at rest (B is ${f(P.offset)} m from under G). Settle the body first.</span>`);
+      notes.push(`Linear steady-state prediction at β = ${s.heading}°: heave ±${f(regularLinear(P, s, 2))} m, roll ±${f(regularLinear(P, s, 3))}°, pitch ±${f(regularLinear(P, s, 4))}°.`);
+    }
+    const desc = `Crest-to-trough ${f(Hw)} m (amplitude ${f(s.A)} m) · T ${f(s.T)} s (f ${f(1 / s.T)} Hz, ω ${f(w)} rad/s) · wavelength ${f(lam)} m · celerity ${f(lam / s.T)} m/s`;
+    $('rgInfo').innerHTML = s.heightKind === 'Hs' ? `Hs ${f(s.H)} m ⇒ ${desc}. Same energy as an irregular sea of this Hs; individual waves of that sea would vary around it.` : desc;
+    $('specInfo').innerHTML = `${desc}<br>${notes.join('<br>')}`;
+  }
   function drawSpectrum() {
     const P = prepare(); const s = sea();
+    if (s.mode === 'regular') return drawRegular(P, s);
     if (!(s.Hs > 0 && s.Tp > 0)) { lineChart($('specCv'), { series: [] }); $('specInfo').innerHTML = 'Calm water: no spectrum.'; return; }
     const wp = 2 * Math.PI / s.Tp;
     const wn = P ? P.model.wn : [];
@@ -155,16 +203,17 @@ export function initSeakeeping(api) {
   function startRun() {
     const P = prepare(); if (!P) return;
     api.stopCalmSim();
-    const field = fieldFor(P);
-    const hull = hullFor(P, field);
     const s = sea();
+    const field = fieldFor();
+    const hull = hullFor(P, field);
     K.sim = new WaveSim({
       hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
-      A: P.coeffs.A, Bd: P.model.Bd, dt: dtFor(P, field), ramp: s.Tp > 0 ? Math.min(2 * s.Tp, 20) : 0, vanishDeg: P.vanish || 180,
+      A: P.coeffs.A, Bd: P.model.Bd, dt: dtFor(P, field), ramp: s.T0 > 0 ? Math.min(2 * s.T0, 20) : 0, vanishDeg: P.vanish || 180,
       volQ: hull.volQ, diffModes: P.diffModes,
     });
     K.field = field; K.hull = hull; K.running = true;
-    sizeWaveMesh(P.st.model.diag * 8);
+    K.runSea = s; K.runLin = s.mode === 'regular' && s.active ? [2, 3, 4].map((j) => regularLinear(P, s, j)) : null;
+    sizeWaveMesh(s.mode === 'regular' && s.active ? Math.max(P.st.model.diag * 8, Math.min(2 * 2 * Math.PI / waveNumber(2 * Math.PI / s.T), P.st.model.diag * 40)) : P.st.model.diag * 8);
     waveMesh.visible = true; api.water.visible = false; api.waterDepth.visible = false;
     api.setStaticOverlays(false); wl3.visible = true;
     $('waveRun').textContent = '❚❚ Stop';
@@ -209,7 +258,7 @@ export function initSeakeeping(api) {
       const ramping = sim.t < sim.ramp;
       $('waveInfo').innerHTML = `t = <b>${f(sim.t, 4)} s</b>${ramping ? ' (waves ramping up)' : ''} · roll <b>${f(r.roll[n - 1], 3)}°</b> · pitch <b>${f(r.pitch[n - 1], 3)}°</b><br>
         so far: roll σ ${f(rs.sd)}°, max ${f(sim.stats.maxRoll)}° · pitch max ${f(sim.stats.maxPitch)}° · green-water events ${sim.stats.greenWater}<br>
-        drift ${f(Math.hypot(sim.p[0], sim.p[1]))} m (free-floating, no mooring or viscous drag, so the drift speed is indicative only; the camera follows)
+        ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}drift ${f(Math.hypot(sim.p[0], sim.p[1]))} m (free-floating, no mooring or viscous drag, so the drift speed is indicative only; the camera follows)
         ${sim.stats.capsized ? `<br><span class="bad">✕ Capsized at t = ${f(sim.stats.capsizeT)} s</span>` : ''}
         <br><span class="hint">${(K.hull.idx.length / 3).toLocaleString()} panels · ${field.n} wave components · dt ${f(sim.dt * 1000)} ms</span>`;
     }
@@ -248,25 +297,27 @@ export function initSeakeeping(api) {
     if (K.locked) return;
     const P = prepare(); if (!P) return;
     const s = sea();
-    if (!(s.Hs > 0)) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
+    if (!s.active) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
     stopRun();
-    const field = fieldFor(P), hull = hullFor(P, field), dt = dtFor(P, field), duration = 20 * 60, ramp = Math.min(2 * s.Tp, 20);
+    const reg = s.mode === 'regular';
+    const field = fieldFor(), hull = hullFor(P, field), dt = dtFor(P, field), duration = (reg ? 5 : 20) * 60, ramp = Math.min(2 * s.T0, 20);
     if (K.worker) K.worker.terminate();
     K.worker = new Worker(new URL('./seaworker.js', import.meta.url), { type: 'module' });
     $('waveStats').disabled = true;
     const t0 = performance.now();
     K.worker.onmessage = (e) => {
-      if (e.data.progress !== undefined) { $('waveInfo').innerHTML = `Simulating 20 min of SS${ssSel.value}… <b>${Math.round(e.data.progress * 100)}%</b>`; return; }
+      if (e.data.progress !== undefined) { $('waveInfo').innerHTML = `Simulating ${duration / 60} min of ${s.label}… <b>${Math.round(e.data.progress * 100)}%</b>`; return; }
       $('waveStats').disabled = false;
       const { stats, series } = e.data;
       K.stats = { stats, series, sea: s };
       showTab('tabSea');
       drawHistories(series);
+      if (reg) return showRegularStats(P, s, stats, hull, field, t0);
       const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma);
       const spec = (j) => spectralResponse(P.model, S, s.heading, j, field.meta.wMin, field.meta.wMax, 300, 20 * 60);
       const sr = spec(3), sp = spec(4), sh = spec(2);
       const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
-      const v = verdict({ ssLabel: `SS${ssSel.value}`, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
+      const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
       setSeaVerdict(v, ` <span class="hint">(20 min time-domain run, β = ${s.heading}°)</span>`);
       const row = (k, td, spv, u) => `<tr><td>${k}</td><td>${f(td)} ${u}</td><td>${f(spv)} ${u}</td></tr>`;
       $('seaStats').innerHTML = `<table>
@@ -289,6 +340,26 @@ export function initSeakeeping(api) {
       volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes,
     });
   };
+
+  function showRegularStats(P, s, stats, hull, field, t0) {
+    const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
+    const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
+    setSeaVerdict(v, ` <span class="hint">(5 min regular-wave run, β = ${s.heading}°)</span>`);
+    const st = stats.steady || {};
+    const row = (k, td, lin, u) => `<tr><td>${k}</td><td>${f(td)} ${u}</td><td>${f(lin)} ${u}</td><td>${lin > 1e-9 && td !== undefined ? `${(Math.round(1000 * (td / lin - 1)) / 10 || 0).toFixed(1)} %` : '—'}</td></tr>`;
+    $('seaStats').innerHTML = `<table>
+      <tr><td>Steady-state amplitude</td><td><b>Time domain</b></td><td><b>Linear RAO × A</b></td><td><b>diff.</b></td></tr>
+      ${row('Wave at G (input amplitude)', st.eta, s.A, 'm')}
+      ${row('Heave', st.heave, regularLinear(P, s, 2), 'm')}
+      ${row('Roll', st.roll, regularLinear(P, s, 3), '°')}
+      ${row('Pitch', st.pitch, regularLinear(P, s, 4), '°')}
+      <tr><td>Max roll / pitch (whole run)</td><td colspan="3">${f(stats.maxRoll)}° / ${f(stats.maxPitch)}°</td></tr>
+      <tr><td>Green water on deck</td><td colspan="3">${stats.greenWater} events, ${f(100 * greenFrac, 2)} % of the time</td></tr>
+      <tr><td>Capsize</td><td colspan="3">${stats.capsized ? `<span class="bad">✕ yes, at t = ${f(stats.capsizeT)} s</span>` : '<span class="good">✓ no</span>'}</td></tr>
+    </table><span class="hint">Steady state is half the peak-to-peak over the last half of the run. Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · dt ${f(stats.dt * 1000)} ms.
+    The wave-at-G row is measured at the moving CoG, so it differs slightly from the input when the body drifts or heaves. Close agreement in the motion rows means the response is linear; large gaps point to nonlinearity (large roll, deck immersion, steep waves).</span>`;
+    $('waveInfo').innerHTML = `Statistics complete: ${v.text}.`;
+  }
 
   // ------------------------------------------------------------ sea-state sweep (spectral)
   $('ssSweep').onclick = () => {
@@ -403,7 +474,12 @@ export function initSeakeeping(api) {
   async function drawResponse() {
     const { heads, sweep, P, resp } = K.rao;
     const j = +$('raoDof').value, rot = j >= 3, s = sea();
-    if (!(s.Hs > 0 && s.Tp > 0)) { $('raoResp').innerHTML = ''; return; }
+    if (!s.active) { $('raoResp').innerHTML = ''; return; }
+    if (s.mode === 'regular') {
+      const rows = heads.map((b) => `<tr><td>β ${b}°</td><td>${f(regularLinear(P, { ...s, heading: b }, j))} ${rot ? '°' : 'm'}</td></tr>`);
+      $('raoResp').innerHTML = `<b>${DOF[j]} in a regular wave (${s.label}):</b><table><tr><td></td><td>steady amplitude, |RAO| × A</td></tr>${rows.join('')}</table>`;
+      return;
+    }
     const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma), wp = TWO_PI / s.Tp;
     const m0Wave = s.Hs * s.Hs / 16;
     const rows = [];

@@ -114,6 +114,33 @@ expect('20-min SS3 run: heave σ time domain ≈ spectral (±15 %)', Math.abs(hT
 expect('sea-state verdict shown', /SS3: max roll/.test(await page.locator('#seaVerdict').innerText()));
 if (shots) await page.screenshot({ path: `${shots}/sea-stats.png` });
 
+// 6b — regular waves from user inputs (no spectrum): H 0.5 m, T 8 s, beam
+await page.click('#waveMode button[data-mode="regular"]');
+expect('regular mode shows its inputs and hides the spectrum inputs',
+  await page.locator('#regInputs').isVisible() && !(await page.locator('#specInputs').isVisible()) && !(await page.locator('#ssSel').isVisible()));
+await page.fill('#rgH', '0.5'); await page.dispatchEvent('#rgH', 'change');
+await page.fill('#rgT', '8'); await page.dispatchEvent('#rgT', 'change');
+await page.fill('#ssHeadN', '90'); await page.dispatchEvent('#ssHeadN', 'change');
+const rgi = await page.locator('#rgInfo').innerText();
+expect('regular wave: wavelength gT²/2π = 99.9 m shown', /wavelength 99\.9 m/.test(rgi), rgi);
+expect('regular wave: linear steady-state prediction shown', (await page.locator('#specInfo').innerText()).includes('Linear steady-state prediction'));
+await page.click('#waveRun'); await page.waitForTimeout(4000);
+const rwi = await page.locator('#waveInfo').innerText();
+expect('regular real-time run advances with linear reference', num((rwi.match(/t = ([\d.]+) s/) || [])[1]) > 0.5 && rwi.includes('linear steady state'), rwi.split('\n')[0]);
+if (shots) await page.screenshot({ path: `${shots}/sea-regular-run.png` });
+await page.click('#waveRun');
+expect('statistics button reads 5 min in regular mode', (await page.locator('#waveStats').innerText()).includes('5 min'));
+await page.click('#waveStats');
+await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 300000 });
+const [eTd, eIn] = (await statRow('Wave at G')).map(num), [rgTd, rgLin] = (await statRow('Roll')).map(num), [hgTd, hgLin] = (await statRow('Heave')).map(num);
+expect('regular run: measured wave amplitude = H/2 (±3 %)', Math.abs(eTd / 0.25 - 1) < 0.03 && Math.abs(eIn - 0.25) < 1e-9, `${eTd} m vs ${eIn} m`);
+expect('regular run: steady roll ≈ linear RAO × A (±15 %)', Math.abs(rgTd / rgLin - 1) < 0.15, `${rgTd}° vs ${rgLin}°`);
+expect('regular run: steady heave ≈ linear RAO × A (±15 %)', Math.abs(hgTd / hgLin - 1) < 0.15, `${hgTd} m vs ${hgLin} m`);
+expect('regular verdict names the wave', /Regular H 0\.5 m, T 8 s: max roll/.test(await page.locator('#seaVerdict').innerText()));
+if (shots) await page.screenshot({ path: `${shots}/sea-regular-stats.png` });
+await page.click('#waveMode button[data-mode="spectrum"]');
+expect('back to spectrum mode restores the sea-state picker', await page.locator('#ssSel').isVisible());
+
 // 7 — RAO sweep (Hz inputs, progress, async)
 expect('RAO range shown in Hz → rad/s', (await page.locator('#raoRange').innerText()).includes('rad/s'));
 await page.click('#raoRun');

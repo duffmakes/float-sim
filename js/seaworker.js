@@ -4,7 +4,7 @@ import { WaveSim, seriesStats } from './sim.js';
 
 self.onmessage = (e) => {
   const c = e.data;
-  const field = WaveField.fromSpectrum(c.fieldParams);
+  const field = WaveField.fromParams(c.fieldParams);
   const sim = new WaveSim({
     hull: { verts: new Float64Array(c.verts), idx: new Uint32Array(c.idx) }, mass: c.mass, inertiaG: c.IGb, rho: c.rho,
     R0: c.R0, z0: c.z0, field, A: c.A, Bd: c.Bd, dt: c.dt, ramp: c.ramp, vanishDeg: c.vanishDeg,
@@ -22,6 +22,13 @@ self.onmessage = (e) => {
   const st = {
     roll: seriesStats(r.t, r.roll, c.ramp), pitch: seriesStats(r.t, r.pitch, c.ramp),
     heave: seriesStats(r.t, r.heave, c.ramp), eta: seriesStats(r.t, r.eta, c.ramp),
+    // regular waves: steady-state single amplitude, half the peak-to-peak over the last half of the run
+    steady: c.fieldParams.mode === 'regular' ? Object.fromEntries(['roll', 'pitch', 'heave', 'eta'].map((key) => {
+      const tEnd = r.t[r.t.length - 1], t0 = Math.max(c.ramp, tEnd - c.duration / 2);
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < r.t.length; i++) if (r.t[i] >= t0) { lo = Math.min(lo, r[key][i]); hi = Math.max(hi, r[key][i]); }
+      return [key, (hi - lo) / 2];
+    })) : null,
     ...sim.stats, simulated: sim.t - c.ramp, dt: c.dt,
   };
   // down-sample for plotting (≤ 4000 points)
