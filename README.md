@@ -44,20 +44,30 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 - **Sea-state table:** a linear spectral estimate (|RAO|²·S) for SS1–5 at the chosen heading: significant amplitudes, most-probable 3-hour maximum roll, and a verdict. Sea states whose waves are short relative to the body (D/λ > 0.2) are flagged.
 - **RAOs:**
   - Enter a frequency range **in Hz** (the equivalent rad/s, periods and wavelengths are shown) and a list or range of incident headings (e.g. `0:15:180`). A progress bar shows the sweep, and the RAO tab shows a loading indicator while plots render.
-  - The 6-DOF linear frequency-domain model about G is solved at every (ω, β): hydrostatic restoring matrix, mass and inertia, estimated added mass and damping, and Froude–Krylov excitation on the mean wetted surface (Faltinsen 1990; Journée & Massie 2001).
+  - **Panel method (default).** A low-order boundary-element (BEM) solver, the same formulation as WAMIT's low-order method, solves the linear radiation and diffraction problem on the wetted hull. It gives frequency-dependent added mass A(ω), radiation damping B(ω) and wave exciting forces X(ω, β) with all couplings. The 6-DOF RAOs follow from [−ω²(M + A) + iω(B + B<sub>extra</sub>) + C] ξ = X. Details:
+    - deep-water free-surface Green function (Newman 1985), exact flat-panel Rankine integrals, and exciting forces from the Haskind relation
+    - irregular frequencies removed with an interior waterplane lid (extended boundary integral equations, WAMIT ch. 15)
+    - mirror symmetry about one or two vertical planes used automatically (up to 16× less memory, 64× less solve time)
+    - GMRES for large meshes, dense LU otherwise
+  - The CAD or STL tessellation is **remeshed** into near-equilateral panels (isotropic remeshing, Botsch & Kobbelt 2004). Sharp edges and the waterline are kept exactly, panels are refined where the surface is curved, and the panel size is never coarser than 1/7 of the shortest wavelength. **Panels:** Coarse ~400, Standard ~1,000, Fine ~2,500 or Very fine ~6,000.
+  - Runs on a pool of Web Workers sized to the CPU and memory, with progress, an ETA and **Cancel**. The page stays usable. A Standard sweep takes seconds to a few minutes; Very fine on a non-symmetric hull can take 10–20 min.
+  - Reports the natural frequencies with frequency-dependent added mass and the radiation damping ratio at each. Warns when a resonance has under 2 % of critical damping, since potential flow gives almost no roll damping and real peaks are lower. **Extra ζ** (viscous damping) can be added in section 7.
+  - Validated against WAMIT, Capytaine, Lamb's exact spheroid added mass and the Kramer et al. (2021) sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations and couplings on buoy shapes ([docs/bem-validation.md](docs/bem-validation.md)).
+  - **Froude–Krylov + estimates** remains available as a fast option: the same 6-DOF model with estimated added mass and damping and Froude–Krylov excitation on the mean wetted surface (Faltinsen 1990; Journée & Massie 2001).
   - Plots: amplitude (m/m, deg/m or deg per degree of wave slope), phase, and a heading × frequency heatmap.
   - Also reports the response in the current sea state, computed from the sweep and cached.
-  - **Export CSV** gives amplitudes and phases per heading and frequency. **Export raw CSV** gives complex RAOs (re/im), excitation forces per DOF, and the model's mass, added-mass, damping and restoring matrices as header comments.
-- **Long-wave diffraction correction** (G.I. Taylor): Froude–Krylov alone captures only ρ∫a dV (C_m = 1). The correction adds A<sub>jj</sub> × the incident acceleration averaged over the submerged volume, computed with an exact cone quadrature. It is applied identically in the RAO solver and the time-domain simulator. Defaults are on for surge and sway, off for heave, as justified by the trade study below.
-- **Added-mass defaults** (editable): heave uses a floating elliptic disk of the waterplane's area and aspect ratio, (2/3)πρab²/E(e) (Lamb §373). Surge and sway use whichever strip direction suits the body's proportions. A spar gets ρπa²T (C<sub>a</sub> = 1) and a ship-like hull gets ρπT²L/2.
+  - **Export CSV** gives amplitudes and phases per heading and frequency. **Export raw CSV** gives complex RAOs (re/im) and excitation forces per DOF, plus the panel-method A(ω) and B(ω) (diagonal and the surge–pitch and sway–roll couplings). The mass and restoring matrices are in the header comments.
+- **Added mass and damping in the simulations.** With *Panel-method added mass & damping in the simulations* on (section 7, default), the wave runs and the drop test take A and B from the panel method at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of the body, or from a quick coarse sweep (a few seconds) the first time.
+- **Long-wave diffraction correction** (G.I. Taylor, Froude–Krylov option and time domain): Froude–Krylov alone captures only ρ∫a dV (C_m = 1). The correction adds A<sub>jj</sub> × the incident acceleration averaged over the submerged volume, computed with an exact cone quadrature. It is applied identically in the RAO solver and the time-domain simulator. Defaults are on for surge and sway, off for heave, as justified by the trade study below.
+- **Added-mass estimates** (used without the panel method; editable): heave uses a floating elliptic disk of the waterplane's area and aspect ratio, (2/3)πρab²/E(e) (Lamb §373). Surge and sway use whichever strip direction suits the body's proportions. A spar gets ρπa²T (C<sub>a</sub> = 1) and a ship-like hull gets ρπT²L/2.
 
 ## Drop / rise test
 
 Section 9 releases the body from a chosen CoG height, above or below the still-water surface, at the current orientation, with an optional initial vertical speed. You can watch it fall in, plunge and recover, or rise from depth, break the surface and settle. It's deliberately simple:
 - gravity, water buoyancy at B, and air buoyancy at the dry-volume centroid
 - quadratic drag ½ρC<sub>d</sub>A⊥|v|v on the CoG velocity, with A⊥ the hull's projected area normal to the motion, and water/air blended by the submerged fraction. Water and air C<sub>d</sub> are editable, with presets from Hoerner, *Fluid-Dynamic Drag*.
-- added mass and rotational water damping scaled by submergence
-- linear wave-making damping while the body pierces the surface
+- added mass and rotational water damping: the floating values (panel method or estimates), scaled by submergence relative to the float position (zero in air, full at the float draft and below)
+- linear wave-making damping while the body pierces the surface: the panel-method radiation damping at the heave natural frequency. Against the Kramer et al. (2021) floating-sphere decay test this gives a damped period of 0.755 s (measured 0.76 s) and a decay rate within 3 % of WAMIT's.
 
 The **Drop test** tab plots CoG height, vertical speed and attitude, and reports water-entry speed, deepest plunge, surface breach, overshoot and settle time. While the body is placed, the sea-state, statistics, sea-state table, RAO and calm-simulate tools are locked until **Reset position**. No slamming pressures, splash or air-cavity effects are modelled.
 
@@ -67,12 +77,12 @@ The body is triangulated and each triangle is clipped to the part below the wate
 
 ## Assumptions and limits
 
-- Rigid body. The inertia assumes **uniform density**. The calm-water periods in the Hydrostatics tab ignore added mass, so they are indicative only. The seakeeping model includes estimated added mass.
+- Rigid body. The inertia assumes **uniform density**. The calm-water periods in the Hydrostatics tab ignore added mass, so they are indicative only. The RAO tab reports natural frequencies with added mass.
 - **Waves:**
-  - Linear incident waves with Froude–Krylov loads plus an optional long-wave diffraction correction: **no full diffraction/radiation (BEM) solution**.
-  - Added mass and damping are editable, frequency-independent *estimates*. Near resonance these estimates dominate the error, so enter known values where you have them (see the trade study).
-  - Results are reliable when the body is small relative to the wavelength (D/λ ≤ 0.2). The app flags it when this isn't the case.
-  - Zero forward speed, deep water, no breaking waves.
+  - Linear (first-order) potential flow: zero forward speed, **deep water** (depth more than half the longest wavelength), no breaking waves, no second-order or viscous loads. Potential flow under-damps roll, so add extra ζ for viscous damping where it matters.
+  - The panel method resolves the hull's flat panels, not the true curved surface: a Standard mesh loses about 0.1–0.5 % of the displaced volume on curved hulls, and slender needle-like tips are not resolved. Use Fine or Very fine to check convergence.
+  - The time-domain simulators use the nonlinear Froude–Krylov loads with **constant** panel-method (or estimated) added mass and damping, not a convolution of the frequency-dependent coefficients (Cummins equation). Results are best near the natural frequencies.
+  - The Froude–Krylov option is reliable only when the body is small relative to the wavelength (D/λ ≤ 0.2). The app flags it when this isn't the case.
   - A free-floating body drifts downwave. With no mooring or viscous drag, the drift speed is indicative only.
 - STANAG values are open-ocean North Atlantic typicals.
 - The mesh should be closed (watertight). The model panel reports open edges. Overlapping bodies in an assembly double-count volume.
@@ -83,13 +93,14 @@ The body is triangulated and each triangle is clipped to the part below the wate
 
 `test/models/` holds 8 exact B-rep STEP bodies (boxes, a cube, a square log, a V-prism, true cylinders upright and on their side, and a box moved and rotated off the origin). They are written by `test/make_models.py`, a standard-library STEP writer that also checks each shell is closed and consistently oriented. `expected.json` has 14 cases with closed-form answers and citations: Rawson & Tupper, Barrass & Derrett, Biran, and Erdős et al., Am. J. Phys. 60 (1992).
 
-| Run | What it exercises | Result (2026-11-20) |
+| Run | What it exercises | Result (2026-11-21) |
 |---|---|---|
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
 | `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 264/264 |
 | http://localhost:8765/test/validate.html | Same checks, in the browser | 264/264 in headless Chromium, all three qualities |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, RAO sweep (Hz, progress, CSV and raw CSV, tab reload), custom inertia, drop and rise tests with tool locking, console errors | 65/65 |
+| `node test/validate-bem.mjs [quick]` | Panel method: special functions, meshing of 10 STEP bodies, Lamb's slender spheroid, A, B and X against WAMIT (2 bodies) and Capytaine (6 buoys), GMRES vs LU, RAO peaks, Kramer sphere decay through the drop test ([docs/bem-validation.md](docs/bem-validation.md)) | 30/30 |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs, custom inertia, drop and rise tests with tool locking and panel-method coefficients, console errors | 71/71 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
@@ -113,13 +124,16 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | Deep-draft spar sway force and RAO (FK + correction), ka ≤ 0.7; FK alone = ½ (C_m 1 vs 2) | MacCamy & Fuchs 1954 | ≤ 4.6 % |
 | Time domain vs RAO with the diffraction correction on (sphere, 2 mm waves) | solver consistency | ≤ 0.5 % |
 | Drop test: drag-free fall, terminal speed in air and water (sphere C<sub>d</sub> 0.47), initial underwater acceleration with added mass ½ρV, settling at the static float height | Newton drag; Hoerner 1965; Lamb §92 | ≤ 1 % |
+| Panel method: A(ω), B(ω), X(ω) of a hemisphere, an ellipsoid and six buoys (cylinder, sphere, discus, cube, log, spar), max error relative to each coefficient's peak | WAMIT v7 (WEC-Sim examples); Capytaine 3.0 | ≤ 1.6 % translational, ≤ 4.7 % rotational/couplings |
+| Panel method: lateral added mass of a c/a = 12 prolate spheroid | Lamb 1932 §373 | 0.2 % |
+| Floating sphere heave decay (D 0.3 m): A33, B33, damped period, decay rate | Kramer et al. 2021 (measured; WAMIT LPF0) | ≤ 2.5 % |
 
 ### RAO trade study
 
-[docs/rao-trade-study.md](docs/rao-trade-study.md) compares the tool's RAOs with two literature benchmarks across modelling variants: tool defaults, with and without the diffraction correction, calibrated constant coefficients, and exact frequency-dependent coefficients. It lists every frequency point and summarises where the method can be trusted and which defaults it justified.
+[docs/rao-trade-study.md](docs/rao-trade-study.md) (written before the panel method) compares the tool's RAOs with two literature benchmarks across modelling variants: tool defaults, with and without the diffraction correction, calibrated constant coefficients, and exact frequency-dependent coefficients. It lists every frequency point and summarises where the method can be trusted and which defaults it justified.
 
 At A = 2 cm the near-resonance roll differs from the linear RAO by about 5 %. That's the genuine moving-waterline nonlinearity, and it shrinks to about 1 % at A = 2 mm, so the comparison is made in the linear limit.
 
-`validate.html` and `validate-node.mjs` share `test/validate-core.js`. The e2e test needs Playwright (`npm i playwright && npx playwright install chromium`). Regenerate the models with `python3 test/make_models.py`.
+`validate.html` and `validate-node.mjs` share `test/validate-core.js`. The e2e test needs Playwright (`npm install && npx playwright install chromium`; on Linux also `sudo npx playwright install-deps chromium`). `test/validate-bem.mjs` needs only Node; `test/capytaine_ref.py` (regenerates the Capytaine references) needs `pip install capytaine`. Regenerate the models with `python3 test/make_models.py`.
 
 Worst-case error on curved bodies, from faceting (planar bodies match to about 1e-9): Fine 0.026 %, Normal 0.22 %, Coarse 1.8 %.

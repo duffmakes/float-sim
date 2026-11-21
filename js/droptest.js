@@ -107,23 +107,36 @@ export function initDropTest(api) {
     const bodyTris = transformTris(st.model.tris, mat3.identity(), G);
     // added mass & reference frequency from the floating hydrostatics (heave natural frequency)
     const IG = api.getInertiaBody();
-    let A = [0, 0, 0], wRef = 1;
+    let A = [0, 0, 0], wRef = 1, B33 = null, Brot = null;
+    D.coeffNote = 'estimates';
     if (st.H.status !== 'sinks' && st.H.wp.area > 0) {
       const IGw = mat3.mul(st.R, mat3.mul(IG, mat3.transpose(st.R)));
       const c = defaultHydroCoeffs(st.H, m, IGw, st.rho);
       A = c.A.slice(0, 3);
+      // panel-method added mass and radiation damping at the natural frequencies (section 7 switch), if available
+      const pm = api.simCoeffs ? api.simCoeffs() : null;
+      if (pm) { A = pm.A.slice(0, 3); B33 = pm.Bd[2]; Brot = pm.Bd.slice(3, 6); D.coeffNote = `panel method (from ${pm.source})`; }
       wRef = Math.sqrt(st.rho * 9.80665 * st.H.wp.area / (m + A[2]));
     }
     return new DropSim({
       bodyTris, mass: m, inertiaG: IG, rhoW: st.rho, rhoA: Math.max(0, parseFloat($('dzRhoA').value) || 1.225),
       CdW: Math.max(0, parseFloat($('dzCdW').value) || 0), CdA: Math.max(0, parseFloat($('dzCdA').value) || 0),
       q0: mat3ToQuat(D.start.R), z0: D.start.zG, vz0: parseFloat($('dzV0').value) || 0, addedMass: A, wRef,
-      zetaRot: 0.1, zetaHeave: 0.15,
+      zetaRot: 0.1, zetaHeave: 0.15, B33, Brot,
     });
   }
-  function start() {
+  async function start() {
+    if (D.starting) return;
     if (!D.placed) place();
-    if (!D.sim || D.done) { D.sim = makeSim(); D.done = false; }
+    if (!D.sim || D.done) {
+      if (api.ensureSimBem) {
+        D.starting = true;
+        try { await api.ensureSimBem((t) => { $('dzInfo').innerHTML = t; }); }
+        catch (err) { $('dzInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+        finally { D.starting = false; }
+      }
+      D.sim = makeSim(); D.done = false;
+    }
     D.running = true; $('dzRun').textContent = '❚❚ Pause';
   }
   function stop() { D.running = false; $('dzRun').textContent = D.sim && !D.done ? '▶ Resume' : '▶ Release'; }
@@ -184,7 +197,7 @@ export function initDropTest(api) {
       row('Maximum speed', `${f(s.terminal)} m/s`),
       sim.settled() ? row('Settled', `after ${f(sim.t)} s at ${Lm(sim.p[2])}${eq && Number.isFinite(eq.zG) ? ` (static float height ${Lm(eq.zG)})` : ''}`) : '',
     ].join('');
-    $('dzStats').innerHTML = `<table>${rows}</table><span class="hint">Simple model: quadratic drag on the CoG velocity using the hull's projected area, water/air blended by the submerged fraction, added mass and rotational damping scaled by submergence, linear wave-making damping while surface-piercing. No slamming pressures, splash or cavity effects.</span>`;
+    $('dzStats').innerHTML = `<table>${rows}</table><span class="hint">Simple model: quadratic drag on the CoG velocity using the hull's projected area, water/air blended by the submerged fraction, added mass and rotational damping scaled by submergence, linear wave-making damping while surface-piercing. No slamming pressures, splash or cavity effects. Added mass &amp; wave damping: ${D.coeffNote || 'estimates'}.</span>`;
     const v = $('dropVerdict');
     if (sinks) { v.className = 'verdict bad'; v.innerHTML = '<b>✕ Sinks</b>The body is denser than water.'; }
     else if (sim.settled()) { v.className = 'verdict good'; v.innerHTML = `<b>✓ Stabilized</b>Settled at the surface after ${f(sim.t)} s${s.fullySubmerged ? `, after going fully under water${startAir ? ` (plunged to ${Lm(s.minZ)})` : ''}` : ''}.`; }

@@ -3,8 +3,9 @@ import { mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, 
 import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G, regularAmplitude, waveNumber } from './waves.js';
 import {
   refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, raoAt, spectralResponse, spectralFromSweep,
-  diffractionCheck, waterplaneExtent, bodyFrameVolQ, DOF,
+  diffractionCheck, waterplaneExtent, bodyFrameVolQ, DOF, bemSweep, raoAtBem, bemNatural, bemExtraDamping, bemCoeffsAt,
 } from './hydro.js';
+import { runBem } from './bemrun.js';
 import { WaveSim, seriesStats } from './sim.js';
 import { lineChart, heatmap, SERIES, rampColor } from './charts.js';
 
@@ -13,7 +14,7 @@ const f = (x, d = 3) => (Number.isFinite(x) ? (+x.toPrecision(d)).toLocaleString
 
 export function initSeakeeping(api) {
   const { THREE } = api;
-  const K = { prep: null, sim: null, running: false, worker: null, stats: null, rao: null, lastChart: 0, specType: 'jonswap', waveMode: 'spectrum' };
+  const K = { prep: null, sim: null, running: false, worker: null, stats: null, rao: null, lastChart: 0, specType: 'jonswap', waveMode: 'spectrum', simBem: null, bemRun: null };
 
   // ------------------------------------------------------------ wave surface mesh
   const waveMat = api.water.material.clone();
@@ -72,7 +73,7 @@ export function initSeakeeping(api) {
   });
   $('ssHead').oninput = () => { $('ssHeadN').value = $('ssHead').value; onInputs(); };
   $('ssHeadN').onchange = () => { $('ssHead').value = $('ssHeadN').value; onInputs(); };
-  for (const id of ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5', 'hDiffH', 'hDiffV']) $(id).addEventListener('change', () => { K.prep = null; onInputs(); });
+  for (const id of ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5', 'hDiffH', 'hDiffV', 'hBemSim', 'hX3', 'hX4', 'hX5']) $(id).addEventListener('change', () => { K.prep = null; onInputs(); });
   $('hReset').onclick = () => { for (const id of ['hA11', 'hA22', 'hA33', 'hA55']) $(id).value = ''; $('hA44').value = 0.2; $('hZ3').value = 0.15; $('hZ4').value = 0.08; $('hZ5').value = 0.15; $('hDiffH').checked = true; $('hDiffV').checked = false; K.prep = null; onInputs(); };
   // wave drift settings (apply to the next run; restart a running one so the change shows straight away)
   const driftParams = (s) => ($('driftOn').checked
@@ -135,6 +136,53 @@ export function initSeakeeping(api) {
     K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {} };
     return K.prep;
   }
+  // ------------------------------------------------------------ panel-method (BEM) coefficients
+  // Panel-method results depend only on the floating body: geometry, mass, CoG, water and attitude.
+  const bodyKey = (st) => JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler()]);
+  const num0 = (id) => { const v = parseFloat($(id).value); return Number.isFinite(v) && v > 0 ? v : 0; };
+  const extraZeta = () => [0, 0, num0('hX3'), num0('hX4'), num0('hX5'), 0];
+  // Added mass and damping for the time-domain simulators from the panel method, at each mode's natural frequency.
+  // Taken from the last panel-method RAO sweep of this body, or a quick coarse sweep around the natural frequencies.
+  async function ensureSimBem(onText = () => {}) {
+    if (!$('hBemSim').checked) return null;
+    const st = api.getState(); if (!st || st.H.status === 'sinks') return null;
+    const key = bodyKey(st);
+    if (K.simBem && K.simBem.key === key) return K.simBem;
+    const P = prepare(); if (!P) return null;
+    if (K.rao && K.rao.bem && K.rao.bodyKey === key && coversNatural(P, K.rao.bem)) { K.simBem = { key, bem: K.rao.bem, source: 'the panel-method RAO sweep' }; return K.simBem; }
+    const wn = [2, 3, 4].map((j) => P.model.wn[j]).filter((w) => w > 0);
+    // the estimates put the natural frequencies within ~30 % of the panel-method values
+    const lo = 0.5 * Math.min(...(wn.length ? wn : [1])), hi = 1.8 * Math.max(...(wn.length ? wn : [1]));
+    const omegas = Array.from({ length: 12 }, (_, i) => lo * Math.pow(hi / lo, i / 11));
+    onText('Computing panel-method added mass and damping (coarse mesh, 12 frequencies)…');
+    const run = runBem({ rel: P.rel, zw: P.zw, rho: st.rho, omegas, fidelity: 'coarse', waveRefine: false, onProgress: (q) => onText(q.text) });
+    const bem = await run.promise;
+    K.simBem = { key, bem, source: 'a quick coarse panel-method sweep' };
+    return K.simBem;
+  }
+  // a sweep can stand in for the quick one only if it spans the heave, roll and pitch natural frequencies
+  const coversNatural = (P, bem) => bemNatural(P.model, bem).every((n, j) => j < 2 || j > 4 || !(n.w > 0) || n.inRange);
+  // The linear model the simulators use (and the linear predictions they are compared with): the estimate model,
+  // or the same with panel-method added mass and damping when those are on and available for this body.
+  function simModel(P, s = null) {
+    const sb = $('hBemSim').checked && K.simBem && K.simBem.key === bodyKey(P.st) ? K.simBem : null;
+    if (!sb) return { model: P.model, A: P.coeffs.A, Bd: P.model.Bd, source: 'estimates' };
+    const T0 = s && s.active && s.T0 > 0 ? s.T0 : 0, ckey = JSON.stringify([T0, extraZeta()]);
+    if (P.simCache && P.simCache.sb === sb && P.simCache.ckey === ckey) return P.simCache.out;
+    const bem = sb.bem, nat = bemNatural(P.model, bem), ext = bemExtraDamping(P.model, nat, extraZeta());
+    const clamp = (w) => Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w));
+    const wWave = T0 ? 2 * Math.PI / T0 : (nat[2].w || bem.omegas[0]);
+    const A = [], Bd = [], wn = [];
+    for (let j = 0; j < 6; j++) {
+      const c = bemCoeffsAt(bem, clamp(nat[j].w > 0 ? nat[j].w : wWave));
+      A.push(c.A[j][j]); Bd.push(c.B[j][j] + ext[j]); wn.push(nat[j].w);
+    }
+    const out = { model: { ...P.model, Am: A, Bd, wn }, A, Bd, source: sb.source, nat };
+    P.simCache = { sb, ckey, out };
+    return out;
+  }
+  const simSourceNote = (sm) => (sm.source === 'estimates' ? 'added mass &amp; damping: estimates' : `added mass &amp; damping: panel method (from ${sm.source})`);
+
   // time-domain hull: panels ~ λ_min/9 of the current sea, capped for speed
   function hullFor(P, field) {
     const lam = Math.min(field.minWavelength, P.size * 4);
@@ -151,7 +199,7 @@ export function initSeakeeping(api) {
   const dtFor = (P, field) => Math.min(2 * Math.PI / Math.max(field.maxOmega || 1, ...P.model.wn) / 60, 0.05);
   const fieldFor = () => WaveField.fromParams(sea());
   // linear steady-state amplitude of DOF j in a regular wave (m, or deg for rotations)
-  const regularLinear = (P, s, j) => { const x = raoAt(P.model, 2 * Math.PI / s.T, s.heading).xi[j]; return Math.hypot(x[0], x[1]) * s.A * (j >= 3 ? 180 / Math.PI : 1); };
+  const regularLinear = (P, s, j) => { const x = raoAt(simModel(P, s).model, 2 * Math.PI / s.T, s.heading).xi[j]; return Math.hypot(x[0], x[1]) * s.A * (j >= 3 ? 180 / Math.PI : 1); };
 
   // ------------------------------------------------------------ spectrum chart + warnings
   function drawRegular(P, s) {
@@ -164,7 +212,7 @@ export function initSeakeeping(api) {
     if (steep > 1 / 7) notes.push(`<span class="bad">✕ Steepness H/λ = ${f(steep, 2)} exceeds the breaking limit of about 1/7. A wave this steep cannot exist, so the linear results are not physical.</span>`);
     else if (steep > 1 / 20) notes.push(`<span class="warn">⚠ Steepness H/λ = ${f(steep, 2)} is above about 1/20, where linear (Airy) theory starts to under-predict crests.</span>`);
     if (P) {
-      const wn = P.model.wn;
+      const wn = simModel(P, s).model.wn;
       for (const [n, j] of [['Heave', 2], ['Roll', 3], ['Pitch', 4]]) {
         if (wn[j] > 0 && Math.abs(w / wn[j] - 1) < 0.15) notes.push(`<span class="warn">⚠ The wave period is within 15 % of the ${n.toLowerCase()} natural period (${f(2 * Math.PI / wn[j])} s): resonant ${n.toLowerCase()}.</span>`);
       }
@@ -182,7 +230,7 @@ export function initSeakeeping(api) {
     if (s.mode === 'regular') return drawRegular(P, s);
     if (!(s.Hs > 0 && s.Tp > 0)) { lineChart($('specCv'), { series: [] }); $('specInfo').innerHTML = 'Calm water: no spectrum.'; return; }
     const wp = 2 * Math.PI / s.Tp;
-    const wn = P ? P.model.wn : [];
+    const wn = P ? simModel(P, s).model.wn : [];
     const wTop = Math.max(4 * wp, ...(wn.filter((w) => w > 0).map((w) => w * 1.25)));
     const xs = Array.from({ length: 300 }, (_, i) => (i + 1) * wTop / 300);
     const series = [
@@ -207,17 +255,24 @@ export function initSeakeeping(api) {
   }
 
   // ------------------------------------------------------------ real-time run in waves
-  function startRun() {
+  async function startRun() {
+    if (K.starting) return;
+    K.starting = true;
+    try { await ensureSimBem((t) => { $('waveInfo').innerHTML = t; }); }
+    catch (err) { $('waveInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+    finally { K.starting = false; }
     const P = prepare(); if (!P) return;
     api.stopCalmSim();
     const s = sea();
     const field = fieldFor();
     const hull = hullFor(P, field);
+    const sm = simModel(P, s);
     K.sim = new WaveSim({
       hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
-      A: P.coeffs.A, Bd: P.model.Bd, dt: dtFor(P, field), ramp: s.T0 > 0 ? Math.min(2 * s.T0, 20) : 0, vanishDeg: P.vanish || 180,
+      A: sm.A, Bd: sm.Bd, dt: dtFor(P, field), ramp: s.T0 > 0 ? Math.min(2 * s.T0, 20) : 0, vanishDeg: P.vanish || 180,
       volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s),
     });
+    K.simNote = simSourceNote(sm);
     K.field = field; K.hull = hull; K.running = true;
     K.runSea = s; K.runLin = s.mode === 'regular' && s.active ? [2, 3, 4].map((j) => regularLinear(P, s, j)) : null;
     sizeWaveMesh(s.mode === 'regular' && s.active ? Math.max(P.st.model.diag * 8, Math.min(2 * 2 * Math.PI / waveNumber(2 * Math.PI / s.T), P.st.model.diag * 40)) : P.st.model.diag * 8);
@@ -268,7 +323,7 @@ export function initSeakeeping(api) {
         so far: roll σ ${f(rs.sd)}°, max ${f(sim.stats.maxRoll)}° · pitch max ${f(sim.stats.maxPitch)}° · green-water events ${sim.stats.greenWater}<br>
         ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}${driftLine(sim)}
         ${sim.stats.capsized ? `<br><span class="bad">✕ Capsized at t = ${f(sim.stats.capsizeT)} s</span>` : ''}
-        <br><span class="hint">${(K.hull.idx.length / 3).toLocaleString()} panels · ${field.n} wave components · dt ${f(sim.dt * 1000)} ms</span>`;
+        <br><span class="hint">${(K.hull.idx.length / 3).toLocaleString()} panels · ${field.n} wave components · dt ${f(sim.dt * 1000)} ms · ${K.simNote}</span>`;
     }
   }
 
@@ -312,11 +367,16 @@ export function initSeakeeping(api) {
   }
 
   // ------------------------------------------------------------ statistics run (worker)
-  $('waveStats').onclick = () => {
+  $('waveStats').onclick = async () => {
     if (K.locked) return;
+    if (!sea().active) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
+    $('waveStats').disabled = true;
+    try { await ensureSimBem((t) => { $('waveInfo').innerHTML = t; }); }
+    catch (err) { $('waveInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+    $('waveStats').disabled = false;
     const P = prepare(); if (!P) return;
     const s = sea();
-    if (!s.active) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
+    const sm = simModel(P, s);
     stopRun();
     const reg = s.mode === 'regular';
     const field = fieldFor(), hull = hullFor(P, field), dt = dtFor(P, field), duration = (reg ? 5 : 20) * 60, ramp = Math.min(2 * s.T0, 20);
@@ -333,7 +393,7 @@ export function initSeakeeping(api) {
       drawHistories(series);
       if (reg) return showRegularStats(P, s, stats, hull, field, t0);
       const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma);
-      const spec = (j) => spectralResponse(P.model, S, s.heading, j, field.meta.wMin, field.meta.wMax, 300, 20 * 60);
+      const spec = (j) => spectralResponse(sm.model, S, s.heading, j, field.meta.wMin, field.meta.wMax, 300, 20 * 60);
       const sr = spec(3), sp = spec(4), sh = spec(2);
       const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
       const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
@@ -350,13 +410,13 @@ export function initSeakeeping(api) {
         <tr><td>Mean drift</td><td colspan="2">${driftRow(stats)}</td></tr>
         <tr><td>Green water on deck</td><td colspan="2">${stats.greenWater} events, ${f(100 * greenFrac, 2)} % of the time</td></tr>
         <tr><td>Capsize</td><td colspan="2">${stats.capsized ? `<span class="bad">✕ yes, at t = ${f(stats.capsizeT)} s</span>` : '<span class="good">✓ no</span>'}</td></tr>
-      </table><span class="hint">Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · ${field.n} components · dt ${f(stats.dt * 1000)} ms.
+      </table><span class="hint">Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · ${field.n} components · dt ${f(stats.dt * 1000)} ms · ${simSourceNote(sm)}.
       The two columns should agree within ~10 % for moderate motions; larger gaps indicate nonlinearity (large roll, deck immersion).</span>`;
       $('waveInfo').innerHTML = `Statistics complete: ${v.text}.`;
     };
     K.worker.postMessage({
       verts: hull.verts.buffer.slice(0), idx: hull.idx.buffer.slice(0), mass: P.st.m, IGb: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw,
-      fieldParams: { ...s }, A: P.coeffs.A, Bd: P.model.Bd, dt, duration, ramp, vanishDeg: P.vanish || 180,
+      fieldParams: { ...s }, A: sm.A, Bd: sm.Bd, dt, duration, ramp, vanishDeg: P.vanish || 180,
       volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes, drift: driftParams(s),
     });
   };
@@ -390,19 +450,27 @@ export function initSeakeeping(api) {
     if (K.locked) return;
     const P = prepare(); if (!P) return;
     const s = sea();
+    const sm = simModel(P, s);
+    const bemOk = K.rao && K.rao.bem && K.rao.bodyKey === bodyKey(P.st) && !K.rao.stale;
+    const bemPts = bemOk ? bemSweep(P.model, K.rao.bem, [s.heading], bemExtraDamping(P.model, bemNatural(P.model, K.rao.bem), extraZeta()))[0].points : null;
+    let usedBem = 0, usedEst = 0;
     const rows = SEA_STATES.filter((x) => x.Hs > 0).map((x) => {
       const gamma = $('ssDnvGamma').checked ? dnvGamma(x.Hs, x.Tp) : s.gamma;
       const S = spectrumFn(s.type, x.Hs, x.Tp, gamma);
       const wp = 2 * Math.PI / x.Tp;
-      const r = (j) => spectralResponse(P.model, S, s.heading, j, 0.4 * wp, Math.max(4 * wp, ...P.model.wn.map((w) => 1.5 * w)), 300, 3 * 3600);
+      const m0 = x.Hs * x.Hs / 16;
+      const viaBem = bemPts && spectralFromSweep(bemPts, S, 2, 3 * 3600, m0).coverage >= 0.9;
+      if (viaBem) usedBem++; else usedEst++;
+      const r = (j) => (viaBem ? spectralFromSweep(bemPts, S, j, 3 * 3600, m0)
+        : spectralResponse(sm.model, S, s.heading, j, 0.4 * wp, Math.max(4 * wp, ...sm.model.wn.map((w) => 1.5 * w)), 300, 3 * 3600));
       const roll = r(3), pitch = r(4), heave = r(2);
       const v = verdict({ ssLabel: `SS${x.ss}`, maxRoll: roll.mpm, vanish: P.vanish, capsized: false, greenFrac: 0 });
       const d = diffractionCheck(P.size, wp);
-      return `<tr><td>SS${x.ss}</td><td>${x.Hs}</td><td>${x.Tp}${x.tpDerived ? '*' : ''}</td><td>${f(heave.sig)}</td><td>${f(roll.sig)}</td><td>${f(roll.mpm)}</td><td>${f(pitch.sig)}</td>
+      return `<tr><td>SS${x.ss}${viaBem ? '' : (bemPts ? ' <span class="hint" title="outside the panel-method frequency range: linear estimate model">†</span>' : '')}</td><td>${x.Hs}</td><td>${x.Tp}${x.tpDerived ? '*' : ''}</td><td>${f(heave.sig)}</td><td>${f(roll.sig)}</td><td>${f(roll.mpm)}</td><td>${f(pitch.sig)}</td>
         <td><span class="badge ${v.level}">${v.icon} ${v.word}</span>${d.ok ? '' : ` <span class="badge warn" title="body is ${f(d.ratio, 2)} of the peak wavelength; diffraction not modelled">! D/λ ${f(d.ratio, 2)}</span>`}</td></tr>`;
     });
     $('ssTable').innerHTML = `<table class="ss-table"><tr><th>SS</th><th>Hs m</th><th>Tp s</th><th>heave sig m</th><th>roll sig °</th><th>roll max 3 h °</th><th>pitch sig °</th><th>verdict</th></tr>${rows.join('')}</table>
-      <span class="hint">Linear spectral estimate at β = ${s.heading}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}): significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}). Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
+      <span class="hint">Linear spectral estimate at β = ${s.heading}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (section 8)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemPts ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}). Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
   };
 
   // ------------------------------------------------------------ RAO sweep
@@ -429,6 +497,10 @@ export function initSeakeeping(api) {
   };
   const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   let raoBusy = false;
+  const bemOn = () => $('raoMethod').value === 'bem';
+  const syncMethod = () => { for (const id of ['bemFid', 'bemIrrWrap', 'bemHint']) $(id).closest(id === 'bemFid' ? 'label' : '*').classList.toggle('hidden', !bemOn()); };
+  $('raoMethod').onchange = syncMethod; syncMethod();
+  $('raoCancel').onclick = () => { if (K.bemRun) K.bemRun.cancel(); };
   $('raoRun').onclick = async () => {
     if (raoBusy || K.locked) return;
     const [f0, f1] = raoRange();
@@ -447,20 +519,44 @@ export function initSeakeeping(api) {
       if (!P) throw new Error('No floating body to analyse (the model sinks or none is loaded).');
       const freqs = Array.from({ length: n }, (_, i) => f0 + (f1 - f0) * i / (n - 1));
       const omegas = freqs.map((x) => TWO_PI * x);
-      const sweep = await raoSweepAsync(P.model, omegas, heads, (p) => progress(p, `Computing RAOs… ${Math.round(p * 100)} % (${heads.length} headings × ${n} frequencies)`));
-      K.rao = { freqs, omegas, heads, sweep, P, resp: new Map() };
+      if (!bemOn()) {
+        const sweep = await raoSweepAsync(P.model, omegas, heads, (p) => progress(p, `Computing RAOs… ${Math.round(p * 100)} % (${heads.length} headings × ${n} frequencies)`));
+        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'fk', bodyKey: bodyKey(P.st) };
+        const wn = P.model.wn;
+        $('raoInfo').innerHTML = `Froude–Krylov + estimates: ${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${P.model.quads.length.toLocaleString()} wetted panels.<br>
+          Natural frequencies: heave ${f(wn[2] / TWO_PI)} Hz, roll ${f(wn[3] / TWO_PI)} Hz, pitch ${f(wn[4] / TWO_PI)} Hz.
+          Diffraction correction: ${P.diffModes[0] ? 'surge/sway on' : 'surge/sway off'}, ${P.diffModes[2] ? 'heave on' : 'heave off'}.`;
+      } else {
+        const fid = $('bemFid').value, irr = $('bemIrr').checked, key = bodyKey(P.st);
+        const bkey = JSON.stringify([key, f0, f1, n, fid, irr, heads]);
+        let bem = K.rao && K.rao.bemKey === bkey ? K.rao.bem : null;
+        if (!bem) {
+          $('raoCancel').classList.remove('hidden');
+          K.bemRun = runBem({ rel: P.rel, zw: P.zw, rho: P.st.rho, omegas, headings: heads, fidelity: fid, irr, onProgress: (q) => progress(q.frac, q.text) });
+          try { bem = await K.bemRun.promise; } finally { K.bemRun = null; $('raoCancel').classList.add('hidden'); }
+        }
+        const nat = bemNatural(P.model, bem), Bextra = bemExtraDamping(P.model, nat, extraZeta());
+        const sweep = bemSweep(P.model, bem, heads, Bextra);
+        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'bem', bem, bemKey: bkey, bodyKey: key, nat, Bextra };
+        if ($('hBemSim').checked && coversNatural(P, bem) && !(K.simBem && K.simBem.key === key && K.simBem.bem === bem)) K.simBem = { key, bem, source: 'the panel-method RAO sweep' };
+        const I = bem.info, z = extraZeta();
+        const natTxt = [['heave', 2], ['roll', 3], ['pitch', 4]].map(([nm, j]) => nat[j].w > 0
+          ? `${nm} ${f(nat[j].w / TWO_PI)} Hz (T ${f(TWO_PI / nat[j].w)} s, radiation damping ζ ${f(100 * nat[j].zeta, 2)} %${z[j] ? ` + ${f(100 * z[j], 2)} % extra` : ''})${nat[j].inRange ? '' : ' <span class="warn">outside the sweep</span>'}` : '').filter(Boolean).join(', ');
+        const low = [['heave', 2], ['roll', 3], ['pitch', 4]].filter(([, j]) => nat[j].w > 0 && nat[j].inRange && nat[j].zeta + z[j] < 0.02).map(([nm]) => nm);
+        $('raoInfo').innerHTML = `Panel method: ${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${I.panels.toLocaleString()} panels${I.lidPanels ? ` + ${I.lidPanels.toLocaleString()} lid` : ''} (${I.sym.x && I.sym.y ? 'two symmetry planes' : I.sym.x || I.sym.y ? 'one symmetry plane' : 'no symmetry'}, panel size ${f(I.h)} m, mean quality ${f(I.quality.qMean, 2)}) on ${I.workers} worker${I.workers > 1 ? 's' : ''}.<br>
+          Natural frequencies (with frequency-dependent added mass): ${natTxt}.
+          ${I.note ? `<br><span class="hint">${I.note}</span>` : ''}
+          ${low.length ? `<br><span class="warn">⚠ ${low.join(', ')} resonance has under 2 % of critical damping. That is what potential flow gives, but viscous effects make real peaks lower: add extra ζ in section 7 → Wave &amp; hydrodynamic settings if you know it.</span>` : ''}`;
+      }
       $('raoCsv').disabled = false; $('raoRaw').disabled = false;
-      const wn = P.model.wn;
-      $('raoInfo').innerHTML = `${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${P.model.quads.length.toLocaleString()} wetted panels.<br>
-        Natural frequencies: heave ${f(wn[2] / TWO_PI)} Hz, roll ${f(wn[3] / TWO_PI)} Hz, pitch ${f(wn[4] / TWO_PI)} Hz.
-        Diffraction correction: ${P.diffModes[0] ? 'surge/sway on' : 'surge/sway off'}, ${P.diffModes[2] ? 'heave on' : 'heave off'}.`;
       progress(1, 'Rendering plots…');
       await nextPaint();
       await drawRaoAsync();
     } catch (err) {
-      console.error(err);
-      $('raoInfo').innerHTML = `<span class="bad">${err.message || err}</span>`;
+      if (!err.cancelled) console.error(err);
+      $('raoInfo').innerHTML = err.cancelled ? '<span class="warn">Cancelled.</span>' : `<span class="bad">${err.message || err}</span>`;
       $('raoLoading').classList.add('hidden');
+      if (!K.rao) $('raoEmpty').classList.remove('hidden');
     } finally {
       raoBusy = false; $('raoRun').disabled = false; progress(null);
     }
@@ -484,7 +580,8 @@ export function initSeakeeping(api) {
     const unit = rot ? (slope ? 'deg/deg' : 'deg/m') : 'm/m';
     const color = (i) => (heads.length === 1 ? SERIES[0] : rampColor(i / (heads.length - 1)));
     const series = sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: freqs, y: h.points.map(val) }));
-    const vl = P.model.wn[j] > 0 ? [{ x: P.model.wn[j] / TWO_PI, label: `${DOF[j]} fn` }] : [];
+    const wnj = K.rao.nat ? K.rao.nat[j].w : P.model.wn[j];
+    const vl = wnj > 0 ? [{ x: wnj / TWO_PI, label: `${DOF[j]} fn` }] : [];
     const rampLegend = heads.length > 5 ? { label: 'heading', from: `β ${heads[0]}°`, to: `β ${heads[heads.length - 1]}°`, color: (t) => rampColor(t) } : null;
     lineChart($('raoCv'), { series, xLabel: 'f (Hz)', yLabel: `${DOF[j]} RAO (${unit})`, vlines: vl, height: 180, rampLegend });
     // phase is meaningless where the response vanishes (e.g. roll in head seas), so mask it there
@@ -500,7 +597,12 @@ export function initSeakeeping(api) {
     const j = +$('raoDof').value, rot = j >= 3, s = sea();
     if (!s.active) { $('raoResp').innerHTML = ''; return; }
     if (s.mode === 'regular') {
-      const rows = heads.map((b) => `<tr><td>β ${b}°</td><td>${f(regularLinear(P, { ...s, heading: b }, j))} ${rot ? '°' : 'm'}</td></tr>`);
+      const amp = (b) => {
+        if (!K.rao.bem) return regularLinear(P, { ...s, heading: b }, j);
+        const r = raoAtBem(P.model, K.rao.bem, TWO_PI / s.T, b, K.rao.Bextra);
+        return r ? Math.hypot(...r.xi[j]) * s.A * (rot ? 180 / Math.PI : 1) : NaN;
+      };
+      const rows = heads.map((b) => `<tr><td>β ${b}°</td><td>${Number.isFinite(amp(b)) ? `${f(amp(b))} ${rot ? '°' : 'm'}` : 'period outside the sweep'}</td></tr>`);
       $('raoResp').innerHTML = `<b>${DOF[j]} in a regular wave (${s.label}):</b><table><tr><td></td><td>steady amplitude, |RAO| × A</td></tr>${rows.join('')}</table>`;
       return;
     }
@@ -513,7 +615,8 @@ export function initSeakeeping(api) {
       let r = resp.get(key);
       if (!r) {
         r = spectralFromSweep(sweep[i].points, S, j, 3 * 3600, m0Wave);
-        if (r.coverage < 0.9) {
+        if (r.coverage < 0.9 && K.rao.bem) fallback = 'bem';
+        else if (r.coverage < 0.9) {
           fallback = true;
           $('raoLoadingText').textContent = `Sweep range covers ${Math.round(r.coverage * 100)} % of the sea's energy; re-solving on a full grid… (${i + 1}/${heads.length})`;
           await nextPaint();
@@ -524,7 +627,7 @@ export function initSeakeeping(api) {
       rows.push(`<tr><td>β ${heads[i]}°</td><td>${f(r.sig)} ${rot ? '°' : 'm'}</td><td>${f(r.mpm)} ${rot ? '°' : 'm'}</td></tr>`);
     }
     $('raoResp').innerHTML = `<b>${DOF[j]} in SS${ssSel.value} (Hs ${s.Hs} m, Tp ${s.Tp} s):</b><table><tr><td></td><td>significant (2σ)</td><td>most-probable max, 3 h</td></tr>${rows.join('')}</table>
-      ${fallback ? '<span class="hint">The RAO frequency range did not cover this sea state, so these were computed on a separate full grid.</span>' : ''}`;
+      ${fallback === 'bem' ? '<span class="warn">The RAO frequency range covers less than 90 % of this sea\'s energy, so these values are low. Widen the range and compute again.</span>' : fallback ? '<span class="hint">The RAO frequency range did not cover this sea state, so these were computed on a separate full grid.</span>' : ''}`;
   }
   const download = (name, text) => {
     const a = document.createElement('a');
@@ -548,20 +651,30 @@ export function initSeakeeping(api) {
       '# Float Sim raw RAO export',
       `# model: ${st.model.name}; mass ${num6(st.m)} kg; water density ${st.rho} kg/m^3; g 9.80665 m/s^2; deep water; zero forward speed`,
       '# axes: about the CoG G, world axes with the model +X along world X (yaw removed); z up; roll about x, pitch about y',
-      '# wave: eta = A cos(k(x cos beta + y sin beta) - omega t); complex amplitudes use exp(+i omega t), per unit wave amplitude A',
+      '# wave: eta = A cos(k(x cos beta + y sin beta) - omega t), phase measured at G; complex amplitudes use exp(+i omega t), per unit wave amplitude A',
       '# units: translations m/m, rotations rad/m; excitation forces N/m, moments N*m/m',
-      `# diffraction correction (surge, sway, heave): ${M.diffraction.join(', ')}`,
-      `# natural frequencies (rad/s, uncoupled): ${M.wn.map(num6).join(' ')}`,
-      `# added mass A (diagonal; kg, kg*m^2): ${M.Am.map(num6).join(' ')}`,
-      `# linear damping B (diagonal; N*s/m, N*m*s/rad): ${M.Bd.map(num6).join(' ')}`,
+      ...(K.rao.bem ? [
+        `# hydrodynamics: panel method (deep water), ${K.rao.bem.info.panels} panels + ${K.rao.bem.info.lidPanels} lid, panel size ${num6(K.rao.bem.info.h)} m; excitation from the Haskind relation`,
+        `# natural frequencies (rad/s, uncoupled, with A(omega)): ${K.rao.nat.map((n) => num6(n.w)).join(' ')}`,
+        `# extra viscous damping (diagonal; N*s/m, N*m*s/rad): ${K.rao.Bextra.map(num6).join(' ')}`,
+        '# columns A_ij, B_ij: frequency-dependent added mass and radiation damping about G (diagonal and the surge-pitch, sway-roll couplings)',
+      ] : [
+        `# hydrodynamics: Froude-Krylov with estimated added mass and damping; diffraction correction (surge, sway, heave): ${M.diffraction.join(', ')}`,
+        `# natural frequencies (rad/s, uncoupled): ${M.wn.map(num6).join(' ')}`,
+        `# added mass A (diagonal; kg, kg*m^2): ${M.Am.map(num6).join(' ')}`,
+        `# linear damping B (diagonal; N*s/m, N*m*s/rad): ${M.Bd.map(num6).join(' ')}`,
+      ]),
       ...mat('mass matrix M', M.Mm), ...mat('restoring matrix C', M.Cm),
     ];
     const cols = ['beta_deg', 'f_Hz', 'omega_rad_s', 'k_rad_per_m', 'wavelength_m'];
     for (const d of DOF) cols.push(`${d}_xi_re`, `${d}_xi_im`, `${d}_xi_abs`, `${d}_xi_phase_deg`, `${d}_F_re`, `${d}_F_im`);
+    const AB = [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [0, 4], [1, 3]];
+    if (K.rao.bem) for (const [i, j] of AB) cols.push(`A${i + 1}${j + 1}`); if (K.rao.bem) for (const [i, j] of AB) cols.push(`B${i + 1}${j + 1}`);
     const lines = [...hdr, cols.join(',')];
     for (const h of K.rao.sweep) for (const p of h.points) {
       const row = [h.beta, p.f, p.w, p.k, p.lambda];
       for (let j = 0; j < 6; j++) row.push(p.xi[j][0], p.xi[j][1], p.amp[j], p.phase[j], p.F[j][0], p.F[j][1]);
+      if (K.rao.bem) { for (const [i, j] of AB) row.push(p.A[i][j]); for (const [i, j] of AB) row.push(p.B[i][j]); }
       lines.push(row.map(num6).join(','));
     }
     download('rao_raw.csv', lines.join('\n'));
@@ -601,6 +714,9 @@ export function initSeakeeping(api) {
       for (const n of document.querySelectorAll('.lock-note')) n.classList.toggle('hidden', !on);
     },
     clearRao() { K.rao = null; $('raoCsv').disabled = true; $('raoRaw').disabled = true; },
+    // panel-method coefficients for the drop test: { A[6], Bd[6], source } at the natural frequencies, or null
+    ensureSimBem,
+    simCoeffs() { const P = prepare(); if (!P) return null; const sm = simModel(P, null); return sm.source === 'estimates' ? null : sm; },
     get running() { return K.running; },
   };
 }

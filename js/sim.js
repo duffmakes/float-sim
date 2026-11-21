@@ -297,11 +297,13 @@ export function seriesStats(t, x, tStart = 0) {
 // bodyTris: hull relative to G in the body frame (m). inertiaG: body-frame inertia about G.
 export class DropSim {
   constructor({ bodyTris, mass, inertiaG, rhoW, rhoA = 1.225, CdW = 1.0, CdA = 1.0, q0, z0, vz0 = 0,
-    addedMass = [0, 0, 0], zetaRot = 0.1, zetaHeave = 0.15, wRef = 1, g = G0, maxTime = 600 }) {
+    addedMass = [0, 0, 0], zetaRot = 0.1, zetaHeave = 0.15, wRef = 1, g = G0, maxTime = 600, B33 = null, Brot = null, fEq = null }) {
     this.b = bodyTris; this.buf = new Float64Array(bodyTris.length);
     this.m = mass; this.Ib = inertiaG; this.rhoW = rhoW; this.rhoA = rhoA; this.CdW = CdW; this.CdA = CdA; this.g = g;
     this.q = q0.slice(); this.p = [0, 0, z0]; this.v = [0, 0, vz0]; this.w = [0, 0, 0]; this.t = 0;
     this.Aadd = addedMass; this.zetaRot = zetaRot; this.zetaHeave = zetaHeave; this.wRef = wRef; this.maxTime = maxTime; this.still = 0;
+    // panel-method radiation damping (N·s/m and N·m·s/rad about G, world axes) replaces the ζ-based terms when given
+    this.B33 = B33; this.Brot = Brot;
     // body-frame area vectors (projected area) and volume / centroid
     const n = bodyTris.length / 9;
     this.S = new Float64Array(n * 3);
@@ -321,6 +323,9 @@ export class DropSim {
     // f = 1 even on a slightly open CAD mesh
     let zmax = -Infinity; for (let i = 2; i < bodyTris.length; i += 3) zmax = Math.max(zmax, bodyTris[i]);
     this.V = submerged(bodyTris, zmax + 1e-6 * (ext + 1)).V || V;
+    // submerged fraction when floating: addedMass and the rotational water damping are the floating values, so they
+    // scale as f / fEq (zero in air, full at the float position) and stay at that value when the body is deeper
+    this.fEq = fEq ?? Math.max(1e-3, Math.min(1, mass / (rhoW * this.V)));
     // step: resolve the heave/rotation period, and never move more than ~1 % of the body size per step
     const Imin = Math.max(1e-12, Math.min(inertiaG[0], inertiaG[4], inertiaG[8]));
     const wr = Math.sqrt(rhoW * g * Math.max(V, 1e-12) * ext / Imin);
@@ -358,18 +363,19 @@ export class DropSim {
     }
     const piercing = s.wp.area > 1e-9 * this.size * this.size;
     this.piercing = piercing;
-    if (piercing) F[2] -= 2 * this.zetaHeave * (m + this.Aadd[2]) * this.wRef * this.v[2];
+    if (piercing) F[2] -= (this.B33 !== null ? this.B33 : 2 * this.zetaHeave * (m + this.Aadd[2]) * this.wRef) * this.v[2];
     // torques about G: buoyancy (water + air) and rotational water damping
     const rB = [s.B[0] - this.p[0], s.B[1] - this.p[1], s.B[2] - this.p[2]], rA = [Cdry[0] - this.p[0], Cdry[1] - this.p[1]];
     const tau = [rB[1] * Fbw + rA[1] * Fba, -rB[0] * Fbw - rA[0] * Fba, 0];
     const Iw = mat3.mul(R, mat3.mul(this.Ib, mat3.transpose(R)));
     const Iww = mat3.apply(Iw, this.w);
-    const dRot = f * 2 * this.zetaRot * this.wRef;
-    for (let k = 0; k < 3; k++) tau[k] -= dRot * Iww[k];
+    const fs = Math.min(1, f / this.fEq);
+    if (this.Brot) for (let k = 0; k < 3; k++) tau[k] -= fs * this.Brot[k] * this.w[k];
+    else { const dRot = fs * 2 * this.zetaRot * this.wRef; for (let k = 0; k < 3; k++) tau[k] -= dRot * Iww[k]; }
     const gyro = [this.w[1] * Iww[2] - this.w[2] * Iww[1], this.w[2] * Iww[0] - this.w[0] * Iww[2], this.w[0] * Iww[1] - this.w[1] * Iww[0]];
     const alpha = mat3.apply(mat3.inverse(Iw), [tau[0] - gyro[0], tau[1] - gyro[1], tau[2] - gyro[2]]);
     for (let k = 0; k < 3; k++) {
-      this.v[k] += F[k] / (m + f * this.Aadd[k]) * dt; this.p[k] += this.v[k] * dt;
+      this.v[k] += F[k] / (m + fs * this.Aadd[k]) * dt; this.p[k] += this.v[k] * dt;
       this.w[k] += alpha[k] * dt;
     }
     const [qx, qy, qz, qw] = this.q, [wx, wy, wz] = this.w, h = 0.5 * dt;
