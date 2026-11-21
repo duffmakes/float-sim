@@ -762,6 +762,8 @@ drop = initDropTest({
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
   setLocked: (on) => { sea.setLocked(on); for (const id of ['simRun', 'simSettle']) $(id).disabled = on; },
   showTab: (id) => sea.showTab(id),
+  simCoeffs: () => sea.simCoeffs(),
+  ensureSimBem: (cb) => sea.ensureSimBem(cb),
   refresh: () => update(),
   recenter: () => frameCamera(),
   follow: (x, y, z) => {
