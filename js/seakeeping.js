@@ -543,9 +543,22 @@ export function initSeakeeping(api) {
         const natTxt = [['heave', 2], ['roll', 3], ['pitch', 4]].map(([nm, j]) => nat[j].w > 0
           ? `${nm} ${f(nat[j].w / TWO_PI)} Hz (T ${f(TWO_PI / nat[j].w)} s, radiation damping ζ ${f(100 * nat[j].zeta, 2)} %${z[j] ? ` + ${f(100 * z[j], 2)} % extra` : ''})${nat[j].inRange ? '' : ' <span class="warn">outside the sweep</span>'}` : '').filter(Boolean).join(', ');
         const low = [['heave', 2], ['roll', 3], ['pitch', 4]].filter(([, j]) => nat[j].w > 0 && nat[j].inRange && nat[j].zeta + z[j] < 0.02).map(([nm]) => nm);
+        // radiation damping is radiated wave energy, so B_jj < 0 means the panels are too coarse at that frequency.
+        // Scale by the largest translational or rotational damping: a term that is zero by symmetry (yaw of a buoy)
+        // is round-off around zero, not a negative result.
+        const DOF = ['surge', 'sway', 'heave', 'roll', 'pitch', 'yaw'];
+        const bScale = [0, 3].map((o) => Math.max(...bem.B.flatMap((b) => [0, 1, 2].map((i) => Math.abs(b[o + i][o + i])))));
+        const negB = DOF.map((nm, j) => {
+          const pk = bScale[j < 3 ? 0 : 1];
+          const k = bem.B.findIndex((b) => b[j][j] < -0.01 * pk);
+          return pk > 0 && k >= 0 ? [nm, bem.omegas[k]] : null;
+        }).filter(Boolean);
+        const wNeg = negB.length ? Math.min(...negB.map(([, w]) => w)) : 0;
         $('raoInfo').innerHTML = `Panel method: ${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${I.panels.toLocaleString()} panels${I.lidPanels ? ` + ${I.lidPanels.toLocaleString()} lid` : ''} (${I.sym.x && I.sym.y ? 'two symmetry planes' : I.sym.x || I.sym.y ? 'one symmetry plane' : 'no symmetry'}, panel size ${f(I.h)} m, mean quality ${f(I.quality.qMean, 2)}) on ${I.workers} worker${I.workers > 1 ? 's' : ''}.<br>
           Natural frequencies (with frequency-dependent added mass): ${natTxt}.
           ${I.note ? `<br><span class="hint">${I.note}</span>` : ''}
+          ${irr && !I.lidPanels ? '<br><span class="warn">⚠ The irregular-frequency lid could not be built for this waterplane, so the results may show spurious spikes at the hull\'s irregular frequencies.</span>' : ''}
+          ${negB.length ? `<br><span class="warn">⚠ Radiation damping came out negative (${negB.map(([nm]) => nm).join(', ')}) from ${f(wNeg / TWO_PI)} Hz up. That is not physical: the panels are too coarse for those wavelengths, so use a finer fidelity or a lower top frequency.</span>` : ''}
           ${low.length ? `<br><span class="warn">⚠ ${low.join(', ')} resonance has under 2 % of critical damping. That is what potential flow gives, but viscous effects make real peaks lower: add extra ζ in section 7 → Wave &amp; hydrodynamic settings if you know it.</span>` : ''}`;
       }
       $('raoCsv').disabled = false; $('raoRaw').disabled = false;

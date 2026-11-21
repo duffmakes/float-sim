@@ -100,7 +100,9 @@ export function runBem({ rel, zw, rho, g = 9.80665, omegas, headings = [], fidel
       const heads = headingGrid(headings);
       const out = { omegas: omegas.slice(), headings: heads, A: new Array(omegas.length), B: new Array(omegas.length), X: new Array(omegas.length) };
       let next = 0, done = 0, iters = 0;
-      const order = omegas.map((_, k) => k);
+      // highest frequencies first: they cost the most (3-point wave integration, more GMRES iterations), so this balances
+      // the workers better and the ETA errs long rather than short
+      const order = omegas.map((_, k) => k).sort((a, b) => omegas[b] - omegas[a]);
       const report = () => {
         const el = (performance.now() - tSetup) / 1000;
         const eta = done ? el / done * (omegas.length - done) : null;

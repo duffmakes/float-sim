@@ -440,10 +440,13 @@ function forceMatrix(P, phi, rho) {
 }
 
 // wave part of ∫_panel J G dξ and ∫_panel J ∂G/∂n_ξ dξ at field point p (1- or 3-point rule) → out [Sr, Si, Dr, Di]
+// The 3-point rule is used near the panel and, at any distance, once the wave phase changes by more than 0.3 rad
+// across it (K·size > 0.3): at λ/7 panels the centroid alone misses a phase change of about 1 rad, which on the large
+// flat bottom of a 40 m barge turned the high-frequency heave damping negative (WAMIT and Capytaine: positive).
 function wavePart(P, J, px, py, pz, K, out) {
   const c = P.c, q = P.q, n = P.n;
   const dx0 = c[J * 3] - px, dy0 = c[J * 3 + 1] - py, dz0 = c[J * 3 + 2] - pz, s = P.size[J];
-  const near = dx0 * dx0 + dy0 * dy0 + dz0 * dz0 < 16 * s * s;
+  const near = K * s > 0.3 || dx0 * dx0 + dy0 * dy0 + dz0 * dz0 < 16 * s * s;
   const nq = near ? 3 : 1, wq = P.area[J] / nq;
   const nx = n[J * 3], ny = n[J * 3 + 1], nz = n[J * 3 + 2];
   let Sr = 0, Si = 0, Dr = 0, Di = 0;

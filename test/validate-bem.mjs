@@ -16,6 +16,7 @@ const M = await import('../js/bemmesh.js');
 const B = await import('../js/bem.js');
 const { DropSim } = await import('../js/sim.js');
 const { readCad, concat } = await import('../js/loader.js');
+const { panelSize } = await import('../js/bemrun.js');
 
 const every = process.argv[2] === 'quick' ? 4 : 2;
 let pass = 0, fail = 0;
@@ -198,6 +199,93 @@ console.log('\n— Kramer et al. (2021) floating-sphere heave decay (Energies 14
   const pk = []; for (let i = 1; i + 1 < z.length; i++) if (z[i] > z[i - 1] && z[i] > z[i + 1] && z[i] > 1e-5) pk.push([t[i], z[i]]);
   const dec = Math.log(pk[0][1] / pk[2][1]) / (pk[2][0] - pk[0][0]);
   check(`drop test from H0 = 0.1D (30 mm): damped period ${TdSim.toFixed(3)} s (0.76), decay rate ${dec.toFixed(3)} 1/s (WAMIT LPF0 0.695)`, Math.abs(TdSim / 0.76 - 1) < 0.02 && Math.abs(dec / 0.695 - 1) < 0.06, `${pct(TdSim / 0.76 - 1)}, ${pct(dec / 0.695 - 1)}`);
+}
+
+console.log('\n— known models, meshed as the app does (panelSize at standard fidelity, panels ≤ λ/7 at the top frequency)');
+{
+  const g = 9.80665;
+  const quad = (t, a, b, c, d) => t.push(...a, ...b, ...c, ...a, ...c, ...d);
+  // closed box with an optional vertical through-hole (moonpool) [hx0, hx1] × [hy0, hy1]
+  const boxSoup = ([x0, x1], [y0, y1], [z0, z1], hole = null) => {
+    const t = [];
+    quad(t, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]); quad(t, [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]);
+    quad(t, [x1, y1, z0], [x0, y1, z0], [x0, y1, z1], [x1, y1, z1]); quad(t, [x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]);
+    if (!hole) { quad(t, [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]); quad(t, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]); return new Float64Array(t); }
+    const [[a0, a1], [b0, b1]] = hole, O = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], I = [[a0, b0], [a1, b0], [a1, b1], [a0, b1]];
+    for (const [z, up] of [[z0, false], [z1, true]]) for (let k = 0; k < 4; k++) {
+      const o0 = [...O[k], z], o1 = [...O[(k + 1) % 4], z], i1 = [...I[(k + 1) % 4], z], i0 = [...I[k], z];
+      if (up) quad(t, o0, o1, i1, i0); else quad(t, o0, i0, i1, o1);
+    }
+    quad(t, [a0, b0, z0], [a0, b0, z1], [a1, b0, z1], [a1, b0, z0]); quad(t, [a1, b0, z0], [a1, b0, z1], [a1, b1, z1], [a1, b1, z0]);
+    quad(t, [a1, b1, z0], [a1, b1, z1], [a0, b1, z1], [a0, b1, z0]); quad(t, [a0, b1, z0], [a0, b1, z1], [a0, b0, z1], [a0, b0, z0]);
+    return new Float64Array(t);
+  };
+  // waterline at z = 0 of the given geometry, reference point (and G) at the waterplane origin
+  const appMesh = (tris, rho, wMax) => {
+    const rel = Ph.transformTris(tris, Ph.mat3.identity(), [0, 0, 0]);
+    const sol = Ph.solveWaterline(rel, Ph.submerged(tris, 0).V);
+    const { h } = panelSize(rel, sol.zw, 'standard', wMax, g, true);
+    const mesh = M.prepareBemMesh(rel, sol.zw, { h });
+    return { mesh, P: B.buildPanels(mesh.bodyQ, [mesh.sym.x0, mesh.sym.y0, -sol.zw], mesh.lidQ, mesh.sym), sol, rel };
+  };
+
+  // 1. irregular-frequency lid of a hull whose moonpool crosses the symmetry planes (the ITI barge: 10 × 10 m, centred)
+  for (const [name, hole, wp] of [['moonpool centred on both symmetry planes', [[-5, 5], [-5, 5]], 1500], ['moonpool crossing one symmetry plane', [[4, 12], [-5, 5]], 1520]]) {
+    const { mesh } = appMesh(boxSoup([-20, 20], [-20, 20], [-4, 6], hole), 1000, 2);
+    const area = mesh.lidQ ? M.soupArea(mesh.lidQ) * (mesh.sym.x ? 2 : 1) * (mesh.sym.y ? 2 : 1) : 0;
+    const q = mesh.lidQ ? M.meshQuality(mesh.lidQ) : { qMin: 0 };
+    check(`lid for a 40 × 40 m barge with a ${name}: ${mesh.lidPanels} lid panels, area ${pct(area / wp - 1)}, quality min ${q.qMin.toFixed(2)}`, Math.abs(area / wp - 1) < 1e-3 && q.qMin > 0.4);
+  }
+
+  // 2. Hulme (1982): exact heave added mass and damping of a floating hemisphere in deep water, ka = 0 … 10
+  {
+    const H = await json('hulme/hemisphere_heave.json'), a = 1, gH = 9.81, V = 2 / 3 * Math.PI;
+    const t0 = performance.now();
+    const { P, mesh } = appMesh(shiftZ(await step('sphere_r1.step'), -1), 1, Math.sqrt(gH * 10 / a));
+    const R = B.rankineSetup(P, { rho: 1, limits: true }), ws = B.bemWorkspace(P, R);
+    let ea = Math.abs(R.A0[2][2] / V - H.a33[0]), eb = 0, n = 0;
+    H.ka.forEach((ka, k) => {
+      if (ka === 0 || (k % every && k !== H.ka.length - 1)) return;
+      const w = Math.sqrt(gH * ka / a), s = B.solveRadiation(P, R, w, { rho: 1, g: gH, ws });
+      ea = Math.max(ea, Math.abs(s.A[2][2] / V - H.a33[k])); eb = Math.max(eb, Math.abs(s.B[2][2] / (V * w) - H.b33[k])); n++;
+    });
+    const pa = Math.max(...H.a33), pb = Math.max(...H.b33), einf = R.Ainf[2][2] / V / 0.5 - 1;
+    check(`Hulme hemisphere, ${mesh.panels} + ${mesh.lidPanels} lid panels, ${n} frequencies up to ka = 10 and ka = 0: a33 ${pct(ea / pa)}, b33 ${pct(eb / pb)} of peak; a33(∞) ${pct(einf)} vs ½ (${((performance.now() - t0) / 1000).toFixed(0)} s)`,
+      ea / pa < 0.01 && eb / pb < 0.01 && Math.abs(einf) < 0.005);
+  }
+
+  // 3. OC3-Hywind spar against WAMIT (Jonkman 2010; OpenFAST r-test HydroData, depth 320 m: kh ≥ π only)
+  // 4. ITI barge hull against Capytaine (direct, 1 m panels + lid): a large flat bottom near the surface, where the
+  //    high-frequency heave and pitch damping need the wave part integrated over each panel, not at its centroid
+  for (const c of [
+    { name: 'OC3-Hywind spar Ø6.5/9.4 m, draft 120 m (WAMIT)', tris: revolve([[0, -120], [4.7, -120], [4.7, -12], [3.25, -4], [3.25, 10], [0, 10]], 128), ref: await wam('oc3_spar'), wMax: 2, lim: [0.05, 0.05] },
+    { name: 'ITI barge 40 × 40 m, draft 4 m (Capytaine)', tris: boxSoup([-20, 20], [-20, 20], [-4, 6]), ref: await capy('iti_barge'), wMax: 2, lim: [0.02, 0.05] },
+  ]) {
+    const r = c.ref, rho = 1000, isW = !!r.Ainf, t0 = performance.now();
+    const { P, mesh } = appMesh(c.tris, rho, c.wMax);
+    const R = B.rankineSetup(P, { rho }), ws = B.bemWorkspace(P, R);
+    const err = {}, peak = {};
+    const track = (key, t, ref) => { const e = Array.isArray(t) ? Math.hypot(t[0] - ref[0], t[1] - ref[1]) : Math.abs(t - ref); err[key] = Math.max(err[key] || 0, e); peak[key] = Math.max(peak[key] || 0, Array.isArray(ref) ? Math.hypot(...ref) : Math.abs(ref)); };
+    let nf = 0;
+    for (let k = 0; k < r.w.length; k += isW ? every : 1) {
+      const w = r.w[k];
+      if (isW && w * w / g * r.depth < Math.PI) continue;
+      const s = B.solveRadiation(P, R, w, { rho, g: r.g, ws }), X = B.haskindX(P, s.phi, w, 0, { rho, g: r.g });
+      const RA = isW ? fullW(r.A[k], rho) : r.A[k], RB = isW ? fullW(r.B[k], rho) : r.B[k];
+      const RX = isW ? [0, 1, 2, 3, 4, 5].map((i) => (r.X[k][String(i + 1)] || [0, 0]).map((v) => v * rho * r.g)) : r.X0[k];
+      for (let i = 0; i < 6; i++) { track(`A${i + 1}${i + 1}`, s.A[i][i], RA[i][i]); track(`B${i + 1}${i + 1}`, s.B[i][i], RB[i][i]); track(`X${i + 1}`, X[i], RX[i]); }
+      for (const [i, j] of [[0, 4], [1, 3]]) { track(`A${i + 1}${j + 1}`, s.A[i][j], RA[i][j]); track(`B${i + 1}${j + 1}`, s.B[i][j], RB[i][j]); }
+      nf++;
+    }
+    // compare like with like: translational / coupling / rotational (A, B) and force / moment (X)
+    const cls = (q) => (q[0] === 'X' ? `X${+q[1] > 3}` : `${q[0]}${(+q[1] > 3) + (+q[2] > 3)}`);
+    const fam = (k) => Math.max(...Object.entries(peak).filter(([q]) => cls(q) === cls(k)).map(([, v]) => v));
+    const keys = Object.keys(err).filter((k) => peak[k] > 0.02 * fam(k));
+    const transl = keys.filter((k) => ['A11', 'A22', 'A33', 'B11', 'B22', 'B33', 'X1', 'X2', 'X3'].includes(k));
+    const worst = (ks) => ks.reduce((m, k) => (err[k] / peak[k] > m[1] ? [k, err[k] / peak[k]] : m), ['—', 0]);
+    const [wt, et] = worst(transl), [wr, er] = worst(keys.filter((k) => !transl.includes(k)));
+    check(`${c.name}: ${mesh.panels} + ${mesh.lidPanels} lid panels, ${nf} frequencies — translational worst ${wt} ${pct(et)}, rotational/coupling worst ${wr} ${pct(er)} (${((performance.now() - t0) / 1000).toFixed(0)} s)`, et < c.lim[0] && er < c.lim[1]);
+  }
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed`);

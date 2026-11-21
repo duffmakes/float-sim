@@ -44,7 +44,12 @@ def hcyl(r, L, zc, h):
                                         resolution=(max(2, int(math.ceil(r / h))), nt, max(2, int(math.ceil(L / h))))).immersed_part()
 
 
-# name: (mesh(h), fine h, reference point, frequencies, description, body data for RAO tests)
+def box_lid(L, B, h):
+    """waterplane lid of a box (Capytaine's generate_lid returns an empty lid for the 40 m barge)"""
+    return cpt.mesh_rectangle(size=(L, B), center=(0, 0, 0), resolution=(max(2, int(math.ceil(L / h))), max(2, int(math.ceil(B / h)))))
+
+
+# name: (mesh(h), fine h, reference point, frequencies, description[, lid(h)])
 CASES = {
     'cyl_buoy': (lambda h: vcyl(0.35, 0.63, h), 0.025, (0, 0, -0.4), np.linspace(1.0, 10.0, 24),
                  'Vertical cylinder buoy a 0.35 m, draft 0.63 m (the WAMIT "cyl" geometry), deep water'),
@@ -58,11 +63,16 @@ CASES = {
                   'Discus-like cylinder r 0.5 m, draft 0.2 m (H 0.4 m, s.g. ½), CoG at the waterline'),
     'spar': (lambda h: vcyl(0.5, 6.0, h), 0.12, (0, 0, -5.0), np.linspace(0.3, 3.0, 22),
              'Deep-draft spar a 0.5 m, draft 6 m, CoG 1 m above the keel'),
+    'iti_barge': (lambda h: box(40.0, 40.0, 4.0, h), 1.0, (0, 0, 0), np.linspace(0.3, 2.0, 18),
+                  'ITI Energy barge hull 40 × 40 m, draft 4 m (moonpool left out), reference point at the waterplane centre',
+                  lambda h: box_lid(40.0, 40.0, h)),
 }
 
 
 def run(mesh, ref, omegas, depth=None, lid=True):
-    body = cpt.FloatingBody(mesh=mesh, lid_mesh=mesh.generate_lid(z=0.0) if lid else None,
+    lid_mesh = (mesh.generate_lid(z=0.0) if lid is True else lid) if lid is not None and lid is not False else None
+    if lid_mesh is not None and lid_mesh.nb_faces == 0: raise ValueError('empty lid: pass a lid mesh for this case')
+    body = cpt.FloatingBody(mesh=mesh, lid_mesh=lid_mesh,
                             dofs=cpt.rigid_body_dofs(rotation_center=ref), center_of_mass=ref)
     solver = cpt.BEMSolver(method='direct')
     probs = [cpt.RadiationProblem(body=body, omega=w, radiating_dof=d, rho=RHO, g=G, water_depth=depth or np.inf) for w in omegas for d in DOFS]
@@ -79,7 +89,7 @@ def run(mesh, ref, omegas, depth=None, lid=True):
         for key, beta in (('X0', 0.0), ('X90', math.pi / 2)):
             x = ds['excitation_force'].sel(omega=w, wave_direction=beta)
             out[key].append([[float(np.real(x.sel(influenced_dof=i))), -float(np.imag(x.sel(influenced_dof=i)))] for i in DOFS])
-    return out, mesh.nb_faces, body.lid_mesh.nb_faces if lid else 0
+    return out, mesh.nb_faces, body.lid_mesh.nb_faces if body.lid_mesh is not None else 0
 
 
 def sanity_wamit():
@@ -106,10 +116,11 @@ if __name__ == '__main__':
     if 'sanity' in names:
         sanity_wamit(); names = [n for n in names if n != 'sanity']
     for name in names:
-        mk, h, ref, omegas, desc = CASES[name]
+        mk, h, ref, omegas, desc, *lid = CASES[name]
+        mklid = lid[0] if lid else (lambda _h: True)
         t0 = time.time()
-        fine, nb, nl = run(mk(h), ref, omegas)
-        coarse, nbc, nlc = run(mk(2 * h), ref, omegas)
+        fine, nb, nl = run(mk(h), ref, omegas, lid=mklid(h))
+        coarse, nbc, nlc = run(mk(2 * h), ref, omegas, lid=mklid(2 * h))
         # reference uncertainty: fine vs coarse, scaled by the peak of each coefficient over frequency
         def spread(key, i, j=None):
             f = np.array([(m[i][j] if j is not None else math.hypot(*m[i])) for m in fine[key]])

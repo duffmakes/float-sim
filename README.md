@@ -46,13 +46,13 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
   - Enter a frequency range **in Hz** (the equivalent rad/s, periods and wavelengths are shown) and a list or range of incident headings (e.g. `0:15:180`). A progress bar shows the sweep, and the RAO tab shows a loading indicator while plots render.
   - **Panel method (default).** A low-order boundary-element (BEM) solver, the same formulation as WAMIT's low-order method, solves the linear radiation and diffraction problem on the wetted hull. It gives frequency-dependent added mass A(ω), radiation damping B(ω) and wave exciting forces X(ω, β) with all couplings. The 6-DOF RAOs follow from [−ω²(M + A) + iω(B + B<sub>extra</sub>) + C] ξ = X. Details:
     - deep-water free-surface Green function (Newman 1985), exact flat-panel Rankine integrals, and exciting forces from the Haskind relation
-    - irregular frequencies removed with an interior waterplane lid (extended boundary integral equations, WAMIT ch. 15)
+    - irregular frequencies removed with an interior waterplane lid (extended boundary integral equations, WAMIT ch. 15), moonpools included
     - mirror symmetry about one or two vertical planes used automatically (up to 16× less memory, 64× less solve time)
     - GMRES for large meshes, dense LU otherwise
   - The CAD or STL tessellation is **remeshed** into near-equilateral panels (isotropic remeshing, Botsch & Kobbelt 2004). Sharp edges and the waterline are kept exactly, panels are refined where the surface is curved, and the panel size is never coarser than 1/7 of the shortest wavelength. **Panels:** Coarse ~400, Standard ~1,000, Fine ~2,500 or Very fine ~6,000.
   - Runs on a pool of Web Workers sized to the CPU and memory, with progress, an ETA and **Cancel**. The page stays usable. A Standard sweep takes seconds to a few minutes; Very fine on a non-symmetric hull can take 10–20 min.
-  - Reports the natural frequencies with frequency-dependent added mass and the radiation damping ratio at each. Warns when a resonance has under 2 % of critical damping, since potential flow gives almost no roll damping and real peaks are lower. **Extra ζ** (viscous damping) can be added in section 7.
-  - Validated against WAMIT, Capytaine, Lamb's exact spheroid added mass and the Kramer et al. (2021) sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations and couplings on buoy shapes ([docs/bem-validation.md](docs/bem-validation.md)).
+  - Reports the natural frequencies with frequency-dependent added mass and the radiation damping ratio at each. Warns when a resonance has under 2 % of critical damping, since potential flow gives almost no roll damping and real peaks are lower. **Extra ζ** (viscous damping) can be added in section 7. Also warns if the irregular-frequency lid could not be built, or if any radiation damping comes out negative (panels too coarse for the top frequencies).
+  - Validated against WAMIT, Capytaine, Hulme's exact floating-hemisphere solution, Lamb's exact spheroid added mass and the Kramer et al. (2021) sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations and couplings on buoy shapes. Also checked on two offshore-wind platforms: the OC3-Hywind spar against WAMIT, and the 40 m ITI barge, with and without its moonpool, against Capytaine ([docs/bem-validation.md](docs/bem-validation.md)).
   - **Froude–Krylov + estimates** remains available as a fast option: the same 6-DOF model with estimated added mass and damping and Froude–Krylov excitation on the mean wetted surface (Faltinsen 1990; Journée & Massie 2001).
   - Plots: amplitude (m/m, deg/m or deg per degree of wave slope), phase, and a heading × frequency heatmap.
   - Also reports the response in the current sea state, computed from the sweep and cached.
@@ -99,7 +99,7 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
 | `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 264/264 |
 | http://localhost:8765/test/validate.html | Same checks, in the browser | 264/264 in headless Chromium, all three qualities |
-| `node test/validate-bem.mjs [quick]` | Panel method: special functions, meshing of 10 STEP bodies, Lamb's slender spheroid, A, B and X against WAMIT (2 bodies) and Capytaine (6 buoys), GMRES vs LU, RAO peaks, Kramer sphere decay through the drop test ([docs/bem-validation.md](docs/bem-validation.md)) | 30/30 |
+| `node test/validate-bem.mjs [quick]` | Panel method: special functions, meshing of 10 STEP bodies, Lamb's slender spheroid, A, B and X against WAMIT (2 bodies) and Capytaine (6 buoys), GMRES vs LU, RAO peaks, Kramer sphere decay through the drop test; then meshed as the app does: moonpool lids, Hulme's exact hemisphere (ka 0–10), the OC3-Hywind spar (WAMIT) and the ITI barge (Capytaine) ([docs/bem-validation.md](docs/bem-validation.md)) | 35/35 |
 | `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs, custom inertia, drop and rise tests with tool locking and panel-method coefficients, console errors | 71/71 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
@@ -126,6 +126,9 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | Drop test: drag-free fall, terminal speed in air and water (sphere C<sub>d</sub> 0.47), initial underwater acceleration with added mass ½ρV, settling at the static float height | Newton drag; Hoerner 1965; Lamb §92 | ≤ 1 % |
 | Panel method: A(ω), B(ω), X(ω) of a hemisphere, an ellipsoid and six buoys (cylinder, sphere, discus, cube, log, spar), max error relative to each coefficient's peak | WAMIT v7 (WEC-Sim examples); Capytaine 3.0 | ≤ 1.6 % translational, ≤ 4.7 % rotational/couplings |
 | Panel method: lateral added mass of a c/a = 12 prolate spheroid | Lamb 1932 §373 | 0.2 % |
+| Panel method: floating-hemisphere heave added mass and damping, ka = 0 … 10, deep water | Hulme 1982 (exact) | ≤ 0.26 % |
+| Panel method: OC3-Hywind spar (draft 120 m), A, B, X for ω 0.35–2 rad/s at Standard; at Very fine | WAMIT (OpenFAST r-test), Kh ≥ π | ≤ 4.0 %; ≤ 1.1 % |
+| Panel method: ITI barge hull 40 × 40 m, draft 4 m, ω 0.3–2 rad/s, incl. high-frequency heave and pitch damping | Capytaine 3.0 (direct, 1 m panels) | ≤ 1.0 % translational, ≤ 2.5 % rotational |
 | Floating sphere heave decay (D 0.3 m): A33, B33, damped period, decay rate | Kramer et al. 2021 (measured; WAMIT LPF0) | ≤ 2.5 % |
 
 ### RAO trade study

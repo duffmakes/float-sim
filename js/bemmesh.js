@@ -622,12 +622,8 @@ function triangulate(outer, holes) {
   if (idx.length === 3) { const [a, b, c] = idx.map((i) => poly[i]); tris.push(a[0], a[1], 0, b[0], b[1], 0, c[0], c[1], 0); }
   return new Float64Array(tris);
 }
-// Lid from the full waterline loops; with symmetry, only the part with x ≥ x0 and/or y ≥ y0. Triangles face +z.
-export function buildLid(loops, h, sym = {}) {
-  let L = loops.map((l) => l.slice());
-  if (sym.x) L = L.map((l) => clipPoly(l, 0, sym.x0)).filter((l) => l.length >= 3);
-  if (sym.y) L = L.map((l) => clipPoly(l, 1, sym.y0)).filter((l) => l.length >= 3);
-  L = L.map((l) => resample(l, h)).filter((l) => Math.abs(polyArea(l)) > 1e-12);
+// Waterplane polygons (outer loops counter-clockwise, holes clockwise) → triangles, or null if ear clipping fails.
+function triangulateLoops(L) {
   const outers = L.filter((l) => polyArea(l) > 0), holes = L.filter((l) => polyArea(l) < 0);
   const parts = [];
   for (const o of outers) {
@@ -639,7 +635,25 @@ export function buildLid(loops, h, sym = {}) {
   if (!parts.length) return null;
   const soup = new Float64Array(parts.reduce((n, p) => n + p.length, 0));
   let o = 0; for (const p of parts) { soup.set(p, o); o += p.length; }
-  return remesh(soup, h, { fixedBoundary: true, planeZ: 0, iterations: 6 }).soup;
+  return soup;
+}
+// Lid from the full waterline loops; with symmetry, only the part with x ≥ x0 and/or y ≥ y0. Triangles face +z.
+export function buildLid(loops, h, sym = {}) {
+  let L = loops.map((l) => l.slice());
+  if (sym.x) L = L.map((l) => clipPoly(l, 0, sym.x0)).filter((l) => l.length >= 3);
+  if (sym.y) L = L.map((l) => clipPoly(l, 1, sym.y0)).filter((l) => l.length >= 3);
+  L = L.map((l) => resample(l, h)).filter((l) => Math.abs(polyArea(l)) > 1e-12);
+  let soup = triangulateLoops(L);
+  if (soup) return remesh(soup, h, { fixedBoundary: true, planeZ: 0, iterations: 6 }).soup;
+  if (!sym.x && !sym.y) return null;
+  // A moonpool that crosses a symmetry plane can't be clipped loop by loop: its clipped part touches the cut, so it is
+  // neither a hole nor part of the outline. Triangulate the whole waterplane instead and cut it like the hull.
+  soup = triangulateLoops(loops.map((l) => resample(l, h)).filter((l) => Math.abs(polyArea(l)) > 1e-12));
+  if (!soup) return null;
+  let ext = 0; for (const l of loops) for (const p of l) ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]));
+  if (sym.x) soup = clipSoup(soup, 0, sym.x0, false, 1e-9 * ext);
+  if (sym.y) soup = clipSoup(soup, 1, sym.y0, false, 1e-9 * ext);
+  return soup.length ? remesh(soup, h, { planeZ: 0, iterations: 6 }).soup : null;
 }
 function pointInPoly(p, L) {
   let c = false;
