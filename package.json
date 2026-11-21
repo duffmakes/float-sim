@@ -1,1 +1,1 @@
-{ "name": "float-sim", "private": true, "type": "module" }
+{"name":"float-sim","private":true,"type":"module","devDependencies":{"playwright":"^1.65.1"}}

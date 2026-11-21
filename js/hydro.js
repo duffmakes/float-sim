@@ -280,7 +280,7 @@ export function linearModel(rel, H, mass, IG, rho, coeffs, opts = {}) {
   // natural frequencies (uncoupled) and damping from fraction of critical
   const wn = [0, 1, 2, 3, 4, 5].map((i) => Cm[i][i] > 0 ? Math.sqrt(Cm[i][i] / (Mm[i][i] + Am[i])) : 0);
   const wRef = wn[2] || wn[3] || 1;
-  const Bd = [0, 1, 2, 3, 4, 5].map((i) => 2 * zeta[i] * (Mm[i][i] + Am[i]) * (wn[i] > 0 ? wn[i] : wRef));
+  const Bd = coeffs.Bd ? coeffs.Bd.slice() : [0, 1, 2, 3, 4, 5].map((i) => 2 * zeta[i] * (Mm[i][i] + Am[i]) * (wn[i] > 0 ? wn[i] : wRef));
   const quads = meanWettedSurface(rel, zw);
   // flatten quadrature points for a fast excitation loop: per point (x, y, z', n1..n6 · weight)
   const nq = quads.length * 3, qp = new Float64Array(nq * 9);
@@ -427,4 +427,83 @@ export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400,
 export function diffractionCheck(sizeD, wMax) {
   const lam = 2 * Math.PI * Gw / (wMax * wMax);
   return { ratio: sizeD / lam, ok: sizeD / lam <= 0.2, lambda: lam };
+}
+
+// ---------------------------------------------------------------- panel-method (BEM) frequency-domain model
+// bem: result of runBem (bemrun.js): { omegas, headings, A[k] 6×6, B[k] 6×6, X[k][h] 6×[re, im] } about G in the
+// seakeeping frame. Coefficients between computed frequencies are interpolated linearly, exciting forces also
+// linearly in heading (5° grid). Returns null outside the computed frequency range.
+export function bemCoeffsAt(bem, w, headingDeg = null) {
+  const ws = bem.omegas, n = ws.length;
+  if (!(w >= ws[0] * (1 - 1e-9) && w <= ws[n - 1] * (1 + 1e-9))) return null;
+  let k = 0; while (k < n - 2 && ws[k + 1] < w) k++;
+  const t = n === 1 ? 0 : Math.max(0, Math.min(1, (w - ws[k]) / (ws[k + 1] - ws[k])));
+  const k1 = Math.min(k + 1, n - 1);
+  const lerpM = (M) => M[k].map((row, i) => row.map((v, j) => v + t * (M[k1][i][j] - v)));
+  const out = { A: lerpM(bem.A), B: lerpM(bem.B) };
+  if (headingDeg !== null) {
+    const hs = bem.headings, b = ((headingDeg % 360) + 360) % 360;
+    let i = hs.length - 1; for (let q = 0; q < hs.length; q++) if (hs[q] <= b + 1e-9) i = q;
+    const i1 = (i + 1) % hs.length, span = ((hs[i1] - hs[i]) + 360) % 360 || 360, s = Math.abs(b - hs[i]) < 1e-9 ? 0 : ((b - hs[i] + 360) % 360) / span;
+    const Xw = (kk) => bem.X[kk][i].map((z, j) => [z[0] + s * (bem.X[kk][i1][j][0] - z[0]), z[1] + s * (bem.X[kk][i1][j][1] - z[1])]);
+    const xa = Xw(k), xb = Xw(k1);
+    out.X = xa.map((z, j) => [z[0] + t * (xb[j][0] - z[0]), z[1] + t * (xb[j][1] - z[1])]);
+  }
+  return out;
+}
+
+// Uncoupled natural frequencies with the panel-method added mass: ω = √(C_jj / (M_jj + A_jj(ω))) (fixed point).
+// Also returns the radiation damping ratio there. Modes without restoring (surge, sway, yaw) get ω = 0.
+export function bemNatural(model, bem) {
+  const res = [];
+  for (let j = 0; j < 6; j++) {
+    const C = model.Cm[j][j];
+    if (!(C > 0)) { res.push({ w: 0, A: null, B: null, zeta: null, inRange: true }); continue; }
+    let w = Math.sqrt(C / (model.Mm[j][j] + (bem.A[0][j][j] || 0))), inRange = true;
+    for (let it = 0; it < 60; it++) {
+      const wc = Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w));
+      const A = bemCoeffsAt(bem, wc).A[j][j];
+      const wn = Math.sqrt(C / Math.max(1e-12, model.Mm[j][j] + A));
+      if (Math.abs(wn - w) < 1e-10 * w) { w = wn; break; }
+      w = 0.5 * (w + wn);
+    }
+    if (w < bem.omegas[0] || w > bem.omegas[bem.omegas.length - 1]) inRange = false;
+    const c = bemCoeffsAt(bem, Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w)));
+    const A = c.A[j][j], B = c.B[j][j];
+    res.push({ w, A, B, zeta: B / (2 * (model.Mm[j][j] + A) * w), inRange });
+  }
+  return res;
+}
+
+// Additional (viscous) damping, fraction of critical at the BEM natural frequency, for the modes with restoring.
+export function bemExtraDamping(model, nat, zetaExtra = [0, 0, 0, 0, 0, 0]) {
+  return nat.map((n, j) => (n.w > 0 && zetaExtra[j] ? 2 * zetaExtra[j] * (model.Mm[j][j] + n.A) * n.w : 0));
+}
+
+// RAO from the panel-method coefficients: [−ω²(M + A(ω)) + iω(B(ω) + B_extra) + C] ξ = X(ω, β).
+export function raoAtBem(model, bem, w, headingDeg, Bextra = null) {
+  const c = bemCoeffsAt(bem, w, headingDeg);
+  if (!c) return null;
+  const M = Array.from({ length: 6 }, (_, r) => Array.from({ length: 6 }, (_, q) => [
+    -w * w * (model.Mm[r][q] + c.A[r][q]) + model.Cm[r][q],
+    w * (c.B[r][q] + (r === q && Bextra ? Bextra[r] : 0)),
+  ]));
+  return { xi: complexSolve(M, c.X), F: c.X, k: w * w / G0, A: c.A, B: c.B };
+}
+
+// Sweep in the same shape as raoSweepAsync, on the panel-method frequency grid.
+export function bemSweep(model, bem, headings, Bextra = null) {
+  return headings.map((beta) => ({
+    beta,
+    points: bem.omegas.map((w) => {
+      const { xi, F, k, A, B } = raoAtBem(model, bem, w, beta, Bextra);
+      const amp = xi.map((z) => C.abs(z));
+      return {
+        w, k, f: w / (2 * Math.PI), T: 2 * Math.PI / w, lambda: 2 * Math.PI / k, xi, F, amp, A, B,
+        degPerM: amp.map((a, j) => (j >= 3 ? a * 180 / Math.PI : a)),
+        perSlope: amp.map((a, j) => (j >= 3 ? a / k : a)),
+        phase: xi.map((z) => Math.atan2(z[1], z[0]) * 180 / Math.PI),
+      };
+    }),
+  }));
 }
