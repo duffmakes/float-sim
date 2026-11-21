@@ -203,7 +203,15 @@
       </div>
       <p class="hint">Spreading 0 gives long-crested waves; s &gt; 0 applies cos<sup>2s</sup> short-crested spreading.</p>
       </div>
-      <p class="hint">Added mass and damping are <b>estimates</b> (no diffraction/radiation solver). Defaults: strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hBemSim" type="checkbox" checked> Panel-method added mass &amp; damping in the simulations</label>
+      <p class="hint" id="hBemHint">On: the wave runs and the drop test use added mass and radiation damping from the panel method (section 8), taken at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of this body, or from a quick coarse sweep the first time (a few seconds). The A fields below then apply to the estimates only. Off: the estimates below.</p>
+      <div class="row three">
+        <label>extra ζ heave <input id="hX3" type="number" step="any" min="0" value="0"></label>
+        <label>extra ζ roll <input id="hX4" type="number" step="any" min="0" value="0"></label>
+        <label>extra ζ pitch <input id="hX5" type="number" step="any" min="0" value="0"></label>
+      </div>
+      <p class="hint">Extra (viscous) damping, as a fraction of critical, added to the panel-method damping in the RAOs and the simulations. Potential flow has very little roll damping, so real roll peaks are lower; 0.02–0.05 is typical for a bare hull.</p>
+      <p class="hint">Estimates (used without the panel method): strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p>
       <div class="row three">
         <label>A11 (kg) <input id="hA11" type="number" step="any"></label>
         <label>A22 (kg) <input id="hA22" type="number" step="any"></label>
@@ -249,7 +257,22 @@
       <input id="raoHead" type="text" value="0:45:180" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit">
     </label>
     <div class="row">
+      <label>Hydrodynamics <select id="raoMethod">
+        <option value="bem" selected>Panel method (BEM)</option>
+        <option value="fk">Froude–Krylov + estimates (fast)</option>
+      </select></label>
+      <label>Panels <select id="bemFid">
+        <option value="coarse">Coarse (~400)</option>
+        <option value="standard" selected>Standard (~1,000)</option>
+        <option value="fine">Fine (~2,500)</option>
+        <option value="vfine">Very fine (~6,000)</option>
+      </select></label>
+    </div>
+    <label class="tog" id="bemIrrWrap" style="flex-direction:row;gap:6px;align-items:center"><input id="bemIrr" type="checkbox" checked> Remove irregular frequencies (interior waterplane lid)</label>
+    <p class="hint" id="bemHint">Panel method: solves the linear diffraction–radiation problem on the wetted hull (deep water, zero speed, as WAMIT's low-order method) for frequency-dependent added mass, radiation damping and wave exciting forces with all couplings, then the 6-DOF RAOs. Checked against WAMIT, Capytaine and the Kramer sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations on buoys (docs/bem-validation.md). Panel counts are for flat-sided hulls; curved hulls get up to about 3× more, as panels are kept below 1/20 of the circumference where the hull curves. Runs in background workers; Standard takes from a few seconds to a few minutes. Extra viscous damping: section 7 → Wave &amp; hydrodynamic settings.</p>
+    <div class="row">
       <button id="raoRun" class="primary">Compute RAOs</button>
+      <button id="raoCancel" class="ghost hidden">Cancel</button>
       <button id="raoCsv" class="ghost" disabled title="Amplitudes and phases per heading and frequency">Export CSV</button>
       <button id="raoRaw" class="ghost" disabled title="Complex RAOs, excitation forces and the model matrices">Export raw CSV</button>
     </div>

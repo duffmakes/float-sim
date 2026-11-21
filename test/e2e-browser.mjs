@@ -30,7 +30,7 @@ const settle = async () => {
 await page.goto(`${BASE}/test/validate.html`);
 for (const q of ['fine', 'normal', 'coarse']) {
   if (q !== 'fine') await page.selectOption('#q', q);
-  await page.waitForFunction((q) => window.__floatSimValidation?.quality === q, q, { timeout: 120000 });
+  await page.waitForFunction((q) => window.__floatSimValidation?.quality === q, q, { timeout: 480000 });
   const r = await page.evaluate(() => window.__floatSimValidation);
   expect(`validate.html [${q}] ${r.pass}/${r.total}`, r.pass === r.total);
 }
@@ -106,16 +106,20 @@ await page.selectOption('#ssSel', '3');
 await page.click('#tabs button[data-tab="tabSea"]');
 await page.waitForFunction(() => document.querySelector('#specInfo').innerText.includes('Peak'), null, { timeout: 30000 });
 expect('spectrum drawn, FK validity reported', (await page.locator('#specInfo').innerText()).includes('Froude–Krylov validity'));
-await page.click('#waveRun'); await page.waitForTimeout(4000);
+await page.click('#waveRun');
+// the first run computes panel-method added mass and damping (quick coarse sweep), then starts
+await page.waitForFunction(() => /t = [\d.]+ s/.test(document.querySelector('#waveInfo').innerText), null, { timeout: 120000 });
+await page.waitForTimeout(4000);
 const wi = await page.locator('#waveInfo').innerText();
 expect('real-time wave run advances', num((wi.match(/t = ([\d.]+) s/) || [])[1]) > 0.5, wi.split('\n')[0]);
+expect('wave run uses panel-method added mass and damping', wi.includes('panel method'), wi.split('\n').pop());
 if (shots) await page.screenshot({ path: `${shots}/sea-run.png` });
 await page.click('#waveRun');
 await page.click('#ssSweep'); await page.waitForTimeout(800);
 const ssRows = await page.locator('#ssTable tr').count();
 expect('sea-state sweep table SS1–SS5', ssRows === 6, `${ssRows - 1} rows`);
 await page.click('#waveStats');
-await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 300000 });
+await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
 const statRow = async (label) => page.evaluate((l) => {
   const r = [...document.querySelectorAll('#seaStats tr')].find((t) => t.cells[0]?.innerText.startsWith(l));
   return r ? [r.cells[1].innerText, r.cells[2].innerText] : null;
@@ -156,7 +160,7 @@ await page.click('#waveRun');
 expect('restart button disabled when stopped', await page.locator('#waveRestart').isDisabled());
 expect('statistics button reads 5 min in regular mode', (await page.locator('#waveStats').innerText()).includes('5 min'));
 await page.click('#waveStats');
-await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 300000 });
+await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
 const [eTd, eIn] = (await statRow('Wave at G')).map(num), [rgTd, rgLin] = (await statRow('Roll')).map(num), [hgTd, hgLin] = (await statRow('Heave')).map(num);
 expect('regular run: measured wave amplitude = H/2 (±3 %)', Math.abs(eTd / 0.25 - 1) < 0.03 && Math.abs(eIn - 0.25) < 1e-9, `${eTd} m vs ${eIn} m`);
 expect('regular run: steady roll ≈ linear RAO × A (±15 %)', Math.abs(rgTd / rgLin - 1) < 0.15, `${rgTd}° vs ${rgLin}°`);
@@ -174,8 +178,9 @@ await page.click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoProgWrap').classList.contains('hidden'), null, { timeout: 10000 });
 expect('progress bar shown while computing', true);
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
-expect('RAO sweep computed', (await page.locator('#raoInfo').innerText()).includes('5 headings'));
-expect('natural frequencies reported in Hz', /heave [\d.]+ Hz/.test(await page.locator('#raoInfo').innerText()));
+const raoInfo = await page.locator('#raoInfo').innerText();
+expect('RAO sweep computed with the panel method by default', raoInfo.includes('5 headings') && raoInfo.startsWith('Panel method') && /[\d,]+ panels/.test(raoInfo), raoInfo.split('\n')[0]);
+expect('natural frequencies reported in Hz with radiation damping', /heave [\d.]+ Hz/.test(raoInfo) && raoInfo.includes('radiation damping'));
 expect('RAO response table (5 headings)', (await page.locator('#raoResp tr').count()) === 6);
 const dl = page.waitForEvent('download');
 await page.click('#raoCsv');
@@ -185,13 +190,32 @@ const dl2 = page.waitForEvent('download');
 await page.click('#raoRaw');
 const raw = await (await dl2).createReadStream().then((st) => new Promise((res) => { let d = ''; st.on('data', (c) => { d += c; }); st.on('end', () => res(d)); }));
 const rawLines = raw.trim().split('\n'), dataLines = rawLines.filter((l) => !l.startsWith('#'));
-expect('raw CSV: header comments + 41 columns × 400 rows', rawLines[0].startsWith('# Float Sim raw RAO export') && dataLines.length === 401 && dataLines[0].split(',').length === 41, `${dataLines.length} lines, ${dataLines[0].split(',').length} cols`);
+expect('raw CSV: header comments + 57 columns × 400 rows (RAOs, forces, A(ω) and B(ω))', rawLines[0].startsWith('# Float Sim raw RAO export') && dataLines.length === 401 && dataLines[0].split(',').length === 57 && dataLines[0].includes('A33') && raw.includes('panel method'), `${dataLines.length} lines, ${dataLines[0].split(',').length} cols`);
 // leaving and re-opening the RAO tab shows the loading overlay, then the plots
 await page.click('#tabs button[data-tab="tabHydro"]');
 await page.click('#tabs button[data-tab="tabRao"]');
 await page.waitForFunction(() => document.querySelector('#raoLoading').classList.contains('hidden'), null, { timeout: 30000 });
 expect('RAO tab re-renders after loading overlay', (await page.locator('#raoResp tr').count()) === 6);
 if (shots) await page.screenshot({ path: `${shots}/sea-rao.png` });
+// the sea-state table now uses the panel-method RAOs where the sweep covers the sea
+await page.click('#tabs button[data-tab="tabSea"]');
+await page.click('#ssSweep'); await page.waitForTimeout(800);
+expect('sea-state table from the panel-method RAOs', (await page.locator('#ssTable').innerText()).includes('panel-method RAOs'));
+// a long panel-method sweep can be cancelled
+await page.selectOption('#bemFid', 'vfine'); await page.fill('#raoN', '400');
+await page.click('#raoRun');
+await page.waitForFunction(() => !document.querySelector('#raoCancel').classList.contains('hidden'), null, { timeout: 30000 });
+await page.click('#raoCancel');
+await page.waitForFunction(() => !document.querySelector('#raoRun').disabled, null, { timeout: 30000 });
+expect('panel-method sweep cancelled', (await page.locator('#raoInfo').innerText()).includes('Cancelled'));
+// the fast Froude–Krylov option still works
+await page.selectOption('#bemFid', 'standard'); await page.fill('#raoN', '80');
+await page.selectOption('#raoMethod', 'fk');
+expect('panel count hidden for the Froude–Krylov option', !(await page.locator('#bemFid').isVisible()));
+await page.click('#raoRun');
+await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
+expect('Froude–Krylov RAOs on request', (await page.locator('#raoInfo').innerText()).startsWith('Froude–Krylov'));
+await page.selectOption('#raoMethod', 'bem');
 
 // 8 — custom moments of inertia (STEP barge: roll period T = 2π√(Ixx / (ρgV·GM_T)), dry, no added mass)
 await page.setInputFiles('#file', MODEL);
@@ -225,6 +249,7 @@ await page.fill('#dzH', '-3000'); await page.dispatchEvent('#dzH', 'input');
 await page.click('#dzPlace'); await page.click('#dzRun');
 await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
 expect('rise from 3 m depth: breaks the surface and stabilizes', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && (await dropRow('Broke the surface')).length > 0);
+expect('drop test uses panel-method added mass and damping', (await page.locator('#dzStats').innerText()).includes('panel method'));
 if (shots) await page.screenshot({ path: `${shots}/drop.png` });
 await page.click('#dzReset'); await page.waitForTimeout(300);
 expect('reset position unlocks the tools', (await lockState()).every((d) => !d));

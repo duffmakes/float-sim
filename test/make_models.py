@@ -259,6 +259,12 @@ wave['lit_spar'] = dict(
     points=spar, A22_exact=FRESH * math.pi * a_s ** 2 * T_s,
     ref='MacCamy & Fuchs (1954) diffraction force, deep water, integrated over the draft; sway RAO with Ca = 1')
 
+# ---------------------------------------------------------------- 8. buoys for the panel-method benchmarks (test/validate-bem.mjs)
+# Cylinder buoy a 0.35 m, H 1 m, floated at draft 0.63 m (the WAMIT "cyl" geometry of the WEC-Sim BEMIO examples), and
+# the Kramer et al. (2021) heave-decay sphere, D 0.3 m. Reference data: test/models/capytaine/*.json (capytaine_ref.py).
+solids['buoy_cyl'] = Cylinder([0, 0, 0], [0, 0, 1], [1, 0, 0], 0.35, 1.0)
+solids['kramer_sphere'] = Sphere([0, 0, 0.15], 0.15, axis=(1, 0, 0), ref=(0, 1, 0))
+
 # ---------------------------------------------------------------- write
 if __name__ == '__main__':
     w = StepWriter()
