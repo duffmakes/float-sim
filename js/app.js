@@ -738,7 +738,7 @@ $('tMode').dispatchEvent(new Event('change'));
 // ------------------------------------------------------------------ seakeeping (waves, RAOs)
 const staticOverlays = [mB, mMt, mMl, arrW, arrB, vertLine, gLine, wlLines];
 sea = initSeakeeping({
-  THREE, scene, water, waterDepth, mG,
+  THREE, scene, renderer, water, waterDepth, mG,
   getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
   getEuler, setBodyPose, getInertiaBody: () => inertiaG(), inertiaKey: () => JSON.stringify(inertiaG()),
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },

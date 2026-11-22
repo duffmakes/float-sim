@@ -17,14 +17,61 @@ export function initSeakeeping(api) {
   const K = { prep: null, sim: null, running: false, worker: null, stats: null, rao: null, lastChart: 0, specType: 'jonswap', waveMode: 'spectrum', simBem: null, bemRun: null };
 
   // ------------------------------------------------------------ wave surface mesh
-  const waveMat = api.water.material.clone();
-  waveMat.opacity = 0.7;
+  // Water that shows the waves: crests lighter and troughs darker (scaled to the sea's amplitude, so the waves visibly
+  // build up during the ramp), faint grid lines fixed in the world that ride up and down on the surface, and a soft sky
+  // reflection so the slopes catch the light.
+  const waveUniforms = {
+    uAmp: { value: 1 }, uGrid: { value: 1 },
+    uTrough: { value: new THREE.Color(0x0a3157) }, uCrest: { value: new THREE.Color(0x4a9ad0) },
+  };
+  function skyEnvMap() {
+    // gradient sky (world z up): bright zenith, pale horizon, dark below, prefiltered for a slightly rough surface
+    const geo = new THREE.SphereGeometry(1, 48, 24), pos = geo.attributes.position, col = new Float32Array(pos.count * 3);
+    const zen = new THREE.Color(0x86acd2), hor = new THREE.Color(0xbcd0e4), low = new THREE.Color(0x0d1420), c = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      const z = pos.getZ(i);
+      if (z >= 0) c.copy(hor).lerp(zen, Math.sqrt(z)); else c.copy(hor).lerp(low, Math.min(1, -4 * z));
+      col.set([c.r, c.g, c.b], i * 3);
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const sky = new THREE.Scene();
+    sky.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+    const pmrem = new THREE.PMREMGenerator(api.renderer), tex = pmrem.fromScene(sky, 0.02).texture;
+    pmrem.dispose(); geo.dispose();
+    return tex;
+  }
+  const waveMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.82, roughness: 0.22, metalness: 0,
+    side: THREE.DoubleSide, depthWrite: false, envMap: skyEnvMap(), envMapIntensity: 0.7,
+  });
+  waveMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, waveUniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWaveW;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWaveW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWaveW;\nuniform float uAmp, uGrid;\nuniform vec3 uTrough, uCrest;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+      {
+        float s = clamp(vWaveW.z / uAmp, -1.0, 1.0);                       // −1 trough … +1 crest
+        diffuseColor.rgb = mix(uTrough, uCrest, smoothstep(-1.0, 1.0, s));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 1.0), 0.35 * smoothstep(0.7, 1.0, s));   // pale crest tops
+        vec2 g = vWaveW.xy / uGrid, fw = max(fwidth(g), vec2(1e-6));
+        vec2 d = abs(fract(g - 0.5) - 0.5) / fw;                             // distance to the nearest line, in pixels
+        float line = 1.0 - min(min(d.x, d.y), 1.0);
+        line *= 1.0 - smoothstep(0.12, 0.35, max(fw.x, fw.y));             // fade where the lines get too dense to read
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.8, 0.9, 1.0), 0.3 * line);
+      }`);
+  };
   const N_SEG = 96;
   const waveMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, N_SEG, N_SEG), waveMat);
   waveMesh.visible = false; waveMesh.renderOrder = 2;
   api.scene.add(waveMesh);
   let waveSize = 0;
   function sizeWaveMesh(size) {
+    // grid lines about 20 across the patch, at a round spacing (1, 2 or 5 × 10ⁿ m) so they sit at round world coordinates
+    const step = size / 20, p = 10 ** Math.floor(Math.log10(step)), m = step / p;
+    waveUniforms.uGrid.value = (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
     if (Math.abs(size - waveSize) < 1e-9) return;
     waveSize = size;
     waveMesh.geometry.dispose();
@@ -275,7 +322,11 @@ export function initSeakeeping(api) {
     K.simNote = simSourceNote(sm);
     K.field = field; K.hull = hull; K.running = true;
     K.runSea = s; K.runLin = s.mode === 'regular' && s.active ? [2, 3, 4].map((j) => regularLinear(P, s, j)) : null;
-    sizeWaveMesh(s.mode === 'regular' && s.active ? Math.max(P.st.model.diag * 8, Math.min(2 * 2 * Math.PI / waveNumber(2 * Math.PI / s.T), P.st.model.diag * 40)) : P.st.model.diag * 8);
+    // the patch spans a couple of (peak) wavelengths, so the waves read as waves rather than a tilting plane
+    const lam = s.active && s.T0 > 0 ? 2 * Math.PI / waveNumber(2 * Math.PI / s.T0) : 0;
+    sizeWaveMesh(lam ? Math.max(P.st.model.diag * 8, Math.min((s.mode === 'regular' ? 2 : 1.5) * lam, P.st.model.diag * 40)) : P.st.model.diag * 8);
+    // colour scale: the regular amplitude, or 2σ = Hs/2 of the spectrum
+    waveUniforms.uAmp.value = Math.max(1e-6, field.meta?.A ?? (field.meta?.m0 > 0 ? 2 * Math.sqrt(field.meta.m0) : 1));
     waveMesh.visible = true; api.water.visible = false; api.waterDepth.visible = false;
     api.setStaticOverlays(false); wl3.visible = true;
     $('waveRun').textContent = '❚❚ Stop'; $('waveRestart').disabled = false;
