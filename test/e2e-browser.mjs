@@ -17,19 +17,40 @@ const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
 const errs = [];
 page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
 page.on('pageerror', (e) => errs.push(e.message));
+// The app shows one stage (Float · Waves · RAO · drop test) and one tool pane at a time and folds some sections.
+// Bring an element into view the way a user would (stage tab, Tools menu, section header) before using it.
+const reveal = (sel) => page.evaluate((s) => {
+  const el = document.querySelector(s); if (!el) return;
+  const pane = el.closest('.stagepane');
+  if (pane && !pane.classList.contains('active')) {
+    const p = pane.dataset.pane;
+    if (p.startsWith('tool-')) document.querySelector(`.menu [data-tool="${p.slice(5)}"]`).click();
+    else document.querySelector(`#tabs [data-stage="${p}"]`).click();
+  }
+  const tb = el.closest('.tab-body');
+  if (tb && tb.classList.contains('hidden')) document.querySelector(`#tabs [data-tab="${tb.id}"]`).click();
+  const grp = el.closest('#anim .grp');
+  if (grp && !grp.classList.contains('on')) document.querySelector(`#tabs [data-stage="${grp.dataset.for}"]`).click();
+  for (let d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.open = true;
+}, sel).then(() => page.waitForTimeout(30));
+const click = async (sel, o) => { await reveal(sel); await page.click(sel, o); };
+const fill = async (sel, v) => { await reveal(sel); await page.fill(sel, v); };
+const select = async (sel, v) => { await reveal(sel); await page.selectOption(sel, v); };
+const check = async (sel) => { await reveal(sel); await page.check(sel); };
+const uncheck = async (sel) => { await reveal(sel); await page.uncheck(sel); };
 const stat = (label) => page.evaluate((l) => {
   const r = [...document.querySelectorAll('#stats tr')].find((t) => t.cells[0]?.innerText.startsWith(l));
   return r ? r.cells[1].innerText : null;
 }, label);
 const settle = async () => {
-  await page.click('#simSettle');
+  await click('#simSettle');
   await page.waitForFunction(() => !document.querySelector('#simRun').textContent.includes('Pause'), null, { timeout: 180000 });
 };
 
-// 1 — validation page, all mesh qualities
-await page.goto(`${BASE}/test/validate.html`);
-for (const q of ['fine', 'normal', 'coarse']) {
-  if (q !== 'fine') await page.selectOption('#q', q);
+// 1 — validation page, all mesh qualities (E2E_SKIP_VALIDATE=1 skips it when only the app UI changed)
+if (!process.env.E2E_SKIP_VALIDATE) await page.goto(`${BASE}/test/validate.html`);
+for (const q of process.env.E2E_SKIP_VALIDATE ? [] : ['fine', 'normal', 'coarse']) {
+  if (q !== 'fine') await select('#q', q);
   await page.waitForFunction((q) => window.__floatSimValidation?.quality === q, q, { timeout: 1200000 });
   const r = await page.evaluate(() => window.__floatSimValidation);
   expect(`validate.html [${q}] ${r.pass}/${r.total}`, r.pass === r.total);
@@ -41,42 +62,51 @@ await page.waitForTimeout(800);
 await page.setInputFiles('#file', MODEL);
 await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
 expect('STEP import: watertight, 8 m³', (await page.locator('#modelInfo').innerText()).match(/Watertight\s+yes/) && (await page.locator('#modelInfo').innerText()).includes('8 m³'));
-for (const [id, v] of [['mass', '3200'], ['cgx', '2000'], ['cgy', '0'], ['cgz', '500']]) { await page.fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
 await page.waitForTimeout(300);
-expect('barge draft 400 mm', near(num(await stat('Draft')), 400, 1e-3), await stat('Draft'));
-expect('barge BM_T 833.333 mm', near(num(await stat('BMT')), 833.333, 1e-3), await stat('BMT'));
-expect('barge GM_T 533.333 mm', near(num(await stat('GMT')), 533.333, 1e-3), await stat('GMT'));
-expect('barge GM_L 3033.333 mm', near(num(await stat('GML')), 3033.333, 1e-3), await stat('GML'));
+// metric throughout: lengths in metres, shown to the millimetre
+expect('barge draft 0.4 m', near(num(await stat('Draft')), 0.4, 1e-3), await stat('Draft'));
+expect('barge BM_T 0.833 m', near(num(await stat('BMT')), 0.833333, 1e-3), await stat('BMT'));
+expect('barge GM_T 0.533 m', near(num(await stat('GMT')), 0.533333, 1e-3), await stat('GMT'));
+expect('barge GM_L 3.033 m', near(num(await stat('GML')), 3.033333, 1e-3), await stat('GML'));
 expect('barge 80 kg/cm', near(num(await stat('Immersion')), 80, 1e-3), await stat('Immersion'));
 expect('verdict stable', (await page.locator('#verdict').innerText()).startsWith('Stable'));
 if (shots) await page.screenshot({ path: `${shots}/app-barge.png` });
 
-await page.click('#water button[data-rho="1025"]'); await page.waitForTimeout(200);
-expect('salt-water draft 390.244 mm', near(num(await stat('Draft')), 390.244, 1e-3), await stat('Draft'));
-await page.click('#water button[data-rho="1000"]');
+await click('#water button[data-rho="1025"]'); await page.waitForTimeout(200);
+expect('salt-water draft 0.390 m', near(num(await stat('Draft')), 0.390244, 1e-3), await stat('Draft'));
+expect('status bar shows the water density', (await page.locator('#sbWater').innerText()).includes('1025'));
+await click('#water button[data-rho="1000"]');
 
-// 2b — units menu is display-only for STEP (known size): mm → in keeps the body where it is
-await page.waitForTimeout(200);
-await page.selectOption('#units', '0.0254'); await page.waitForTimeout(300);
-expect('mm → in: same draft, shown as 15.748 in', near(num(await stat('Draft')), 400 / 25.4, 1e-3), await stat('Draft'));
-expect('mm → in: CoG X converted to 78.7402 in', near(num(await page.inputValue('#cgx')), 2000 / 25.4, 1e-3), await page.inputValue('#cgx'));
-expect('mm → in: still 40 % submerged', (await page.locator('#massInfo').innerText()).includes('40% of its volume'));
-await page.click('#simRun'); await page.waitForTimeout(3500);
+// 2b — workspace: metric only, stages, tools, view
+expect('metric only: no units menu, status bar says m · kg · s · N', !(await page.$('#units')) && (await page.locator('#statusbar').innerText()).includes('m · kg · s · N'));
+expect('STL units row hidden for a STEP model', !(await page.locator('#stlUnitsRow').isVisible()));
+expect('Float tab shows the verdict', (await page.locator('#stFloat').innerText()) === 'Stable');
+await click('#tabs [data-stage="waves"]');
+expect('Waves tab shows the wave setup pane', await page.locator('#ssHeadN').isVisible() && !(await page.locator('#mass').isVisible()));
+await click('#toolsBtn'); await click('.menu [data-tool="moor"]');
+expect('Tools › Mooring opens its pane in the Waves stage', await page.locator('#moorOn').isVisible() && (await page.evaluate(() => document.body.dataset.stage)) === 'waves');
+await click('.stagepane.active [data-act="closetool"]');
+expect('OK returns to the wave setup', await page.locator('#ssHeadN').isVisible());
+await click('#tabs [data-stage="float"]');
+expect('global axes triad drawn', (await page.locator('#triad text').count()) === 3);
+await click('#gtb [data-view="top"]'); await page.waitForTimeout(200);
+expect('Top view: global Z points at the viewer (no Z arrowhead)', await page.evaluate(() => [...document.querySelectorAll('#triad g')].find((g) => g.textContent === 'Z').querySelector('polygon').getAttribute('points') === ''));
+await click('#gtb [data-view="iso"]');
+await click('#simRun'); await page.waitForTimeout(3500);
 expect('simulate from rest explains why nothing moves', (await page.locator('#simInfo').innerText()).includes('started at rest'));
-await page.click('#simReset');
-await page.selectOption('#units', '0.001'); await page.waitForTimeout(300);
-expect('in → mm: back to 400 mm and CoG X 2000', near(num(await stat('Draft')), 400, 1e-3) && near(num(await page.inputValue('#cgx')), 2000, 1e-6), `${await stat('Draft')}, ${await page.inputValue('#cgx')}`);
+await click('#simReset');
 
-// 3 — target plane from upright: draft 250 mm → 2000 kg
-await page.fill('#tVal', '250'); await page.click('#tCalc'); await page.waitForTimeout(200);
+// 3 — target plane from upright: draft 0.25 m → 2000 kg
+await fill('#tVal', '0.25'); await click('#tCalc'); await page.waitForTimeout(200);
 const tm = await page.evaluate(() => document.querySelector('#tOut tr td:last-child').innerText);
-expect('target draft 250 mm → 2000 kg', near(num(tm), 2000, 0.05), tm);
-await page.click('#tApply'); await page.waitForTimeout(200);
-expect('apply mass → draft 250 mm', near(num(await stat('Draft')), 250, 1e-3), await stat('Draft'));
-await page.fill('#mass', '3200'); await page.press('#mass', 'Enter');
+expect('target draft 0.25 m → 2000 kg', near(num(tm), 2000, 0.05), tm);
+await click('#tApply'); await page.waitForTimeout(200);
+expect('apply mass → draft 0.25 m', near(num(await stat('Draft')), 0.25, 1e-3), await stat('Draft'));
+await fill('#mass', '3200'); await page.press('#mass', 'Enter');
 
 // 4 — off-centre CoG: warning, then settle to the wall-sided list angle
-await page.fill('#cgy', '50'); await page.press('#cgy', 'Enter'); await page.waitForTimeout(200);
+await fill('#cgy', '0.05'); await page.press('#cgy', 'Enter'); await page.waitForTimeout(200);
 expect('not-at-rest warning shown', (await page.locator('#verdict').innerText()).includes('not at rest'));
 await settle();
 const roll = num(await page.inputValue('#rollN'));
@@ -85,7 +115,7 @@ if (shots) await page.screenshot({ path: `${shots}/app-list.png` });
 
 // 5 — cube s.g. ½: unstable upright, rolls to 45°, neutral about the edge axis
 const gzBefore = await page.locator('#gzInfo').innerText();
-await page.selectOption('#demo', 'box');
+await select('#demo', 'box');
 // the GZ panel redraws on a short debounce; software WebGL can delay it, so wait for the change
 await page.waitForFunction((b) => document.querySelector('#gzInfo').innerText !== b, gzBefore, { timeout: 30000 });
 expect('cube s.g. ½ upright → Unstable', (await page.locator('#verdict').innerText()).startsWith('Unstable'));
@@ -100,13 +130,13 @@ expect('…and comes to rest stable (GM_T, GM_L > 0)', num(await stat('GMT')) > 
 if (shots) await page.screenshot({ path: `${shots}/app-cube.png` });
 
 // 6 — seakeeping: SS3 beam seas on the demo barge
-await page.selectOption('#demo', 'hull');
+await select('#demo', 'hull');
 await page.waitForTimeout(500);
-await page.selectOption('#ssSel', '3');
-await page.click('#tabs button[data-tab="tabSea"]');
+await select('#ssSel', '3');
+await click('#tabs button[data-tab="tabSea"]');
 await page.waitForFunction(() => document.querySelector('#specInfo').innerText.includes('Peak'), null, { timeout: 30000 });
 expect('spectrum drawn, FK validity reported', (await page.locator('#specInfo').innerText()).includes('Froude–Krylov validity'));
-await page.click('#waveRun');
+await click('#waveRun');
 // the first run computes panel-method added mass and damping (quick coarse sweep), then starts
 await page.waitForFunction(() => /t = [\d.]+ s/.test(document.querySelector('#waveInfo').innerText), null, { timeout: 120000 });
 await page.waitForTimeout(4000);
@@ -114,11 +144,11 @@ const wi = await page.locator('#waveInfo').innerText();
 expect('real-time wave run advances', num((wi.match(/t = ([\d.]+) s/) || [])[1]) > 0.5, wi.split('\n')[0]);
 expect('wave run uses panel-method added mass and damping', wi.includes('panel method'), wi.split('\n').pop());
 if (shots) await page.screenshot({ path: `${shots}/sea-run.png` });
-await page.click('#waveRun');
-await page.click('#ssSweep'); await page.waitForTimeout(800);
+await click('#waveRun');
+await click('#ssSweep'); await page.waitForTimeout(800);
 const ssRows = await page.locator('#ssTable tr').count();
 expect('sea-state sweep table SS1–SS5', ssRows === 6, `${ssRows - 1} rows`);
-await page.click('#waveStats');
+await click('#waveStats');
 await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
 const statRow = async (label) => page.evaluate((l) => {
   const r = [...document.querySelectorAll('#seaStats tr')].find((t) => t.cells[0]?.innerText.startsWith(l));
@@ -131,35 +161,35 @@ expect('sea-state verdict shown', /SS3: max roll/.test(await page.locator('#seaV
 if (shots) await page.screenshot({ path: `${shots}/sea-stats.png` });
 
 // 6b — regular waves from user inputs (no spectrum): H 0.5 m, T 8 s, beam
-await page.click('#waveMode button[data-mode="regular"]');
+await click('#waveMode button[data-mode="regular"]');
 expect('regular mode shows its inputs and hides the spectrum inputs',
   await page.locator('#regInputs').isVisible() && !(await page.locator('#specInputs').isVisible()) && !(await page.locator('#ssSel').isVisible()));
-await page.fill('#rgH', '0.5'); await page.dispatchEvent('#rgH', 'change');
-await page.fill('#rgT', '8'); await page.dispatchEvent('#rgT', 'change');
-await page.fill('#ssHeadN', '90'); await page.dispatchEvent('#ssHeadN', 'change');
+await fill('#rgH', '0.5'); await page.dispatchEvent('#rgH', 'change');
+await fill('#rgT', '8'); await page.dispatchEvent('#rgT', 'change');
+await fill('#ssHeadN', '90'); await page.dispatchEvent('#ssHeadN', 'change');
 const rgi = await page.locator('#rgInfo').innerText();
 expect('regular wave: wavelength gT²/2π = 99.9 m shown', /wavelength 99\.9 m/.test(rgi), rgi);
 expect('regular wave: linear steady-state prediction shown', (await page.locator('#specInfo').innerText()).includes('Linear steady-state prediction'));
-await page.click('#waveRun'); await page.waitForTimeout(4000);
+await click('#waveRun'); await page.waitForTimeout(4000);
 const rwi = await page.locator('#waveInfo').innerText();
 expect('regular real-time run advances with linear reference', num((rwi.match(/t = ([\d.]+) s/) || [])[1]) > 0.5 && rwi.includes('linear steady state'), rwi.split('\n')[0]);
 if (shots) await page.screenshot({ path: `${shots}/sea-regular-run.png` });
 expect('wave drift on by default: live drift speed and Stokes drift shown', rwi.includes('Stokes drift over the draft'));
 expect('restart button enabled while running', !(await page.locator('#waveRestart').isDisabled()));
-await page.click('#waveRestart'); await page.waitForTimeout(1500);
+await click('#waveRestart'); await page.waitForTimeout(1500);
 expect('restart starts the run again from t ≈ 0', num(((await page.locator('#waveInfo').innerText()).match(/t = ([\d.]+) s/) || [])[1]) < 2.5);
-await page.uncheck('#driftOn'); await page.waitForTimeout(1500);
+await uncheck('#driftOn'); await page.waitForTimeout(1500);
 expect('drift off: held on station', (await page.locator('#waveInfo').innerText()).includes('wave drift off'));
-await page.check('#driftOn');
-await page.uncheck('#waveFollow');
+await check('#driftOn');
+await uncheck('#waveFollow');
 const tgt0 = await page.evaluate(() => document.querySelector('#waveInfo').innerText);
 await page.waitForTimeout(800);
 expect('camera follow can be switched off while running', tgt0.length > 0 && !(await page.locator('#waveFollow').isChecked()));
-await page.check('#waveFollow');
-await page.click('#waveRun');
+await check('#waveFollow');
+await click('#waveRun');
 expect('restart button disabled when stopped', await page.locator('#waveRestart').isDisabled());
 expect('statistics button reads 5 min in regular mode', (await page.locator('#waveStats').innerText()).includes('5 min'));
-await page.click('#waveStats');
+await click('#waveStats');
 await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
 const [eTd, eIn] = (await statRow('Wave at G')).map(num), [rgTd, rgLin] = (await statRow('Roll')).map(num), [hgTd, hgLin] = (await statRow('Heave')).map(num);
 expect('regular run: measured wave amplitude = H/2 (±3 %)', Math.abs(eTd / 0.25 - 1) < 0.03 && Math.abs(eIn - 0.25) < 1e-9, `${eTd} m vs ${eIn} m`);
@@ -169,12 +199,20 @@ const driftTxt = await page.evaluate(() => [...document.querySelectorAll('#seaSt
 expect('statistics report the mean drift', /toward [\d.]+°/.test(driftTxt), driftTxt);
 expect('regular verdict names the wave', /Regular H 0\.5 m, T 8 s: max roll/.test(await page.locator('#seaVerdict').innerText()));
 if (shots) await page.screenshot({ path: `${shots}/sea-regular-stats.png` });
-await page.click('#waveMode button[data-mode="spectrum"]');
+// 6c — the wave direction is global: yawing the barge 90° turns beam seas (90° from global +X) into head seas
+const linPred = async () => { const t = await page.locator('#specInfo').innerText(); return { roll: num((t.match(/roll ±([\d.]+)°/) || [])[1]), pitch: num((t.match(/pitch ±([\d.]+)°/) || [])[1]) }; };
+const beam = await linPred();
+await fill('#yawN', '90'); await page.dispatchEvent('#yawN', 'change'); await page.waitForTimeout(300);
+await click('#tabs [data-stage="waves"]'); await page.waitForTimeout(300);
+const head = await linPred();
+expect('global wave direction: yaw 90° turns beam seas into head seas (roll → 0, pitch appears)', beam.roll > 0.5 && head.roll < 0.05 && head.pitch > 0.1, `yaw 0: roll ±${beam.roll}°, pitch ±${beam.pitch}° · yaw 90: roll ±${head.roll}°, pitch ±${head.pitch}°`);
+await click('#resetOri'); await page.waitForTimeout(200);
+await click('#waveMode button[data-mode="spectrum"]');
 expect('back to spectrum mode restores the sea-state picker', await page.locator('#ssSel').isVisible());
 
 // 7 — RAO sweep (Hz inputs, progress, async)
 expect('RAO range shown in Hz → rad/s', (await page.locator('#raoRange').innerText()).includes('rad/s'));
-await page.click('#raoRun');
+await click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoProgWrap').classList.contains('hidden'), null, { timeout: 10000 });
 expect('progress bar shown while computing', true);
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
@@ -183,77 +221,77 @@ expect('RAO sweep computed with the panel method by default', raoInfo.includes('
 expect('natural frequencies reported in Hz with radiation damping', /heave [\d.]+ Hz/.test(raoInfo) && raoInfo.includes('radiation damping'));
 expect('RAO response table (5 headings)', (await page.locator('#raoResp tr').count()) === 6);
 const dl = page.waitForEvent('download');
-await page.click('#raoCsv');
+await click('#raoCsv');
 const csv = await (await dl).createReadStream().then((st) => new Promise((res) => { let d = ''; st.on('data', (c) => { d += c; }); st.on('end', () => res(d)); }));
 expect('RAO CSV export (5 × 80 rows + header)', csv.trim().split('\n').length === 401, `${csv.trim().split('\n').length} lines`);
 const dl2 = page.waitForEvent('download');
-await page.click('#raoRaw');
+await click('#raoRaw');
 const raw = await (await dl2).createReadStream().then((st) => new Promise((res) => { let d = ''; st.on('data', (c) => { d += c; }); st.on('end', () => res(d)); }));
 const rawLines = raw.trim().split('\n'), dataLines = rawLines.filter((l) => !l.startsWith('#'));
 expect('raw CSV: header comments + 57 columns × 400 rows (RAOs, forces, A(ω) and B(ω))', rawLines[0].startsWith('# Float Sim raw RAO export') && dataLines.length === 401 && dataLines[0].split(',').length === 57 && dataLines[0].includes('A33') && raw.includes('panel method'), `${dataLines.length} lines, ${dataLines[0].split(',').length} cols`);
 // leaving and re-opening the RAO tab shows the loading overlay, then the plots
-await page.click('#tabs button[data-tab="tabHydro"]');
-await page.click('#tabs button[data-tab="tabRao"]');
+await click('#tabs button[data-tab="tabHydro"]');
+await click('#tabs button[data-tab="tabRao"]');
 await page.waitForFunction(() => document.querySelector('#raoLoading').classList.contains('hidden'), null, { timeout: 30000 });
 expect('RAO tab re-renders after loading overlay', (await page.locator('#raoResp tr').count()) === 6);
 if (shots) await page.screenshot({ path: `${shots}/sea-rao.png` });
 // the sea-state table now uses the panel-method RAOs where the sweep covers the sea
-await page.click('#tabs button[data-tab="tabSea"]');
-await page.click('#ssSweep'); await page.waitForTimeout(800);
+await click('#tabs button[data-tab="tabSea"]');
+await click('#ssSweep'); await page.waitForTimeout(800);
 expect('sea-state table from the panel-method RAOs', (await page.locator('#ssTable').innerText()).includes('panel-method RAOs'));
 // a long panel-method sweep can be cancelled
-await page.selectOption('#bemFid', 'vfine'); await page.fill('#raoN', '400');
-await page.click('#raoRun');
+await select('#bemFid', 'vfine'); await fill('#raoN', '400');
+await click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoCancel').classList.contains('hidden'), null, { timeout: 30000 });
-await page.click('#raoCancel');
+await click('#raoCancel');
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled, null, { timeout: 30000 });
 expect('panel-method sweep cancelled', (await page.locator('#raoInfo').innerText()).includes('Cancelled'));
 // the fast Froude–Krylov option still works
-await page.selectOption('#bemFid', 'standard'); await page.fill('#raoN', '80');
-await page.selectOption('#raoMethod', 'fk');
+await select('#bemFid', 'standard'); await fill('#raoN', '80');
+await select('#raoMethod', 'fk');
 expect('panel count hidden for the Froude–Krylov option', !(await page.locator('#bemFid').isVisible()));
-await page.click('#raoRun');
+await click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
 expect('Froude–Krylov RAOs on request', (await page.locator('#raoInfo').innerText()).startsWith('Froude–Krylov'));
-await page.selectOption('#raoMethod', 'bem');
+await select('#raoMethod', 'bem');
 
 // 7b — small-body options on a cylinder buoy (STEP, Ø0.7 × 1 m): tracked points, drag + heave plate, mooring, wind
 const BUOY = new URL('./models/buoy_cyl.step', import.meta.url).pathname;
 await page.setInputFiles('#file', BUOY);
 await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('buoy_cyl'), null, { timeout: 60000 });
-for (const [id, v] of [['mass', (1000 * Math.PI * 0.35 ** 2 * 0.6).toFixed(3)], ['cgx', '0'], ['cgy', '0'], ['cgz', '300']]) { await page.fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+for (const [id, v] of [['mass', (1000 * Math.PI * 0.35 ** 2 * 0.6).toFixed(3)], ['cgx', '0'], ['cgy', '0'], ['cgz', '0.3']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
 await page.waitForTimeout(300);
-expect('buoy: draft 600 mm', near(num(await stat('Draft')), 600, 0.5), await stat('Draft'));
-await page.click('#ptPick');
+expect('buoy: draft 0.6 m', near(num(await stat('Draft')), 0.6, 1e-3), await stat('Draft'));
+await click('#ptPick');
 const glBox = await page.locator('#gl').boundingBox();
 await page.mouse.click(glBox.x + glBox.width / 2, glBox.y + glBox.height / 2);
 await page.waitForTimeout(300);
 expect('tracked point picked by clicking the model', (await page.locator('#ptList .ptrow').count()) === 1);
-await page.click('#ptAdd');
+await click('#ptAdd');
 const pt2 = page.locator('#ptList .ptrow').nth(1);
-await pt2.locator('input[data-k="2"]').fill('1000'); await pt2.locator('input[data-k="2"]').dispatchEvent('change');
-await pt2.locator('input[data-k="0"]').fill('300'); await pt2.locator('input[data-k="0"]').dispatchEvent('change');
-await page.check('#dragOn'); await page.selectOption('#dragPreset', 'vcyl'); await page.click('#plAdd'); await page.waitForTimeout(500);
+await pt2.locator('input[data-k="2"]').fill('1'); await pt2.locator('input[data-k="2"]').dispatchEvent('change');
+await pt2.locator('input[data-k="0"]').fill('0.3'); await pt2.locator('input[data-k="0"]').dispatchEvent('change');
+await check('#dragOn'); await select('#dragPreset', 'vcyl'); await click('#plAdd'); await page.waitForTimeout(500);
 expect('drag info: projected areas and heave-plate added mass', (await page.locator('#dragInfo').innerText()).includes('Heave plates: added mass'));
-await page.check('#moorOn'); await page.waitForTimeout(600);
+await check('#moorOn'); await page.waitForTimeout(600);
 const moorTxt = await page.locator('#moorInfo').innerText();
 expect('mooring info: line state at the mean position and the draft change', moorTxt.includes('At the mean position') && moorTxt.includes('deeper than free'), moorTxt.split('\n')[0]);
 expect('fairlead defaults to the keel point', near(num(await page.inputValue('#mfZ')), 0, 1e-6), await page.inputValue('#mfZ'));
-await page.check('#windOn'); await page.waitForTimeout(600);
+await check('#windOn'); await page.waitForTimeout(600);
 expect('wind info: steady force and static heel', (await page.locator('#windInfo').innerText()).includes('Steady wind at rest'));
-await page.click('#tabs button[data-tab="tabSea"]');
-await page.click('#waveMode button[data-mode="regular"]');
-await page.fill('#rgH', '0.4'); await page.dispatchEvent('#rgH', 'change');
-await page.fill('#rgT', '3'); await page.dispatchEvent('#rgT', 'change');
-await page.click('#waveRun');
+await click('#tabs button[data-tab="tabSea"]');
+await click('#waveMode button[data-mode="regular"]');
+await fill('#rgH', '0.4'); await page.dispatchEvent('#rgH', 'change');
+await fill('#rgT', '3'); await page.dispatchEvent('#rgT', 'change');
+await click('#waveRun');
 await page.waitForFunction(() => /t = [\d.]+ s/.test(document.querySelector('#waveInfo').innerText), null, { timeout: 120000 });
 await page.waitForTimeout(4000);
 const sbi = await page.locator('#waveInfo').innerText();
 expect('live run: mooring tension, wind and tracked points', sbi.includes('mooring: tension') && sbi.includes('wind:') && /P1: .*above water/.test(sbi), sbi.split('\n').slice(-4).join(' | '));
 expect('tracked-point and mooring charts shown', (await page.locator('#ptCharts').isVisible()) && (await page.locator('#moorCharts').isVisible()));
 if (shots) await page.screenshot({ path: `${shots}/smallbody-run.png` });
-await page.click('#waveRun');
-await page.click('#waveStats');
+await click('#waveRun');
+await click('#waveStats');
 await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
 const psTxt = await page.locator('#ptStats').innerText();
 expect('point statistics: time above water, time domain and linear', psTxt.includes('Time above water') && psTxt.includes('Linear (RAO)'));
@@ -261,57 +299,67 @@ const mstTxt = await page.locator('#moorStats').innerText();
 expect('mooring statistics: tensions, slack events and watch circle', mstTxt.includes('Max / min fairlead tension') && mstTxt.includes('Slack events') && mstTxt.includes('Watch circle'));
 expect('wind summary in the statistics', (await page.locator('#seaStats').innerText()).includes('Wind: mean force'));
 if (shots) await page.screenshot({ path: `${shots}/smallbody-stats.png` });
-await page.selectOption('#raoMethod', 'fk'); await page.fill('#raoHead', '0,90'); await page.dispatchEvent('#raoHead', 'change');
-await page.click('#raoRun');
+await select('#raoMethod', 'fk'); await fill('#raoHead', '0,90'); await page.dispatchEvent('#raoHead', 'change');
+await click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
 const sri = await page.locator('#raoInfo').innerText();
 expect('RAO info lists the small-body options', sri.includes('Small-body options') && sri.includes('mooring stiffness') && sri.includes('viscous drag linearised'), sri.split('\n').pop());
 expect('wave-following table for both headings', (await page.locator('#followInfo tr').count()) === 3);
 if (shots) await page.screenshot({ path: `${shots}/smallbody-rao.png` });
-await page.selectOption('#raoMethod', 'bem'); await page.fill('#raoHead', '0:45:180'); await page.dispatchEvent('#raoHead', 'change');
-await page.click('#tabs button[data-tab="tabSea"]');
-await page.click('#waveMode button[data-mode="spectrum"]');
-await page.click('#ssSweep'); await page.waitForTimeout(1500);
+await select('#raoMethod', 'bem'); await fill('#raoHead', '0:45:180'); await page.dispatchEvent('#raoHead', 'change');
+await click('#tabs button[data-tab="tabSea"]');
+await click('#waveMode button[data-mode="spectrum"]');
+await click('#ssSweep'); await page.waitForTimeout(1500);
 expect('sea-state table with drag linearised per row', (await page.locator('#ssTable').innerText()).includes('Viscous drag: linearised'));
-for (const id of ['dragOn', 'moorOn', 'windOn']) await page.uncheck(`#${id}`);
+for (const id of ['dragOn', 'moorOn', 'windOn']) await uncheck(`#${id}`);
 await page.waitForTimeout(300);
 
 // 8 — custom moments of inertia (STEP barge: roll period T = 2π√(Ixx / (ρgV·GM_T)), dry, no added mass)
 await page.setInputFiles('#file', MODEL);
 await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
-for (const [id, v] of [['mass', '3200'], ['cgx', '2000'], ['cgy', '0'], ['cgz', '500']]) { await page.fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
-await page.click('#tabs button[data-tab="tabHydro"]');
-await page.selectOption('#inMode', 'custom');
+for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+await click('#tabs button[data-tab="tabHydro"]');
+await select('#inMode', 'custom');
 expect('custom inertia prefilled with computed values', num(await page.inputValue('#inXX')) > 0);
-await page.fill('#inXX', '2000'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
+await fill('#inXX', '2000'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
 const Troll = 2 * Math.PI * Math.sqrt(2000 / (1000 * 9.80665 * 3.2 * (0.2 + 4 / (12 * 0.4) - 0.5)));
 expect(`custom Ixx = 2000 kg·m² → roll period ${Troll.toFixed(3)} s`, near(num(await stat('Roll')), Troll, 0.01), await stat('Roll'));
-await page.fill('#inXX', '99999'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
+await fill('#inXX', '99999'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
 expect('non-physical inertia rejected (triangle inequality)', (await page.locator('#inInfo').innerText()).includes('triangle inequality'));
 
 // 9 — drop / rise test (barge STEP still loaded, custom inertia back to computed)
-await page.selectOption('#inMode', 'auto');
-await page.fill('#dzH', '3000'); await page.dispatchEvent('#dzH', 'input');   // mm: CoG 3 m above the water
-await page.click('#dzPlace'); await page.waitForTimeout(300);
+await select('#inMode', 'auto');
+await click('#toolsBtn'); await click('.menu [data-act="drop"]');
+expect('Tools › Drop / rise test opens the drop mode', (await page.evaluate(() => document.body.dataset.stage)) === 'drop' && await page.locator('#modebar').isVisible());
+await fill('#dzH', '3'); await page.dispatchEvent('#dzH', 'input');   // CoG 3 m above the water
+await click('#dzPlace'); await page.waitForTimeout(300);
 const lockState = async () => page.evaluate(() => ['waveRun', 'waveStats', 'ssSweep', 'raoRun', 'simRun'].map((id) => document.getElementById(id).disabled));
 expect('placing locks waves, statistics, sea-state table, RAOs and calm simulate', (await lockState()).every(Boolean));
 expect('lock notes visible', await page.locator('.lock-note:not(.hidden)').count() === 2);
-await page.fill('#dzSpeed', '8'); await page.dispatchEvent('#dzSpeed', 'input');
-await page.click('#dzRun');
+await fill('#dzSpeed', '8'); await page.dispatchEvent('#dzSpeed', 'input');
+await click('#dzRun');
 await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
 const dropRow = async (label) => page.evaluate((l) => { const r = [...document.querySelectorAll('#dzStats tr')].find((t) => t.cells[0].innerText.startsWith(l)); return r ? r.cells[1].innerText : ''; }, label);
 const entry = await dropRow('Water entry speed');
 const vEntry = num(entry.split(' m/s')[0]), vFree = Math.sqrt(2 * 9.80665 * 2.5);   // keel 0.5 m below the CoG → falls 2.5 m
 expect('drop from 3 m: entry speed ≈ √(2gh) (air drag ≤ 2 %)', vEntry < vFree && vEntry > 0.98 * vFree, `${vEntry} m/s vs ${vFree.toFixed(3)} m/s`);
-expect('drop: plunges, then settles at the float height (CoG 100 mm above water: draft 400, KG 500)', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && near(parseFloat((await dropRow('Settled')).split(' at ')[1]), 100, 3), await dropRow('Settled'));
-await page.fill('#dzH', '-3000'); await page.dispatchEvent('#dzH', 'input');
-await page.click('#dzPlace'); await page.click('#dzRun');
+expect('drop: plunges, then settles at the float height (CoG 0.1 m above water: draft 0.4, KG 0.5)', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && near(parseFloat((await dropRow('Settled')).split(' at ')[1]), 0.1, 0.003), await dropRow('Settled'));
+const maxDepth = num(await dropRow('Max submersion depth')), minCoG = num((await dropRow('Deepest CoG')).split(' m')[0]);
+// the keel is 0.5 m below the CoG and the barge stays near level, so the keel goes about 0.5 m deeper than the CoG
+expect('drop: max submersion depth = lowest point below the still water', maxDepth > 0.4 && near(maxDepth, 0.5 - minCoG, 0.05), `depth ${maxDepth} m, deepest CoG ${minCoG} m`);
+expect('drop: max rise rate reported (rebound)', num(await dropRow('Max rise rate')) > 0);
+await fill('#dzRoll', '20'); await page.dispatchEvent('#dzRoll', 'change');
+expect('drop orientation drives the start attitude', near(num(await page.inputValue('#rollN')), 20, 1e-9));
+await fill('#dzH', '-3'); await page.dispatchEvent('#dzH', 'input');
+await click('#dzPlace'); await click('#dzRun');
 await page.waitForFunction(() => /Settled|Sinks|time limit/.test(document.querySelector('#dzInfo').innerText), null, { timeout: 180000 });
 expect('rise from 3 m depth: breaks the surface and stabilizes', (await page.locator('#dropVerdict').innerText()).includes('Stabilized') && (await dropRow('Broke the surface')).length > 0);
+expect('rise: max rise rate is the upward speed reached', num(await dropRow('Max rise rate')) > 0.5, await dropRow('Max rise rate'));
 expect('drop test uses panel-method added mass and damping', (await page.locator('#dzStats').innerText()).includes('panel method'));
+expect('runs table lists both releases', (await page.locator('#dzRuns tr').count()) === 3);
 if (shots) await page.screenshot({ path: `${shots}/drop.png` });
-await page.click('#dzReset'); await page.waitForTimeout(300);
-expect('reset position unlocks the tools', (await lockState()).every((d) => !d));
+await click('#exitDrop'); await page.waitForTimeout(300);
+expect('Exit drop test resets the position, unlocks the tools and returns to Float', (await lockState()).every((d) => !d) && (await page.evaluate(() => document.body.dataset.stage)) === 'float');
 
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();

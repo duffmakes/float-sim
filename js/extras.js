@@ -1,4 +1,5 @@
-// UI for the small-body options (sections 10–13): tracked points, viscous drag & heave plates, mooring, wind.
+// UI for the small-body options: tracked points (Waves stage) and the Tools add-ons: viscous drag & heave plates,
+// mooring, wind.
 // Holds the inputs, draws the markers and mooring lines in 3D, and hands the seakeeping module a plain config
 // (model coordinates in metres). All four options are off / empty by default.
 import { LINE_PRESETS, catenaryShape, quasiStaticForce } from './mooring.js';
@@ -13,7 +14,7 @@ export function initExtras(api) {
   const { THREE } = api;
   const E = { points: [], plates: [], picking: null, lineObjs: [] };
   const us = () => api.unitScale(), un = () => api.unitName();
-  const toDisp = (m) => +(m / us()).toPrecision(6);
+  const toDisp = (m) => (Math.abs(m) < 1e-9 ? 0 : +(m / us()).toPrecision(6));
 
   // ------------------------------------------------------------ 3D: markers attached to the body (model coordinates)
   const local = api.bodyLocal;   // group in the body frame, offset so model coordinates can be used directly
@@ -200,7 +201,9 @@ export function initExtras(api) {
       };
     }
     if ($('windOn').checked) {
-      cfg.wind = { U10: Math.max(0, num('windU', 0)), dir: $('windSame').checked ? waveHeading : num('windDir', 90), Cd: Math.max(0, num('windCd', 1)), gusts: $('windGust').checked, seed: Math.round(num('windSeed', 7)) };
+      // the wind direction is entered from global +X like the waves; the seakeeping frame has the model's yaw removed
+      const st = api.getState(), yaw = st ? Math.atan2(st.R[3], st.R[0]) * 180 / Math.PI : 0;
+      cfg.wind = { U10: Math.max(0, num('windU', 0)), dir: $('windSame').checked ? waveHeading : num('windDir', 90) - yaw, Cd: Math.max(0, num('windCd', 1)), gusts: $('windGust').checked, seed: Math.round(num('windSeed', 7)) };
     }
     return cfg;
   }

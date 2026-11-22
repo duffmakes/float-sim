@@ -463,7 +463,8 @@ export class DropSim {
     const wr = Math.sqrt(rhoW * g * Math.max(V, 1e-12) * ext / Imin);
     this.dtBase = Math.min(0.01, 1 / (40 * Math.max(wRef, wr, 1e-3)));
     this.rec = { t: [], z: [], vz: [], roll: [], pitch: [], frac: [] };
-    this.st = { contactT: null, entrySpeed: null, minZ: z0, maxFrac: 0, fullySubmerged: false, breachT: null, maxZafterBreach: -Infinity, startFrac: null, done: null, terminal: 0 };
+    // minBottom: lowest point of the body reached (world z, still water at 0); maxRise: largest upward CoG speed
+    this.st = { contactT: null, entrySpeed: null, minZ: z0, minBottom: Infinity, maxRise: Math.max(0, vz0), maxFrac: 0, fullySubmerged: false, breachT: null, maxZafterBreach: -Infinity, startFrac: null, done: null, terminal: 0 };
   }
 
   projectedArea(dirWorld, R) {
@@ -520,6 +521,9 @@ export class DropSim {
     if (st.startFrac === null) st.startFrac = f;
     if (st.contactT === null && st.startFrac === 0 && f > 0) { st.contactT = this.t; st.entrySpeed = -this.v[2]; }
     st.minZ = Math.min(st.minZ, this.p[2]);
+    let zLow = Infinity; for (let i = 2; i < this.buf.length; i += 3) if (this.buf[i] < zLow) zLow = this.buf[i];
+    st.minBottom = Math.min(st.minBottom, zLow);
+    st.maxRise = Math.max(st.maxRise, this.v[2]);
     st.maxFrac = Math.max(st.maxFrac, f);
     if (f > 0.999) st.fullySubmerged = true;
     if (st.fullySubmerged && st.breachT === null && f < 0.999 && this.v[2] > 0) st.breachT = this.t;

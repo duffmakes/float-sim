@@ -1,9 +1,10 @@
 // Minimal canvas charts (line + heatmap) with a hover crosshair/tooltip layer.
-// Colours: validated dark-mode reference palette (dataviz skill) on the #18233a chart surface.
-export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c', '#9085e9', '#e66767'];
-// ordinal single-hue ramp (light → dark), validated for ordered categories (e.g. wave headings)
-export const ORDINAL = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf'];
-const INK = { primary: '#dfe7f3', secondary: '#8a9ab5', grid: '#26344f', axis: '#4b5d80', surface: '#18233a' };
+// Colours: validated light-mode reference palette (dataviz skill) on a white chart surface (CAD-style panes).
+export const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+// ordinal single-hue ramp (light → dark), validated for ordered categories (e.g. wave headings); the lightest
+// step still clears 2:1 on white
+export const ORDINAL = ['#86b6ef', '#5598e7', '#2a78d6', '#1c5cab', '#0d366b'];
+const INK = { primary: '#1e1e1e', secondary: '#555555', grid: '#e3e3e3', axis: '#8c8c8c', surface: '#ffffff' };
 
 const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 export function rampColor(t, ramp = ORDINAL) {
@@ -12,8 +13,8 @@ export function rampColor(t, ramp = ORDINAL) {
   const a = hex(ramp[i]), b = hex(ramp[i + 1]);
   return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * u)).join(',')})`;
 }
-// sequential (heatmap) on a dark surface: near-zero recedes toward the surface
-const SEQ = ['#0d366b', '#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4', '#cde2fb'];
+// sequential (heatmap) on a light surface: near-zero recedes toward the surface
+const SEQ = ['#f4f8fd', '#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b'];
 
 const nice = (lo, hi, n = 5) => {
   const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
