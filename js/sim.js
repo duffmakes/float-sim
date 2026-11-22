@@ -2,6 +2,10 @@
 import { submerged, transformTris, quatToMat3, mat3ToQuat, mat3, G0 } from './physics.js';
 import { waveForces } from './hydro.js';
 import { ursellR2, stokesDriftMean } from './waves.js';
+import { dragLoads } from './drag.js';
+import { windLoads, WindField } from './wind.js';
+import { mooringLoads, LumpedLine } from './mooring.js';
+import { PointTracker } from './tracking.js';
 
 export class FloatSim {
   // bodyTris: geometry relative to G in the body (model) frame, metres.
@@ -85,12 +89,22 @@ export class WaveSim {
   //   { on: true, Cd }      wave drift: Stokes-drift current + reflection mean drift force, quadratic drag on the
   //                          horizontal velocity relative to the drift current (see waves.js for the references)
   //   { on: false, holdPeriod }  no drift: a soft horizontal spring (natural period holdPeriod, critically damped)
-  //                          keeps the body on station without touching wave-frequency surge and sway
-  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0, volQ = null, diffModes = [true, true, true], drift = null }) {
+  //                          keeps the body on station without touching wave-frequency surge and sway; the mean
+  //                          horizontal wind push is reacted as well (held on station)
+  // Optional small-body extras (null = off):
+  //   drag:    { geo, plates } quadratic hull drag and heave plates (drag.js); plate added mass must be in A
+  //   wind:    { params: WindField parameters, Cd, rhoA } windage on the dry part of the hull (wind.js)
+  //   mooring: { cfg, model: 'quasi' | 'dynamic', fairlead: [x, y, z] body frame relative to G, nSeg } (mooring.js);
+  //            replaces the station-keeping spring
+  //   points:  [{ name, r: [x, y, z] body frame relative to G, clearance }] tracked points (tracking.js)
+  //   p0:      [x, y] starting horizontal position of G (a moored body starts at its mean equilibrium)
+  constructor({ hull, mass, inertiaG, rho, R0, z0, field, A, Bd, dt, ramp = 0, vanishDeg = 180, g = G0, volQ = null, diffModes = [true, true, true], drift = null,
+    drag = null, wind = null, mooring = null, points = null, p0 = null }) {
     this.hull = hull; this.m = mass; this.rho = rho; this.g = g; this.field = field;
     this.world = new Float64Array(hull.verts.length);
     this.etaBuf = new Float64Array(hull.verts.length / 3); this.pBuf = new Float64Array(hull.verts.length / 3);
-    this.R0 = R0; this.q = mat3ToQuat(R0); this.p = [0, 0, z0]; this.v = [0, 0, 0]; this.w = [0, 0, 0];
+    this.R0 = R0; this.q = mat3ToQuat(R0); this.p = [p0 ? p0[0] : 0, p0 ? p0[1] : 0, z0]; this.v = [0, 0, 0]; this.w = [0, 0, 0];
+    this.p0 = this.p.slice();
     this.A = A; this.Bd = Bd; this.dt = dt; this.t = 0; this.ramp = ramp; this.vanishDeg = vanishDeg;
     this.volQ = volQ; this.diffModes = diffModes;
     if (volQ) { let V = 0; for (let o = 3; o < volQ.length; o += 4) V += volQ[o]; this.volQV = V; }
@@ -135,6 +149,66 @@ export class WaveSim {
     }
     this.stats = { greenWater: 0, greenSteps: 0, steps: 0, capsized: false, capsizeT: null, maxRoll: 0, maxPitch: 0 };
     this.last = null;
+    // ---- small-body extras
+    this.drag = drag && ((drag.geo && drag.geo.Cd.some((c) => c > 0)) || (drag.plates && drag.plates.length)) ? drag : null;
+    this.hullDragH = !!(this.drag && this.drag.geo && (this.drag.geo.Cd[0] > 0 || this.drag.geo.Cd[1] > 0));
+    if (wind && wind.params && wind.params.U10 > 0) {
+      this.wind = { ...wind, field: new WindField(wind.params) };
+      this.wind.lp1 = [0, 0]; this.wind.lp2 = [0, 0];
+    } else this.wind = null;
+    this.moored = !!(mooring && mooring.cfg && mooring.cfg.lines.length);
+    if (this.moored) this.initMooring(mooring, z0);
+    this.tracker = points && points.length ? new PointTracker(points, ramp) : null;
+    this.windStats = this.wind ? { n: 0, sF: [0, 0, 0], maxF: 0 } : null;
+  }
+
+  initMooring(mooring, z0) {
+    const m = this.moor = { ...mooring, rf: mooring.fairlead.slice() };
+    const R0 = this.R0, rf = m.rf;
+    const Fw = [R0[0] * rf[0] + R0[1] * rf[1] + R0[2] * rf[2] + this.p[0], R0[3] * rf[0] + R0[4] * rf[1] + R0[5] * rf[2] + this.p[1], R0[6] * rf[0] + R0[7] * rf[1] + R0[8] * rf[2] + z0];
+    const rest = mooringLoads(m.cfg, this.rho, Fw, this.p.slice());
+    m.Tstatic = rest.sols.map((q) => q.T);
+    m.guesses = rest.sols.map((q) => (q.sol.H > 0 ? { H: q.sol.H, V: q.sol.V } : null));
+    if (m.model === 'dynamic') {
+      m.lines = m.cfg.lines.map((ln) => {
+        const L = new LumpedLine({ cfg: m.cfg, anchor: ln.anchor, rho: this.rho, fairleadWorld: Fw, field: this.field, nSeg: m.nSeg || 16 });
+        L.relax(Fw, 15);
+        return L;
+      });
+    }
+    m.T = m.Tstatic.slice(); m.TA = m.cfg.lines.map(() => 0); m.F = rest.F.slice();
+    m.st = { maxT: 0, minT: Infinity, slackEvents: 0, inSlack: m.cfg.lines.map(() => false), maxAnchorT: 0, maxUplift: 0, maxOffset: 0, sumOffset: 0, n: 0 };
+    this.rec.tension = [];
+  }
+
+  // Line loads on the body over this step (fairlead moves with the body). Dynamic lines are advanced over [t, t + dt].
+  mooringStep(R, dt) {
+    const m = this.moor, rf = m.rf;
+    const rw = [R[0] * rf[0] + R[1] * rf[1] + R[2] * rf[2], R[3] * rf[0] + R[4] * rf[1] + R[5] * rf[2], R[6] * rf[0] + R[7] * rf[1] + R[8] * rf[2]];
+    const Fw = [this.p[0] + rw[0], this.p[1] + rw[1], this.p[2] + rw[2]];
+    const w = this.w, vF = [this.v[0] + w[1] * rw[2] - w[2] * rw[1], this.v[1] + w[2] * rw[0] - w[0] * rw[2], this.v[2] + w[0] * rw[1] - w[1] * rw[0]];
+    const F = [0, 0, 0];
+    let Tmax = 0, Tmin = Infinity;
+    if (m.model === 'dynamic') {
+      m.lines.forEach((L, i) => {
+        const f = L.advance(dt, Fw, vF, this.t);
+        F[0] += f[0]; F[1] += f[1]; F[2] += f[2];
+        m.T[i] = L.Tfair; m.TA[i] = L.Tanchor;
+        Tmax = Math.max(Tmax, L.stepMaxT); Tmin = Math.min(Tmin, L.stepMinT);
+        m.upl = Math.max(m.upl || 0, L.Tanchor * Math.max(0, (L.r[5] - L.r[2]) / Math.max(1e-9, Math.hypot(L.r[3] - L.r[0], L.r[4] - L.r[1], L.r[5] - L.r[2]))));
+      });
+    } else {
+      const res = mooringLoads(m.cfg, this.rho, Fw, this.p, m.guesses);
+      res.sols.forEach((q, i) => {
+        if (q.sol.H > 0) m.guesses[i] = { H: q.sol.H, V: q.sol.V };
+        m.T[i] = q.T; m.TA[i] = Math.hypot(q.sol.HA, q.sol.VA);
+        Tmax = Math.max(Tmax, q.T); Tmin = Math.min(Tmin, q.T);
+        m.upl = Math.max(m.upl || 0, q.sol.VA);
+      });
+      F[0] = res.F[0]; F[1] = res.F[1]; F[2] = res.F[2];
+    }
+    m.F = F; m.Fw = Fw; m.stepMax = Tmax; m.stepMin = Tmin;
+    return { F, M: [rw[1] * F[2] - rw[2] * F[1], rw[2] * F[0] - rw[0] * F[2], rw[0] * F[1] - rw[1] * F[0]] };
   }
 
   relEuler(R) { return mat3.toEulerDeg(mat3.mul(R, mat3.transpose(this.R0))); }
@@ -152,7 +226,20 @@ export class WaveSim {
     const wf = waveForces(this.world, idx, this.field, this.t, this.rho, this.p, { etaBuf: this.etaBuf, pBuf: this.pBuf, segments: !record });
     const { A, Bd, m } = this;
     const F = [wf.F[0] - Bd[0] * this.v[0], wf.F[1] - Bd[1] * this.v[1], wf.F[2] - m * this.g - Bd[2] * this.v[2]];
-    if (this.drift) this.driftForces(F, wf.F, dt);
+    const Mt = wf.M.slice();
+    let windF = null;
+    if (this.wind) {
+      // the mean wind ramps up with the waves
+      this.wind.field.scale = this.ramp > 0 ? Math.min(1, this.t / this.ramp) : 1;
+      const wl = windLoads(this.world, idx, wf.eta, this.wind.field, this.t, this.p, this.v, this.w, this.wind.Cd, this.wind.rhoA);
+      for (let k = 0; k < 3; k++) { F[k] += wl.F[k]; Mt[k] += wl.M[k]; }
+      windF = wl.F; this.lastWind = wl;
+      if (this.t > this.ramp) { const ws = this.windStats; ws.n++; for (let k = 0; k < 3; k++) ws.sF[k] += wl.F[k]; ws.maxF = Math.max(ws.maxF, Math.hypot(wl.F[0], wl.F[1])); }
+    }
+    // the plates' horizontal force on the tilting body is filtered with the Froude–Krylov force (one step lagged):
+    // its slow part is the same kind of incomplete second-order mean force (see driftForces)
+    const Fslow = this.plateH ? [wf.F[0] + this.plateH[0], wf.F[1] + this.plateH[1]] : wf.F;
+    if (this.drift) this.driftForces(F, Fslow, dt, windF);
     if (this.volQ && this.field.n) {
       const q = this.volQ, sum = [0, 0, 0];
       for (let o = 0; o < q.length; o += 4) {
@@ -162,14 +249,27 @@ export class WaveSim {
       }
       for (let k = 0; k < 3; k++) if (this.diffModes[k]) F[k] += A[k] / this.volQV * sum[k];
     }
+    if (this.drag) {
+      const E = mat3.mul(R, mat3.transpose(this.R0));
+      const uc = this.drift && this.drift.on && this.dr.uNow ? this.dr.uNow : null;
+      const dl = dragLoads(this.drag, E, this.p, this.v, this.w, this.field, this.t, this.rho, uc, this.accPrev || null);
+      for (let k = 0; k < 3; k++) { F[k] += dl.F[k]; Mt[k] += dl.M[k]; }
+      this.plateH = this.drag.plates && this.drag.plates.length ? [dl.Fplate[0], dl.Fplate[1]] : null;
+    }
+    if (this.moored) {
+      const ml = this.mooringStep(R, dt);
+      for (let k = 0; k < 3; k++) { F[k] += ml.F[k]; Mt[k] += ml.M[k]; }
+    }
     const IwDry = mat3.mul(R, mat3.mul(this.IbDry, mat3.transpose(R)));
     const Iw = mat3.mul(R, mat3.mul(this.IbDry.map((v, i) => v + this.IbAdd[i]), mat3.transpose(R)));
     const Bw = mat3.mul(R, mat3.mul(this.BbRot, mat3.transpose(R)));
     const Iww = mat3.apply(IwDry, this.w), Bww = mat3.apply(Bw, this.w);
     const gyro = [this.w[1] * Iww[2] - this.w[2] * Iww[1], this.w[2] * Iww[0] - this.w[0] * Iww[2], this.w[0] * Iww[1] - this.w[1] * Iww[0]];
-    const alpha = mat3.apply(mat3.inverse(Iw), [wf.M[0] - Bww[0] - gyro[0], wf.M[1] - Bww[1] - gyro[1], wf.M[2] - Bww[2] - gyro[2]]);
+    const alpha = mat3.apply(mat3.inverse(Iw), [Mt[0] - Bww[0] - gyro[0], Mt[1] - Bww[1] - gyro[1], Mt[2] - Bww[2] - gyro[2]]);
+    const aG = [0, 0, 0];
     for (let k = 0; k < 3; k++) {
-      this.v[k] += F[k] / (m + A[k]) * dt; this.p[k] += this.v[k] * dt;
+      aG[k] = F[k] / (m + A[k]);
+      this.v[k] += aG[k] * dt; this.p[k] += this.v[k] * dt;
       this.w[k] += alpha[k] * dt;
     }
     const [qx, qy, qz, qw] = this.q, [wx, wy, wz] = this.w, h = 0.5 * dt;
@@ -178,6 +278,9 @@ export class WaveSim {
     const n = Math.hypot(...q); this.q = q.map((c) => c / n);
     this.t += dt;
     this.last = wf;
+    this.accPrev = { aG, alpha };
+    if (this.tracker) this.tracker.update(quatToMat3(this.q), this.p, this.w, aG, alpha, this.field, this.t, dt, record);
+    if (this.moored) this.mooringBookkeeping(record);
 
     // bookkeeping
     const e = this.relEuler(R);
@@ -200,6 +303,22 @@ export class WaveSim {
     }
   }
 
+  mooringBookkeeping(record) {
+    const m = this.moor, st = m.st;
+    if (record) this.rec.tension.push(m.stepMax);
+    if (this.t <= this.ramp) return;
+    st.maxT = Math.max(st.maxT, m.stepMax); st.minT = Math.min(st.minT, m.stepMin);
+    st.maxAnchorT = Math.max(st.maxAnchorT, ...m.TA); st.maxUplift = Math.max(st.maxUplift, m.upl || 0);
+    m.T.forEach((T, i) => {
+      // slack: tension below 10 % of the line's static tension (DNV-RP-H103 slack-sling criterion)
+      const slack = m.Tstatic[i] > 0 && T < 0.1 * m.Tstatic[i];
+      if (slack && !st.inSlack[i]) st.slackEvents++;
+      st.inSlack[i] = slack;
+    });
+    const off = Math.hypot(this.p[0] - this.p0[0], this.p[1] - this.p0[1]);
+    st.maxOffset = Math.max(st.maxOffset, off); st.sumOffset += off; st.n++;
+  }
+
   // Drift current and mean drift force for the current yaw (refreshed every 0.25 s; geometry from equilibrium).
   updateDrift(yaw) {
     const dr = this.dr;
@@ -217,11 +336,13 @@ export class WaveSim {
     const w = this.dr.widths, u = ((theta / (Math.PI / 18)) % 36 + 36) % 36, j = Math.floor(u), fr = u - j;
     return w[j] * (1 - fr) + w[(j + 1) % 36] * fr;
   }
-  driftForces(F, Ffk, dt) {
+  driftForces(F, Ffk, dt, Fwind = null) {
     const D = this.drift, dr = this.dr;
     // The pressure integration over the instantaneous wetted hull also yields a slowly varying horizontal force.
     // With Froude–Krylov loads only (no diffracted or radiated waves) that mean force is not physical, so it is
     // removed with two cascaded low-pass stages; the oscillating wave-frequency force passes untouched (< 1 % leak).
+    // Ffk includes heave plates' horizontal force: a plate's normal force tilting with the body gives a mean of the
+    // same kind (first-order force × first-order tilt, without the matching second-order terms).
     const al = Math.min(1, dt / dr.tau);
     for (let k = 0; k < 2; k++) {
       dr.lp1[k] += al * (Ffk[k] - dr.lp1[k]);
@@ -230,11 +351,21 @@ export class WaveSim {
     }
     const m0 = this.m + this.A[0], m1 = this.m + this.A[1];
     if (!D.on) {
+      dr.uNow = [0, 0];
+      if (this.moored) return;   // the mooring holds the body
+      // held on station: the mean horizontal wind push is reacted too (low-passed like the Froude–Krylov mean force)
+      if (Fwind && this.wind) {
+        const wnd = this.wind;
+        for (let k = 0; k < 2; k++) {
+          wnd.lp1[k] += al * (Fwind[k] - wnd.lp1[k]);
+          wnd.lp2[k] += al * (wnd.lp1[k] - wnd.lp2[k]);
+          F[k] -= wnd.lp2[k];
+        }
+      }
       // station keeping: x'' + 2ω_h x' + ω_h² x = 0 on the horizontal position, ω_h = 2π / holdPeriod
       const wh = 2 * Math.PI / (D.holdPeriod || 120);
       F[0] -= m0 * (wh * wh * this.p[0] + 2 * wh * this.v[0]);
       F[1] -= m1 * (wh * wh * this.p[1] + 2 * wh * this.v[1]);
-      dr.uNow = [0, 0];
       return;
     }
     if (this.t >= dr.next) {
@@ -247,7 +378,8 @@ export class WaveSim {
     // linear surge/sway damping acts on the velocity relative to the drift current (not on riding the current)
     F[0] += this.Bd[0] * ux; F[1] += this.Bd[1] * uy;
     const rx = this.v[0] - ux, ry = this.v[1] - uy, sp = Math.hypot(rx, ry);
-    if (sp > 0) {
+    // with viscous hull drag on, that drag (relative to orbital velocity + Stokes drift) replaces this one
+    if (sp > 0 && !this.hullDragH) {
       const R = quatToMat3(this.q), Rr = mat3.mul(R, mat3.transpose(this.R0));
       const area = this.widthAt(Math.atan2(ry, rx) - Math.atan2(Rr[3], Rr[0])) * dr.d;   // submerged projected area ≈ width × draft
       const q = 0.5 * this.rho * (D.Cd ?? 1) * area * sp;

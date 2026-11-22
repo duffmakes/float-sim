@@ -188,7 +188,7 @@ export function bodyFrameVolQ(rel, zw, B, R0) {
   return q;
 }
 
-function meanWettedTris(rel, zw) {
+export function meanWettedTris(rel, zw) {
   const out = [];
   for (let i = 0; i < rel.length; i += 9) {
     const z = [rel[i + 2] - zw, rel[i + 5] - zw, rel[i + 8] - zw];
@@ -330,26 +330,43 @@ export function fkExcitation(model, w, headingDeg) {
   return { F: Fr.map((r, j) => [r, Fi[j]]), k };
 }
 
+// Extra linear terms on top of the hydrodynamic model (small-body options), all about G in equilibrium axes:
+//   extra = { K: 6×6 mooring stiffness | null, A: 6 diagonal added mass (heave plates) | null,
+//             terms: (w) → { B: 6×6, X: 6 complex } linearised drag damping and its excitation | null }
+// Applied identically by raoAt (estimates) and raoAtBem (panel method).
+function addExtra(M, rhs, w, extra) {
+  if (!extra) return;
+  if (extra.K) for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) M[r][c][0] += extra.K[r][c];
+  if (extra.A) for (let r = 0; r < 6; r++) M[r][r][0] -= w * w * extra.A[r];
+  if (extra.terms) {
+    const t = extra.terms(w);
+    for (let r = 0; r < 6; r++) { for (let c = 0; c < 6; c++) M[r][c][1] += w * t.B[r][c]; rhs[r] = [rhs[r][0] + t.X[r][0], rhs[r][1] + t.X[r][1]]; }
+  }
+}
+
 // Response amplitude operators at one frequency/heading. Returns complex ξ per unit wave amplitude.
-export function raoAt(model, w, headingDeg) {
-  const { F, k } = fkExcitation(model, w, headingDeg);
+// Fpre: a precomputed fkExcitation(model, w, headingDeg) (it does not depend on the extras), to skip recomputing it.
+export function raoAt(model, w, headingDeg, extra = null, Fpre = null) {
+  const { F, k } = Fpre || fkExcitation(model, w, headingDeg);
   const A = Array.from({ length: 6 }, (_, r) => Array.from({ length: 6 }, (_, c) => {
     const re = -w * w * (model.Mm[r][c] + (r === c ? model.Am[r] : 0)) + model.Cm[r][c];
     const im = r === c ? w * model.Bd[r] : 0;
     return [re, im];
   }));
-  const xi = complexSolve(A, F);
-  return { xi, F, k };
+  const rhs = F.map((z) => z.slice());
+  addExtra(A, rhs, w, extra);
+  const xi = complexSolve(A, rhs);
+  return { xi, F: rhs, k };
 }
 
 // Sweep frequencies × headings. Rotations reported in deg per metre of wave amplitude and
 // deg per deg of wave slope (|ξ|/(kA)).
 export const DOF = ['surge', 'sway', 'heave', 'roll', 'pitch', 'yaw'];
-export function raoSweep(model, omegas, headings) {
+export function raoSweep(model, omegas, headings, extraFor = null) {
   return headings.map((beta) => ({
     beta,
     points: omegas.map((w) => {
-      const { xi, k } = raoAt(model, w, beta);
+      const { xi, k } = raoAt(model, w, beta, extraFor ? extraFor(beta) : null);
       const amp = xi.map((z) => C.abs(z));
       const phase = xi.map((z) => Math.atan2(z[1], z[0]) * 180 / Math.PI);
       return {
@@ -364,14 +381,15 @@ export function raoSweep(model, omegas, headings) {
 }
 
 // Same as raoSweep, but yields to the event loop every ~25 ms and reports progress (0–1).
-export async function raoSweepAsync(model, omegas, headings, onProgress = () => {}) {
+export async function raoSweepAsync(model, omegas, headings, onProgress = () => {}, extraFor = null) {
   const total = omegas.length * headings.length;
   let done = 0, last = performance.now();
   const out = [];
   for (const beta of headings) {
     const points = [];
+    const extra = extraFor ? extraFor(beta) : null;
     for (const w of omegas) {
-      const { xi, F, k } = raoAt(model, w, beta);
+      const { xi, F, k } = raoAt(model, w, beta, extra);
       const amp = xi.map((z) => C.abs(z));
       points.push({
         w, k, f: w / (2 * Math.PI), T: 2 * Math.PI / w, lambda: 2 * Math.PI / k, xi, F, amp,
@@ -406,12 +424,12 @@ export function spectralFromSweep(points, S, dof, duration = 3 * 3600, m0Wave = 
 
 // Linear spectral response: S_R(ω) = |RAO(ω)|² S(ω) (long-crested, zero speed).
 // Significant single amplitude = 2√m0; most probable max in duration D (s) ≈ √(2 m0 ln N), N = D/Tz.
-export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400, duration = 3 * 3600) {
+export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400, duration = 3 * 3600, extra = null) {
   let m0 = 0, m2 = 0;
   const dw = (wMax - wMin) / n;
   for (let i = 0; i <= n; i++) {
     const w = wMin + i * dw;
-    const { xi } = raoAt(model, w, headingDeg);
+    const { xi } = raoAt(model, w, headingDeg, extra);
     const r = C.abs(xi[dof]);
     const sr = r * r * S(w) * (i === 0 || i === n ? 0.5 : 1) * dw;
     m0 += sr; m2 += sr * w * w;
@@ -420,6 +438,22 @@ export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400,
   const N = isFinite(Tz) ? Math.max(1, duration / Tz) : 1;
   const k = dof >= 3 ? 180 / Math.PI : 1;
   return { m0, sigma: Math.sqrt(m0) * k, sig: 2 * Math.sqrt(m0) * k, mpm: Math.sqrt(2 * m0 * Math.log(N)) * k, Tz };
+}
+
+// Several DOFs from one sweep (one solve per frequency): { [dof]: result as spectralResponse }.
+export function spectralResponseMulti(model, S, headingDeg, dofs, wMin, wMax, n = 400, duration = 3 * 3600, extra = null) {
+  const acc = dofs.map(() => ({ m0: 0, m2: 0 }));
+  const dw = (wMax - wMin) / n;
+  for (let i = 0; i <= n; i++) {
+    const w = wMin + i * dw, { xi } = raoAt(model, w, headingDeg, extra), sw = S(w) * (i === 0 || i === n ? 0.5 : 1) * dw;
+    dofs.forEach((j, q) => { const r2 = xi[j][0] ** 2 + xi[j][1] ** 2; acc[q].m0 += r2 * sw; acc[q].m2 += r2 * sw * w * w; });
+  }
+  const out = {};
+  dofs.forEach((j, q) => {
+    const { m0, m2 } = acc[q], Tz = m2 > 0 ? 2 * Math.PI * Math.sqrt(m0 / m2) : Infinity, N = isFinite(Tz) ? Math.max(1, duration / Tz) : 1, k = j >= 3 ? 180 / Math.PI : 1;
+    out[j] = { m0, sigma: Math.sqrt(m0) * k, sig: 2 * Math.sqrt(m0) * k, mpm: Math.sqrt(2 * m0 * Math.log(N)) * k, Tz };
+  });
+  return out;
 }
 
 // Froude–Krylov validity: diffraction matters once the body is large relative to the wavelength
@@ -454,22 +488,24 @@ export function bemCoeffsAt(bem, w, headingDeg = null) {
 
 // Uncoupled natural frequencies with the panel-method added mass: ω = √(C_jj / (M_jj + A_jj(ω))) (fixed point).
 // Also returns the radiation damping ratio there. Modes without restoring (surge, sway, yaw) get ω = 0.
-export function bemNatural(model, bem) {
+// extra: as raoAt (mooring stiffness K and plate added mass A shift the natural frequencies; surge, sway and yaw get
+// one when moored).
+export function bemNatural(model, bem, extra = null) {
   const res = [];
   for (let j = 0; j < 6; j++) {
-    const C = model.Cm[j][j];
-    if (!(C > 0)) { res.push({ w: 0, A: null, B: null, zeta: null, inRange: true }); continue; }
-    let w = Math.sqrt(C / (model.Mm[j][j] + (bem.A[0][j][j] || 0))), inRange = true;
+    const C = model.Cm[j][j] + (extra && extra.K ? extra.K[j][j] : 0), Ax = extra && extra.A ? extra.A[j] : 0;
+    if (!(C > 1e-9 * (model.Mm[j][j] || 1))) { res.push({ w: 0, A: null, B: null, zeta: null, inRange: true }); continue; }
+    let w = Math.sqrt(C / (model.Mm[j][j] + Ax + (bem.A[0][j][j] || 0))), inRange = true;
     for (let it = 0; it < 60; it++) {
       const wc = Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w));
-      const A = bemCoeffsAt(bem, wc).A[j][j];
+      const A = bemCoeffsAt(bem, wc).A[j][j] + Ax;
       const wn = Math.sqrt(C / Math.max(1e-12, model.Mm[j][j] + A));
       if (Math.abs(wn - w) < 1e-10 * w) { w = wn; break; }
       w = 0.5 * (w + wn);
     }
     if (w < bem.omegas[0] || w > bem.omegas[bem.omegas.length - 1]) inRange = false;
     const c = bemCoeffsAt(bem, Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w)));
-    const A = c.A[j][j], B = c.B[j][j];
+    const A = c.A[j][j] + Ax, B = c.B[j][j];
     res.push({ w, A, B, zeta: B / (2 * (model.Mm[j][j] + A) * w), inRange });
   }
   return res;
@@ -481,22 +517,24 @@ export function bemExtraDamping(model, nat, zetaExtra = [0, 0, 0, 0, 0, 0]) {
 }
 
 // RAO from the panel-method coefficients: [−ω²(M + A(ω)) + iω(B(ω) + B_extra) + C] ξ = X(ω, β).
-export function raoAtBem(model, bem, w, headingDeg, Bextra = null) {
+export function raoAtBem(model, bem, w, headingDeg, Bextra = null, extra = null) {
   const c = bemCoeffsAt(bem, w, headingDeg);
   if (!c) return null;
   const M = Array.from({ length: 6 }, (_, r) => Array.from({ length: 6 }, (_, q) => [
     -w * w * (model.Mm[r][q] + c.A[r][q]) + model.Cm[r][q],
     w * (c.B[r][q] + (r === q && Bextra ? Bextra[r] : 0)),
   ]));
-  return { xi: complexSolve(M, c.X), F: c.X, k: w * w / G0, A: c.A, B: c.B };
+  const rhs = c.X.map((z) => z.slice());
+  addExtra(M, rhs, w, extra);
+  return { xi: complexSolve(M, rhs), F: rhs, k: w * w / G0, A: c.A, B: c.B };
 }
 
-// Sweep in the same shape as raoSweepAsync, on the panel-method frequency grid.
-export function bemSweep(model, bem, headings, Bextra = null) {
+// Sweep in the same shape as raoSweepAsync, on the panel-method frequency grid. extraFor(beta) → extra (raoAt).
+export function bemSweep(model, bem, headings, Bextra = null, extraFor = null) {
   return headings.map((beta) => ({
     beta,
     points: bem.omegas.map((w) => {
-      const { xi, F, k, A, B } = raoAtBem(model, bem, w, beta, Bextra);
+      const { xi, F, k, A, B } = raoAtBem(model, bem, w, beta, Bextra, extraFor ? extraFor(beta) : null);
       const amp = xi.map((z) => C.abs(z));
       return {
         w, k, f: w / (2 * Math.PI), T: 2 * Math.PI / w, lambda: 2 * Math.PI / k, xi, F, amp, A, B,

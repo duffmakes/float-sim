@@ -9,6 +9,7 @@ self.onmessage = (e) => {
     hull: { verts: new Float64Array(c.verts), idx: new Uint32Array(c.idx) }, mass: c.mass, inertiaG: c.IGb, rho: c.rho,
     R0: c.R0, z0: c.z0, field, A: c.A, Bd: c.Bd, dt: c.dt, ramp: c.ramp, vanishDeg: c.vanishDeg,
     volQ: c.volQ ? new Float64Array(c.volQ) : null, diffModes: c.diffModes, drift: c.drift || null,
+    drag: c.drag || null, wind: c.wind || null, mooring: c.mooring || null, points: c.points || null, p0: c.p0 || null,
   });
   const total = c.ramp + c.duration;
   const chunk = Math.max(50, Math.round(2 / c.dt));
@@ -33,13 +34,20 @@ self.onmessage = (e) => {
       if (!c.drift) return null;
       const i0 = Math.max(0, r.t.findIndex((t) => t >= c.ramp)), n = r.t.length - 1, T = r.t[n] - r.t[i0];
       const dx = r.x[n] - r.x[i0], dy = r.y[n] - r.y[i0];
-      let maxOffset = 0; for (let i = 0; i <= n; i++) maxOffset = Math.max(maxOffset, Math.hypot(r.x[i], r.y[i]));
+      let maxOffset = 0; for (let i = 0; i <= n; i++) maxOffset = Math.max(maxOffset, Math.hypot(r.x[i] - sim.p0[0], r.y[i] - sim.p0[1]));
       return { on: c.drift.on, speed: T > 0 ? Math.hypot(dx, dy) / T : 0, dir: ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360, dist: Math.hypot(dx, dy), maxOffset };
     })(),
     ...sim.stats, simulated: sim.t - c.ramp, dt: c.dt,
+    points: sim.tracker ? sim.tracker.summary(sim.t) : null,
+    mooring: sim.moored ? { ...sim.moor.st, inSlack: undefined, Tstatic: sim.moor.Tstatic, meanOffset: sim.moor.st.n ? sim.moor.st.sumOffset / sim.moor.st.n : 0, model: sim.moor.model } : null,
+    wind: sim.windStats ? { meanF: sim.windStats.sF.map((x) => x / Math.max(1, sim.windStats.n)), maxF: sim.windStats.maxF } : null,
   };
-  // down-sample for plotting (≤ 4000 points)
+  // down-sample for plotting (≤ 4000 points); tension keeps the peak of each bin so snap loads stay visible
   const k = Math.max(1, Math.ceil(r.t.length / 4000));
   const pick = (a) => a.filter((_, i) => i % k === 0);
-  self.postMessage({ done: true, stats: st, series: { t: pick(r.t), roll: pick(r.roll), pitch: pick(r.pitch), heave: pick(r.heave), eta: pick(r.eta) } });
+  const peak = (a) => { const o = []; for (let i = 0; i < a.length; i += k) { let m = -Infinity; for (let j = i; j < Math.min(a.length, i + k); j++) m = Math.max(m, a[j]); o.push(m); } return o; };
+  self.postMessage({ done: true, stats: st, series: {
+    t: pick(r.t), roll: pick(r.roll), pitch: pick(r.pitch), heave: pick(r.heave), eta: pick(r.eta), x: pick(r.x), y: pick(r.y),
+    tension: r.tension ? peak(r.tension) : null, ph: sim.tracker ? sim.tracker.rec.h.map(pick) : null,
+  } });
 };

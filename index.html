@@ -315,7 +315,112 @@
     <div class="slider"><span>Speed</span><input id="dzSpeed" type="range" min="0.1" max="8" step="0.1" value="1"><output id="dzSpeedV">1×</output></div>
     <div id="dzInfo" class="info"></div>
   </section>
-  <footer>Hydrostatics: rigid body, uniform density for inertia. Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), estimated added mass and damping, no diffraction or radiation, zero forward speed, deep water.</footer>
+
+  <section>
+    <h2>10 · Tracked points</h2>
+    <p class="hint">Points on the body to follow during the wave runs: an antenna, GPS or solar panel (time above water, underwater stretches) or an IMU (accelerations). Coordinates in the model's own axes, in the units chosen in section 1. A clearance counts the point as underwater until it is that far above the surface (e.g. an antenna that needs to stand clear).</p>
+    <div id="ptList"></div>
+    <div class="row">
+      <button id="ptPick">Pick on model</button>
+      <button id="ptAdd" class="ghost">Add at CoG</button>
+    </div>
+    <div id="ptInfo" class="info"></div>
+  </section>
+
+  <section>
+    <h2>11 · Viscous drag &amp; heave plates</h2>
+    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="dragOn" type="checkbox"> Viscous drag (quadratic, Morison) and heave plates</label>
+    <div id="dragBox" class="dim">
+      <label>Hull drag coefficients (Hoerner, <i>Fluid-Dynamic Drag</i>)
+        <select id="dragPreset"></select>
+      </label>
+      <div class="row three">
+        <label><span>C<sub>d</sub> X (surge)</span> <input id="dragCx" type="number" step="any" min="0" value="1.2"></label>
+        <label><span>C<sub>d</sub> Y (sway)</span> <input id="dragCy" type="number" step="any" min="0" value="1.2"></label>
+        <label><span>C<sub>d</sub> Z (heave)</span> <input id="dragCz" type="number" step="any" min="0" value="0.82"></label>
+      </div>
+      <p class="hint">Quadratic drag ½ρC<sub>d</sub>A|u|u on the body's speed relative to the wave orbital flow, along the floating body's own axes; A is the submerged area projected along each axis (X and Y: side areas, Z: the area seen from below). Rotations get drag from the same coefficients on the wetted panels. The RAOs and the sea-state table use the equivalent linear damping for the sea state in section 7 (stochastic linearisation), so they include it too. Wave runs use the full quadratic drag.</p>
+      <h3 class="sub">Heave plates</h3>
+      <div id="plList"></div>
+      <button id="plAdd" class="ghost">Add heave plate</button>
+      <p class="hint">Thin discs fixed to the body, horizontal when floating; centre in model coordinates. Each adds added mass ρD³/3 normal to the plate, an inertia force from the wave acceleration and drag ½ρC<sub>d</sub>(πD²/4)|u|u. C<sub>d</sub> ≈ 1.2 in steady flow (Hoerner); oscillating plates at small motion amplitudes often show higher values, so use test data if you have it. Leave the plate out of the CAD model (a thin disc adds almost nothing there), but include its mass in section 2.</p>
+      <div id="dragInfo" class="info"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>12 · Mooring</h2>
+    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="moorOn" type="checkbox"> Moored</label>
+    <div id="moorBox" class="dim">
+      <label>Line <select id="moorPreset"></select></label>
+      <div class="row three">
+        <label>Water depth (m) <input id="moorDepth" type="number" step="any" min="0.1" value="20"></label>
+        <label>Line length (m) <input id="moorL" type="number" step="any" min="0.1" value="40"></label>
+        <label>Anchor radius (m) <input id="moorR" type="number" step="any" min="0" value="20"></label>
+      </div>
+      <div class="row">
+        <label>Lines <select id="moorN"><option value="1">1 (single point)</option><option value="2">2</option><option value="3">3 (spread, 120°)</option><option value="4">4</option></select></label>
+        <label>Direction of line 1 (deg) <input id="moorDir" type="number" step="any" value="0"></label>
+      </div>
+      <p class="hint">Anchors on the seabed at the anchor radius from the fairlead's position above them at the start, spread evenly in direction (measured like the wave heading, from the model's +X). The body then settles where the lines (and the steady wind) balance: a single line pulls it toward its anchor until the line goes slack, so the wave runs start there. Lines are in metres; the fairlead is in model coordinates.</p>
+      <div class="row three">
+        <label>Fairlead X <input id="mfX" type="number" step="any" value="0"></label>
+        <label>Fairlead Y <input id="mfY" type="number" step="any" value="0"></label>
+        <label>Fairlead Z <input id="mfZ" type="number" step="any" value="0"></label>
+      </div>
+      <div class="row">
+        <button id="mfPick" class="ghost">Pick fairlead on model</button>
+        <button id="mfKeel" class="ghost">Keel point under the CoG</button>
+      </div>
+      <div class="row">
+        <label>Line model <select id="moorModel">
+          <option value="dynamic">Dynamic (lumped mass): snap loads, line drag</option>
+          <option value="quasi">Quasi-static catenary (faster)</option>
+        </select></label>
+        <label id="moorSegWrap">Segments <input id="moorSeg" type="number" min="4" max="60" value="16"></label>
+      </div>
+      <details>
+        <summary>Line properties</summary>
+        <div class="row three">
+          <label>Mass (kg/m, in air) <input id="mlM" type="number" step="any" min="0"></label>
+          <label>Material ρ (kg/m³) <input id="mlRhoM" type="number" step="any" min="1"></label>
+          <label>EA (N) <input id="mlEA" type="number" step="any" min="1"></label>
+        </div>
+        <div class="row three">
+          <label>Diameter (mm) <input id="mlD" type="number" step="any" min="0"></label>
+          <label><span>C<sub>d</sub> normal</span> <input id="mlCdn" type="number" step="any" min="0"></label>
+          <label><span>C<sub>d</sub> along</span> <input id="mlCdt" type="number" step="any" min="0"></label>
+        </div>
+        <div class="row three">
+          <label><span>C<sub>a</sub> normal</span> <input id="mlCa" type="number" step="any" min="0" value="1"></label>
+          <label>&nbsp;</label><label>&nbsp;</label>
+        </div>
+        <p class="hint">Presets are typical values (chain: DNV-OS-E301 / Orcina, mass 19.9D² t/m and EA 0.854·10⁸D² kN, volume-equivalent diameter 1.8D). Check the manufacturer's data for ropes, whose stiffness depends on load and age. The diameter sets drag and added mass; buoyancy comes from the material density.</p>
+      </details>
+      <p class="hint">Quasi-static: elastic catenary with seabed contact at every step (Jonkman 2007; no seabed friction). Dynamic: a lumped-mass line (MoorDyn-style, Hall &amp; Goupee 2015) with tension-only segments, line drag in the wave flow and seabed contact, so it shows snap loads when a slack line goes taut. The RAOs use the catenary's linear stiffness at the mean position (under the steady wind, if on). The line's pull is included in the floating draft of the wave and RAO tools; the Hydrostatics tab shows the free-floating body.</p>
+      <div id="moorInfo" class="info"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>13 · Wind</h2>
+    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windOn" type="checkbox"> Wind on the above-water part</label>
+    <div id="windBox" class="dim">
+      <div class="row">
+        <label><span>U<sub>10</sub> (m/s, 1-hour mean at 10 m)</span> <input id="windU" type="number" step="any" min="0" value="8"></label>
+        <label>Toward (deg) <input id="windDir" type="number" step="any" value="90"></label>
+      </div>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windSame" type="checkbox" checked> Same direction as the waves (β)</label>
+      <div class="row">
+        <label><span>Windage C<sub>d</sub></span> <input id="windCd" type="number" step="any" min="0" value="1.0"></label>
+        <label>Gust seed <input id="windSeed" type="number" value="7"></label>
+      </div>
+      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windGust" type="checkbox" checked> Gusts (Frøya / NPD spectrum)</label>
+      <p class="hint">Wind profile U(z) = U<sub>10</sub>(z/10)<sup>0.12</sup> over open sea, with gusts from the Frøya spectrum (DNV-RP-C205 §2.3). Every panel of the model above the instantaneous water surface takes ½ρ<sub>air</sub>C<sub>d</sub>A|u|u on its projected area, with u the wind minus the panel's own velocity. Typical C<sub>d</sub>: 1.0–1.2 for bluff shapes and masts, 1.28 for a flat panel face-on (Hoerner). Wave runs show the heel, drift (with wave drift on, or moored) and gust response. With wave drift off and no mooring, the mean push is held on station like the wave drift.</p>
+      <div id="windInfo" class="info"></div>
+    </div>
+  </section>
+  <footer>Hydrostatics: rigid body, uniform density for inertia. Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), added mass and damping from the panel method or estimates, zero forward speed, deep water (also for the wave kinematics on mooring lines; the water depth in section 12 only places the anchors).</footer>
 </aside>
 
 <main id="view">
@@ -363,6 +468,18 @@
       <canvas id="thRot" class="chart"></canvas>
       <canvas id="thLin" class="chart"></canvas>
       <div id="seaStats" class="info"></div>
+      <div id="ptCharts" class="hidden">
+        <div class="rhead"><h2>Tracked points: height above water</h2></div>
+        <canvas id="ptCv" class="chart"></canvas>
+        <div id="ptStats" class="info"></div>
+      </div>
+      <div id="moorCharts" class="hidden">
+        <div class="rhead"><h2>Mooring line tension</h2></div>
+        <canvas id="moorTcv" class="chart"></canvas>
+        <div class="rhead"><h2>Watch circle (top view, from the mean position)</h2></div>
+        <canvas id="moorXY" class="chart"></canvas>
+        <div id="moorStats" class="info"></div>
+      </div>
       <div class="rhead"><h2>Sea states 0–5 (linear spectral estimate)</h2><button id="ssSweep" class="ghost">Compute</button></div>
       <div id="ssTable" class="info"></div>
     </div>
@@ -385,6 +502,11 @@
       <div class="rhead"><h2>Heading × frequency</h2></div>
       <canvas id="raoHeat" class="chart"></canvas>
       <div id="raoResp" class="info"></div>
+      <div class="rhead"><h2>Wave-following quality</h2>
+        <label class="tog" style="flex-direction:row;gap:6px;align-items:center">tolerance <input id="followTol" type="number" step="any" min="0.1" value="5" style="width:56px"> %</label>
+      </div>
+      <canvas id="followCv" class="chart"></canvas>
+      <div id="followInfo" class="info"></div>
     </div>
     <div id="tabDrop" class="tab hidden">
       <div id="dropVerdict" class="verdict"><b>Not placed</b>Set a start height in section 9 and press Place.</div>

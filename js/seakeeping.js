@@ -2,12 +2,17 @@
 import { mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, quatToMat3 } from './physics.js';
 import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G, regularAmplitude, waveNumber } from './waves.js';
 import {
-  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, raoAt, spectralResponse, spectralFromSweep,
+  refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, raoAt, spectralResponse, spectralFromSweep, fkExcitation, spectralResponseMulti,
   diffractionCheck, waterplaneExtent, bodyFrameVolQ, DOF, bemSweep, raoAtBem, bemNatural, bemExtraDamping, bemCoeffsAt,
 } from './hydro.js';
 import { runBem } from './bemrun.js';
 import { WaveSim, seriesStats } from './sim.js';
 import { lineChart, heatmap, SERIES, rampColor } from './charts.js';
+import { meanWettedTris } from './hydro.js';
+import { dragGeometry, plateAddedMass, dragElements, dragLinear, linearizeDrag } from './drag.js';
+import { anchorLayout, mooringLoads, mooringStiffness, mooringOffset, submergedWeight, quasiStaticForce, catenaryShape } from './mooring.js';
+import { windLoads, windageCentroid, froyaVariance, RHO_AIR, windAt } from './wind.js';
+import { pointSpectral, pointRegular, followErrors, followCutoff } from './tracking.js';
 
 const $ = (id) => document.getElementById(id);
 const f = (x, d = 3) => (Number.isFinite(x) ? (+x.toPrecision(d)).toLocaleString() : '—');
@@ -154,13 +159,36 @@ export function initSeakeeping(api) {
   function prepare() {
     const st = api.getState();
     if (!st || st.H.status === 'sinks') return null;
+    const moorCfg = api.extras.config().moor;
     const key = JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler(), api.inertiaKey(), $('raoFmax').value,
-      ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value), $('hDiffH').checked, $('hDiffV').checked]);
+      ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value), $('hDiffH').checked, $('hDiffV').checked, moorCfg]);
     if (K.prep && K.prep.key === key) return K.prep;
     const R = st.R, yaw = Math.atan2(R[3], R[0]);
     const Rsk = mat3.mul(mat3.rotZ(-yaw), R);
     const rel = transformTris(st.model.tris, Rsk, st.G);
-    const sol = solveWaterline(rel, st.m / st.rho);
+    let sol = solveWaterline(rel, st.m / st.rho);
+    const zwFree = sol.zw;
+    // moored: the lines' vertical pull adds to the weight the body floats (fixed attitude); iterate on the fairlead height
+    const toEq = (p) => mat3.apply(Rsk, [p[0] - st.G[0], p[1] - st.G[1], p[2] - st.G[2]]);
+    let moorBase = null;
+    if (moorCfg) {
+      const fEq = toEq(moorCfg.f), fBody = [moorCfg.f[0] - st.G[0], moorCfg.f[1] - st.G[1], moorCfg.f[2] - st.G[2]];
+      const cfg = { depth: moorCfg.depth, L: moorCfg.L, ...moorCfg.line, lines: anchorLayout(moorCfg.n, moorCfg.R, moorCfg.dir, [fEq[0], fEq[1]]) };
+      let Vline = 0, eq0 = [0, 0];
+      for (let it = 0; it < 30; it++) {
+        const Fw = [fEq[0], fEq[1], fEq[2] - sol.zw];
+        if (Fw[2] <= -cfg.depth) break;
+        // at the horizontal equilibrium of the lines (no wind here; extrasFor adds it)
+        const ld = mooringOffset(cfg, st.rho, Fw, [0, 0, -sol.zw], [0, 0]);
+        eq0 = ld.offset;
+        const Vn = Math.max(0, -ld.F[2]);
+        const s2 = solveWaterline(rel, (st.m + Vn / G) / st.rho);
+        const done = Math.abs(s2.zw - sol.zw) < 1e-9 * st.model.diag && Math.abs(Vn - Vline) < 1e-9 * (1 + Vn);
+        sol = s2; Vline = Vn;
+        if (done) break;
+      }
+      moorBase = { cfg, fEq, fBody, model: moorCfg.model, nSeg: moorCfg.nSeg, Vline, zwFree, eq0, w: submergedWeight(cfg.m, cfg.rhoM, st.rho) };
+    }
     const H = hydrostatics(rel, sol.zw, st.m, st.rho);
     const IGb = api.getInertiaBody();
     const IGw = mat3.mul(Rsk, mat3.mul(IGb, mat3.transpose(Rsk)));
@@ -180,12 +208,116 @@ export function initSeakeeping(api) {
     const model = linearModel(relFine, hydrostatics(relFine, sol.zw, st.m, st.rho), st.m, IGw, st.rho, coeffs, { diffraction: diffModes });
     const gz = gzSummary(gzCurve(rel, H.V, 'x'));
     const offset = Math.hypot(...H.offset);
-    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {} };
+    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {}, moorBase, toEq };
     return K.prep;
+  }
+
+  // ------------------------------------------------------------ small-body extras for the prepared body and sea
+  // Points, drag geometry, heave plates, mooring (stiffness at the mean position under the steady wind) and wind.
+  // Cached per body, sea heading and options.
+  function extrasFor(P, s) {
+    const ex = api.extras.config(s.heading);
+    const key = JSON.stringify([ex, s.heading]);
+    if (P.exCache && P.exCache.key === key) return P.exCache.out;
+    const st = P.st, rho = st.rho;
+    const toBody = (p) => [p[0] - st.G[0], p[1] - st.G[1], p[2] - st.G[2]];
+    const out = { points: [], drag: null, plateA: null, moor: null, wind: null, any: false };
+    out.points = ex.points.map((q) => {
+      const rEq = P.toEq(q.p);
+      return { name: q.name, r: toBody(q.p), rEq, clearance: q.clearance, h0: rEq[2] - P.zw - q.clearance };
+    });
+    // coarse indexed copy of the floating hull (world, still water) for the steady wind loads
+    const restWorld = () => {
+      if (!P.restHull) {
+        const m = indexMesh(refineTris(P.rel, P.st.model.diag / 25, 8000), P.st.model.diag * 1e-7);
+        for (let i = 2; i < m.verts.length; i += 3) m.verts[i] -= P.zw;
+        P.restHull = m;
+      }
+      return P.restHull;
+    };
+    if (ex.drag) {
+      const wet = meanWettedTris(refineTris(P.rel, P.size / 30, 30000), P.zw);
+      const geo = dragGeometry(wet, ex.drag.Cd);
+      const plates = ex.drag.plates.map((pl) => ({ r: P.toEq(pl.c), D: pl.D, Cd: pl.Cd }));
+      out.drag = { geo, plates, els: dragElements({ geo, plates }, rho, P.zw) };
+      if (plates.length) out.plateA = plateAddedMass(plates, rho);
+    }
+    let windRest = null;
+    if (ex.wind && ex.wind.U10 > 0) {
+      const hm = restWorld(), d = ex.wind.dir * Math.PI / 180;
+      const zRef = Math.max(0.1, windageCentroid(hm.verts, hm.idx, Math.cos(d), Math.sin(d)));
+      const params = { U10: ex.wind.U10, dirDeg: ex.wind.dir, gusts: ex.wind.gusts, seed: ex.wind.seed, zRef };
+      windRest = windLoads(hm.verts, hm.idx, null, { U10: ex.wind.U10, ex: Math.cos(d), ey: Math.sin(d), gust: () => 0, speed: (z) => windAt(ex.wind.U10, z) }, 0, [0, 0, -P.zw], [0, 0, 0], [0, 0, 0], ex.wind.Cd);
+      out.wind = { params, Cd: ex.wind.Cd, rhoA: RHO_AIR, rest: windRest, zRef, sigma: ex.wind.gusts ? Math.sqrt(froyaVariance(ex.wind.U10, zRef)) : 0, U: windAt(ex.wind.U10, zRef) };
+    }
+    if (P.moorBase) {
+      const mb = P.moorBase, Fw = [mb.fEq[0], mb.fEq[1], mb.fEq[2] - P.zw], Gw = [0, 0, -P.zw];
+      // mean position: horizontal equilibrium of the lines (and the steady wind); the runs start there
+      const offs = mooringOffset(mb.cfg, rho, Fw, Gw, windRest ? [windRest.F[0], windRest.F[1]] : [0, 0]);
+      const rest = offs;
+      // stiffness frequency for the time step: the linear stiffness, or EA/L if a line can go taut
+      const kLin = Math.max(...[0, 1, 2].map((j) => Math.abs(offs.Kf[j][j])));
+      const tautish = mb.cfg.lines.some((ln) => Math.hypot(ln.anchor[0] - Fw[0], ln.anchor[1] - Fw[1], mb.cfg.depth + Fw[2]) > 0.8 * mb.cfg.L);
+      const kMax = Math.max(kLin, tautish ? mb.cfg.EA / mb.cfg.L * mb.cfg.lines.length : 0);
+      out.moor = { ...mb, rest, K: offs.K, offset: offs.offset, under: offs, kMax, tautish };
+    }
+    out.any = !!(out.points.length || out.drag || out.moor || out.wind);
+    P.exCache = { key, out };
+    return out;
+  }
+  // WaveSim options for the extras
+  function simExtras(X) {
+    return {
+      drag: X.drag ? { geo: X.drag.geo, plates: X.drag.plates } : null,
+      wind: X.wind ? { params: X.wind.params, Cd: X.wind.Cd, rhoA: X.wind.rhoA } : null,
+      mooring: X.moor ? { cfg: X.moor.cfg, model: X.moor.model, fairlead: X.moor.fBody, nSeg: X.moor.nSeg } : null,
+      points: X.points.map((q) => ({ name: q.name, r: q.r, clearance: q.clearance })),
+    };
+  }
+  // Extra linear terms for the frequency-domain solvers (see hydro.addExtra): mooring stiffness, plate added mass and
+  // the drag linearised for sea s at heading beta. base: { kind: 'fk', model } or { kind: 'bem', model, bem, Bextra }.
+  function linExtra(P, s, beta, base) {
+    const X = extrasFor(P, s);
+    const Km = X.moor ? X.moor.K : null, Ap = X.plateA;
+    if (!X.drag || !X.drag.els.length || !s.active) return Km || Ap ? { K: Km, A: Ap, terms: null } : null;
+    const ck = JSON.stringify([s, beta, base.kind]);
+    P.linCache = P.linCache && P.linCache.base === base && P.linCache.X === X ? P.linCache : { base, X, map: new Map() };
+    if (P.linCache.map.has(ck)) return P.linCache.map.get(ck);
+    const els = X.drag.els, rho = P.st.rho, zw = P.zw;
+    // the wave excitation does not depend on the drag: compute it once per frequency (the iteration re-solves often)
+    const Fc = new Map();
+    const Fof = (w) => { const kw = w.toPrecision(12); if (!Fc.has(kw)) Fc.set(kw, fkExcitation(base.model, w, beta)); return Fc.get(kw); };
+    const solve = (w, Beq) => {
+      const extra = { K: Km, A: Ap, terms: (ww) => dragLinear(els, Beq, ww, beta, zw, rho) };
+      const r = base.kind === 'bem' ? raoAtBem(base.model, base.bem, w, beta, base.Bextra, extra) : raoAt(base.model, w, beta, extra, Fof(w));
+      return r ? r.xi : null;
+    };
+    let out;
+    if (s.mode === 'regular') {
+      // amplitude-dependent: linearise at each frequency for the regular wave's amplitude
+      const per = new Map();
+      const Bat = (w) => { const kw = w.toPrecision(12); if (!per.has(kw)) per.set(kw, linearizeDrag(els, { kind: 'regular', A: s.A, w }, beta, solve, zw).Beq); return per.get(kw); };
+      const at = linearizeDrag(els, { kind: 'regular', A: s.A, w: 2 * Math.PI / s.T }, beta, solve, zw);
+      out = { K: Km, A: Ap, terms: (w) => dragLinear(els, Bat(w), w, beta, zw, rho), lin: at, els };
+    } else {
+      const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma), wp = 2 * Math.PI / s.Tp;
+      let omegas;
+      if (base.kind === 'bem') omegas = base.bem.omegas.filter((w) => w >= 0.3 * wp && w <= 5 * wp);
+      if (!omegas || omegas.length < 8) omegas = Array.from({ length: 160 }, (_, i) => 0.3 * wp + (5 * wp - 0.3 * wp) * i / 159);
+      const sv = (w, Beq) => solve(w, Beq) || [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];
+      const lin = linearizeDrag(els, { kind: 'spectrum', S, omegas }, beta, sv, zw);
+      out = { K: Km, A: Ap, terms: (w) => dragLinear(els, lin.Beq, w, beta, zw, rho), lin, els };
+    }
+    P.linCache.map.set(ck, out);
+    return out;
   }
   // ------------------------------------------------------------ panel-method (BEM) coefficients
   // Panel-method results depend only on the floating body: geometry, mass, CoG, water and attitude.
-  const bodyKey = (st) => JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler()]);
+  // (a mooring line's pull changes the floating draft, so its statics are part of the key)
+  const bodyKey = (st) => {
+    const mc = api.extras.config().moor;
+    return JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, st.rho, api.getEuler(), mc ? [mc.depth, mc.L, mc.R, mc.n, mc.dir, mc.f, mc.line.m, mc.line.rhoM, mc.line.EA] : null]);
+  };
   const num0 = (id) => { const v = parseFloat($(id).value); return Number.isFinite(v) && v > 0 ? v : 0; };
   const extraZeta = () => [0, 0, num0('hX3'), num0('hX4'), num0('hX5'), 0];
   // Added mass and damping for the time-domain simulators from the panel method, at each mode's natural frequency.
@@ -212,11 +344,15 @@ export function initSeakeeping(api) {
   // The linear model the simulators use (and the linear predictions they are compared with): the estimate model,
   // or the same with panel-method added mass and damping when those are on and available for this body.
   function simModel(P, s = null) {
+    const X = extrasFor(P, s || sea());
+    const Ap = X.plateA || [0, 0, 0, 0, 0, 0], Km = X.moor ? X.moor.K : null;
+    // natural frequencies with the mooring stiffness and plate added mass
+    const wnWith = (Am) => [0, 1, 2, 3, 4, 5].map((j) => { const c = P.model.Cm[j][j] + (Km ? Km[j][j] : 0); return c > 1e-9 * P.model.Mm[j][j] ? Math.sqrt(c / (P.model.Mm[j][j] + Am[j] + Ap[j])) : 0; });
     const sb = $('hBemSim').checked && K.simBem && K.simBem.key === bodyKey(P.st) ? K.simBem : null;
-    if (!sb) return { model: P.model, A: P.coeffs.A, Bd: P.model.Bd, source: 'estimates' };
-    const T0 = s && s.active && s.T0 > 0 ? s.T0 : 0, ckey = JSON.stringify([T0, extraZeta()]);
+    if (!sb) return { model: { ...P.model, wn: wnWith(P.model.Am) }, A: P.coeffs.A.map((a, j) => a + Ap[j]), Bd: P.model.Bd, source: 'estimates' };
+    const T0 = s && s.active && s.T0 > 0 ? s.T0 : 0, ckey = JSON.stringify([T0, extraZeta(), X === P.exCache?.out ? P.exCache.key : '']);
     if (P.simCache && P.simCache.sb === sb && P.simCache.ckey === ckey) return P.simCache.out;
-    const bem = sb.bem, nat = bemNatural(P.model, bem), ext = bemExtraDamping(P.model, nat, extraZeta());
+    const bem = sb.bem, nat = bemNatural(P.model, bem, { K: Km, A: X.plateA }), ext = bemExtraDamping(P.model, nat, extraZeta());
     const clamp = (w) => Math.max(bem.omegas[0], Math.min(bem.omegas[bem.omegas.length - 1], w));
     const wWave = T0 ? 2 * Math.PI / T0 : (nat[2].w || bem.omegas[0]);
     const A = [], Bd = [], wn = [];
@@ -224,7 +360,8 @@ export function initSeakeeping(api) {
       const c = bemCoeffsAt(bem, clamp(nat[j].w > 0 ? nat[j].w : wWave));
       A.push(c.A[j][j]); Bd.push(c.B[j][j] + ext[j]); wn.push(nat[j].w);
     }
-    const out = { model: { ...P.model, Am: A, Bd, wn }, A, Bd, source: sb.source, nat };
+    // the time domain takes the plate added mass on top; the frequency-domain model gets it through linExtra
+    const out = { model: { ...P.model, Am: A, Bd, wn }, A: A.map((a, j) => a + Ap[j]), Bd, source: sb.source, nat };
     P.simCache = { sb, ckey, out };
     return out;
   }
@@ -243,10 +380,24 @@ export function initSeakeeping(api) {
     }
     return P.hulls[key];
   }
-  const dtFor = (P, field) => Math.min(2 * Math.PI / Math.max(field.maxOmega || 1, ...P.model.wn) / 60, 0.05);
+  const dtFor = (P, field, sm = null) => {
+    const X = P.exCache ? P.exCache.out : null;
+    // mooring stiffness and plate added mass shift the natural frequencies (otherwise as before: the estimates' ω_n)
+    const wn = sm && X && (X.moor || X.plateA) ? sm.model.wn.concat(P.model.wn) : P.model.wn;
+    let dt = Math.min(2 * Math.PI / Math.max(field.maxOmega || 1, ...wn) / 60, 0.05);
+    // a mooring line that can go taut needs its axial stiffness on the body resolved (and snap loads)
+    if (X && X.moor && X.moor.kMax > 0) {
+      const mA = P.st.m + Math.min(...(sm ? sm.A : P.coeffs.A).slice(0, 3));
+      dt = Math.min(dt, 2 * Math.PI / Math.sqrt(X.moor.kMax / mA) / 40);
+    }
+    return Math.max(dt, 2e-4);
+  };
   const fieldFor = () => WaveField.fromParams(sea());
   // linear steady-state amplitude of DOF j in a regular wave (m, or deg for rotations)
-  const regularLinear = (P, s, j) => { const x = raoAt(simModel(P, s).model, 2 * Math.PI / s.T, s.heading).xi[j]; return Math.hypot(x[0], x[1]) * s.A * (j >= 3 ? 180 / Math.PI : 1); };
+  const regularLinear = (P, s, j) => {
+    const sm = simModel(P, s), x = raoAt(sm.model, 2 * Math.PI / s.T, s.heading, linExtra(P, s, s.heading, { kind: 'fk', model: sm.model })).xi[j];
+    return Math.hypot(x[0], x[1]) * s.A * (j >= 3 ? 180 / Math.PI : 1);
+  };
 
   // ------------------------------------------------------------ spectrum chart + warnings
   function drawRegular(P, s) {
@@ -314,14 +465,17 @@ export function initSeakeeping(api) {
     const field = fieldFor();
     const hull = hullFor(P, field);
     const sm = simModel(P, s);
+    const X = extrasFor(P, s);
     K.sim = new WaveSim({
       hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
-      A: sm.A, Bd: sm.Bd, dt: dtFor(P, field), ramp: s.T0 > 0 ? Math.min(2 * s.T0, 20) : 0, vanishDeg: P.vanish || 180,
-      volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s),
+      A: sm.A, Bd: sm.Bd, dt: dtFor(P, field, sm), ramp: rampFor(s, X), vanishDeg: P.vanish || 180,
+      volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s), ...simExtras(X), p0: X.moor ? X.moor.offset : null,
     });
+    K.runX = X;
     K.simNote = simSourceNote(sm);
     K.field = field; K.hull = hull; K.running = true;
     K.runSea = s; K.runLin = s.mode === 'regular' && s.active ? [2, 3, 4].map((j) => regularLinear(P, s, j)) : null;
+    K.ptLin = s.active ? pointLinear(P, s, sm) : null;
     // the patch spans a couple of (peak) wavelengths, so the waves read as waves rather than a tilting plane
     const lam = s.active && s.T0 > 0 ? 2 * Math.PI / waveNumber(2 * Math.PI / s.T0) : 0;
     sizeWaveMesh(lam ? Math.max(P.st.model.diag * 8, Math.min((s.mode === 'regular' ? 2 : 1.5) * lam, P.st.model.diag * 40)) : P.st.model.diag * 8);
@@ -335,6 +489,7 @@ export function initSeakeeping(api) {
   function stopRun() {
     if (!K.running) return;
     K.running = false;
+    drawRestMooring();
     $('waveRun').textContent = '▶ Run in waves'; $('waveRestart').disabled = true;
     waveMesh.visible = false; wl3.visible = false;
     api.water.visible = api.waterDepth.visible = $('showWater').checked;
@@ -362,33 +517,118 @@ export function initSeakeeping(api) {
     wl3.geometry.dispose(); wl3.geometry = new THREE.BufferGeometry();
     wl3.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(segs), 3));
     api.mG.position.set(...sim.p);
+    if (sim.moored) drawRunMooring(sim);
     const now = performance.now();
     if (now - K.lastChart > 250) {
       K.lastChart = now;
       const r = sim.rec, n = r.t.length, tmin = sim.t - 60;
       let i0 = 0; while (i0 < n && r.t[i0] < tmin) i0++;
       drawHistories({ t: r.t.slice(i0), roll: r.roll.slice(i0), pitch: r.pitch.slice(i0), heave: r.heave.slice(i0), eta: r.eta.slice(i0) });
+      drawExtraHistories(sim, i0);
       const rs = seriesStats(r.t, r.roll, sim.ramp), ps = seriesStats(r.t, r.pitch, sim.ramp);
       const ramping = sim.t < sim.ramp;
       $('waveInfo').innerHTML = `t = <b>${f(sim.t, 4)} s</b>${ramping ? ' (waves ramping up)' : ''} · roll <b>${f(r.roll[n - 1], 3)}°</b> · pitch <b>${f(r.pitch[n - 1], 3)}°</b><br>
         so far: roll σ ${f(rs.sd)}°, max ${f(sim.stats.maxRoll)}° · pitch max ${f(sim.stats.maxPitch)}° · green-water events ${sim.stats.greenWater}<br>
-        ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}${driftLine(sim)}
+        ${K.runLin ? `linear steady state: heave ±${f(K.runLin[0])} m, roll ±${f(K.runLin[1])}°, pitch ±${f(K.runLin[2])}° (${K.runSea.label}, β ${K.runSea.heading}°)<br>` : ''}${driftLine(sim)}${extrasLine(sim)}
         ${sim.stats.capsized ? `<br><span class="bad">✕ Capsized at t = ${f(sim.stats.capsizeT)} s</span>` : ''}
         <br><span class="hint">${(K.hull.idx.length / 3).toLocaleString()} panels · ${field.n} wave components · dt ${f(sim.dt * 1000)} ms · ${K.simNote}</span>`;
     }
   }
 
   function driftLine(sim) {
-    const dist = Math.hypot(sim.p[0], sim.p[1]);
+    const dist = Math.hypot(sim.p[0] - sim.p0[0], sim.p[1] - sim.p0[1]);
+    if (sim.moored && (!sim.drift || !sim.drift.on)) return `moored (wave drift off) · offset ${f(dist)} m`;
     if (!sim.drift || !sim.drift.on) return `wave drift off: held on station by a soft spring (period ${f(sim.drift ? sim.drift.holdPeriod : 0)} s) · offset ${f(dist)} m`;
     const r = sim.rec, n = r.t.length, i0 = Math.max(0, n - Math.round(30 / sim.dt));
     const dt = n > 1 ? r.t[n - 1] - r.t[i0] : 0;
     const vx = dt > 0 ? (r.x[n - 1] - r.x[i0]) / dt : 0, vy = dt > 0 ? (r.y[n - 1] - r.y[i0]) / dt : 0;
     const u = sim.dr.uNow || [0, 0];
-    const far = dist > 10 * K.prep.st.model.diag;
+    const far = !sim.moored && dist > 10 * K.prep.st.model.diag;
     return `drift ${f(Math.hypot(vx, vy))} m/s toward ${f(((Math.atan2(vy, vx) * 180 / Math.PI) + 360) % 360)}° (last 30 s) · Stokes drift over the draft ${f(Math.hypot(...u))} m/s · distance ${f(dist)} m
       ${far ? `<br><span class="warn">The body has drifted ${f(dist / K.prep.st.model.diag, 2)} body lengths. Use ↺ Restart run to start again from the original position.</span>` : ''}`;
   }
+  // ramp: two wave periods (≤ 20 s); with wind only, 10 s so the body is not hit by a sudden gust
+  const rampFor = (s, X) => (s.active && s.T0 > 0 ? Math.min(2 * s.T0, 20) : (X && X.wind ? 10 : 0));
+  // linear (RAO-based) statistics of the tracked points for sea s, from the simulator's linear model with the extras
+  function pointLinear(P, s, sm) {
+    const X = extrasFor(P, s);
+    if (!X.points.length || !s.active) return null;
+    const ex = linExtra(P, s, s.heading, { kind: 'fk', model: sm.model });
+    if (s.mode === 'regular') {
+      const w = 2 * Math.PI / s.T, xi = raoAt(sm.model, w, s.heading, ex).xi;
+      return X.points.map((q) => pointRegular(xi, w, s.heading, q.rEq, P.zw, q.h0, s.A));
+    }
+    const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma), wp = 2 * Math.PI / s.Tp;
+    const rows = Array.from({ length: 200 }, (_, i) => { const w = 0.3 * wp + 4.7 * wp * i / 199; return { w, xi: raoAt(sm.model, w, s.heading, ex).xi }; });
+    return X.points.map((q) => pointSpectral(rows, S, s.heading, q.rEq, P.zw, q.h0));
+  }
+  // mooring lines in 3D: at rest (static view, which keeps the model's yaw and free-floating draft) and during runs
+  function drawRestMooring() {
+    const P = K.prep && K.prep.moorBase ? K.prep : null;
+    if (!P || K.running) { if (!P) api.extras.setLines(null); return; }
+    const mb = P.moorBase, yaw = Math.atan2(P.st.R[3], P.st.R[0]), c = Math.cos(yaw), sn = Math.sin(yaw);
+    const rot = (x, y) => [c * x - sn * y, sn * x + c * y];
+    const cfg = { ...mb.cfg, lines: mb.cfg.lines.map((ln) => ({ anchor: rot(...ln.anchor) })) };
+    const fxy = rot(mb.fEq[0], mb.fEq[1]);
+    api.extras.drawRestLines({ cfg, fairleadWorld: [fxy[0], fxy[1], mb.fEq[2] - mb.zwFree], rho: P.st.rho, w: mb.w });
+  }
+  function drawRunMooring(sim) {
+    const m = sim.moor;
+    if (m.model === 'dynamic') { api.extras.setLines(m.lines.map((L) => Array.from(L.r)), m.cfg.lines.map((ln) => [ln.anchor[0], ln.anchor[1], -m.cfg.depth])); return; }
+    const w = submergedWeight(m.cfg.m, m.cfg.rhoM, sim.rho);
+    const polys = m.cfg.lines.map((ln) => {
+      const q = quasiStaticForce(m.cfg, ln.anchor, m.Fw, sim.rho), out = [];
+      for (const [x, z] of catenaryShape(q.sol, q.XF, q.ZF, m.cfg.L, w, m.cfg.EA, 30)) out.push(ln.anchor[0] + q.ex * x, ln.anchor[1] + q.ey * x, -m.cfg.depth + z);
+      return out;
+    });
+    api.extras.setLines(polys, m.cfg.lines.map((ln) => [ln.anchor[0], ln.anchor[1], -m.cfg.depth]));
+  }
+  // live text for the extras during a run
+  function extrasLine(sim) {
+    const out = [];
+    if (sim.moored) {
+      const m = sim.moor;
+      out.push(`mooring: tension ${m.T.map((T) => `${f(T)} N`).join(', ')}${sim.t > sim.ramp ? ` · max so far ${f(m.st.maxT)} N, slack events ${m.st.slackEvents}` : ''} · ${m.model === 'dynamic' ? 'dynamic line' : 'quasi-static catenary'}`);
+    }
+    if (sim.wind && sim.lastWind) out.push(`wind: ${f(sim.wind.field.speed(K.runX?.wind?.zRef ?? 1, sim.t))} m/s at ${f(K.runX?.wind?.zRef ?? 1, 2)} m · force ${f(Math.hypot(sim.lastWind.F[0], sim.lastWind.F[1]))} N`);
+    if (sim.tracker) {
+      const sum = sim.tracker.summary(sim.t);
+      sim.tracker.pts.forEach((q, i) => {
+        const h = sim.tracker.rec.h[i][sim.tracker.rec.h[i].length - 1];
+        out.push(`${q.name}: ${f(h)} m above water${sim.t > sim.ramp ? ` · above ${f(100 * sum[i].fracAbove, 3)} % of the time so far` : ''}`);
+      });
+    }
+    return out.length ? `<br>${out.join('<br>')}` : '';
+  }
+  function drawExtraHistories(sim, i0) {
+    if ($('tabSea').classList.contains('hidden')) return;
+    const r = sim.rec;
+    if (sim.tracker) {
+      $('ptCharts').classList.remove('hidden');
+      const t = r.t.slice(i0);
+      lineChart($('ptCv'), { series: sim.tracker.pts.map((q, i) => ({ name: q.name, color: SERIES[i], x: t, y: sim.tracker.rec.h[i].slice(i0) })), xLabel: 't (s)', yLabel: 'above water (m)', height: 140 });
+    } else $('ptCharts').classList.add('hidden');
+    if (sim.moored) {
+      $('moorCharts').classList.remove('hidden');
+      lineChart($('moorTcv'), { series: [{ name: 'max line tension', color: SERIES[1], x: r.t.slice(i0), y: r.tension.slice(i0) }], xLabel: 't (s)', yLabel: 'tension (N)', height: 130, legend: false });
+      drawWatch(r.x, r.y, sim.moor.cfg);
+    } else $('moorCharts').classList.add('hidden');
+  }
+  // top view: the body's track as offsets from where the run started (the mean position), with a short stub pointing
+  // toward each anchor (anchors are usually far outside the watch circle)
+  function drawWatch(xs, ys, cfg) {
+    const step = Math.max(1, Math.ceil(xs.length / 3000)), x0 = xs[0], y0 = ys[0];
+    const x = [], y = [];
+    for (let i = 0; i < xs.length; i += step) { x.push(xs[i] - x0); y.push(ys[i] - y0); }
+    const R = Math.max(0.05, ...x.map((v, i) => Math.hypot(v, y[i])));
+    const series = [{ name: 'body track', color: SERIES[0], x, y }];
+    cfg.lines.forEach((ln, i) => {
+      const dx = ln.anchor[0] - x0, dy = ln.anchor[1] - y0, d = Math.hypot(dx, dy) || 1, k = Math.min(d, 0.6 * R) / d;
+      series.push({ name: i ? '' : `toward anchor${cfg.lines.length > 1 ? 's' : ''}`, color: SERIES[1], x: [0, dx * k], y: [0, dy * k], width: 1 });
+    });
+    lineChart($('moorXY'), { series, xLabel: 'Δx from the start (m)', yLabel: 'Δy (m)', height: 200, aspect: 'equal' });
+  }
+
   function drawHistories(r) {
     if ($('tabSea').classList.contains('hidden')) return;
     lineChart($('thRot'), { series: [
@@ -420,7 +660,8 @@ export function initSeakeeping(api) {
   // ------------------------------------------------------------ statistics run (worker)
   $('waveStats').onclick = async () => {
     if (K.locked) return;
-    if (!sea().active) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
+    const windOn = !!api.extras.config().wind;
+    if (!sea().active && !windOn) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
     $('waveStats').disabled = true;
     try { await ensureSimBem((t) => { $('waveInfo').innerHTML = t; }); }
     catch (err) { $('waveInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
@@ -430,7 +671,9 @@ export function initSeakeeping(api) {
     const sm = simModel(P, s);
     stopRun();
     const reg = s.mode === 'regular';
-    const field = fieldFor(), hull = hullFor(P, field), dt = dtFor(P, field), duration = (reg ? 5 : 20) * 60, ramp = Math.min(2 * s.T0, 20);
+    const X = extrasFor(P, s);
+    const field = fieldFor(), hull = hullFor(P, field), dt = dtFor(P, field, sm), duration = (reg ? 5 : 20) * 60, ramp = rampFor(s, X);
+    const ptLin = s.active ? pointLinear(P, s, sm) : null;
     if (K.worker) K.worker.terminate();
     K.worker = new Worker(new URL('./seaworker.js', import.meta.url), { type: 'module' });
     $('waveStats').disabled = true;
@@ -439,13 +682,21 @@ export function initSeakeeping(api) {
       if (e.data.progress !== undefined) { $('waveInfo').innerHTML = `Simulating ${duration / 60} min of ${s.label}… <b>${Math.round(e.data.progress * 100)}%</b>`; return; }
       $('waveStats').disabled = false;
       const { stats, series } = e.data;
-      K.stats = { stats, series, sea: s };
+      K.stats = { stats, series, sea: s, X, ptLin };
       showTab('tabSea');
       drawHistories(series);
-      if (reg) return showRegularStats(P, s, stats, hull, field, t0);
+      if (reg) { showRegularStats(P, s, stats, hull, field, t0); showExtrasStats(stats, series, X, ptLin, s); return; }
+      if (!s.active) {   // wind only, calm water
+        setSeaVerdict({ level: stats.capsized ? 'bad' : 'good', word: stats.capsized ? 'capsized' : 'wind only', icon: stats.capsized ? '✕' : '✓', text: `calm water, wind ${f(X.wind?.params.U10 ?? 0)} m/s: max roll ${f(stats.maxRoll)}°, max pitch ${f(stats.maxPitch)}°` }, ' <span class="hint">(20 min time-domain run)</span>');
+        $('seaStats').innerHTML = `<table><tr><td>Roll mean / σ / max</td><td>${f(stats.roll.mean)}° / ${f(stats.roll.sd)}° / ${f(stats.maxRoll)}°</td></tr><tr><td>Pitch mean / σ / max</td><td>${f(stats.pitch.mean)}° / ${f(stats.pitch.sd)}° / ${f(stats.maxPitch)}°</td></tr><tr><td>Mean drift</td><td>${driftRow(stats)}</td></tr></table><span class="hint">Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · dt ${f(stats.dt * 1000)} ms.</span>`;
+        showExtrasStats(stats, series, X, ptLin, s);
+        $('waveInfo').innerHTML = 'Statistics complete (wind only).';
+        return;
+      }
       const S = spectrumFn(s.type, s.Hs, s.Tp, s.gamma);
-      const spec = (j) => spectralResponse(sm.model, S, s.heading, j, field.meta.wMin, field.meta.wMax, 300, 20 * 60);
-      const sr = spec(3), sp = spec(4), sh = spec(2);
+      const exFK = linExtra(P, s, s.heading, { kind: 'fk', model: sm.model });
+      const spm = spectralResponseMulti(sm.model, S, s.heading, [2, 3, 4], field.meta.wMin, field.meta.wMax, 300, 20 * 60, exFK);
+      const sr = spm[3], sp = spm[4], sh = spm[2];
       const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
       const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
       setSeaVerdict(v, ` <span class="hint">(20 min time-domain run, β = ${s.heading}°)</span>`);
@@ -462,15 +713,56 @@ export function initSeakeeping(api) {
         <tr><td>Green water on deck</td><td colspan="2">${stats.greenWater} events, ${f(100 * greenFrac, 2)} % of the time</td></tr>
         <tr><td>Capsize</td><td colspan="2">${stats.capsized ? `<span class="bad">✕ yes, at t = ${f(stats.capsizeT)} s</span>` : '<span class="good">✓ no</span>'}</td></tr>
       </table><span class="hint">Simulated ${f(stats.simulated, 4)} s in ${f((performance.now() - t0) / 1000)} s · ${(hull.idx.length / 3).toLocaleString()} panels · ${field.n} components · dt ${f(stats.dt * 1000)} ms · ${simSourceNote(sm)}.
-      The two columns should agree within ~10 % for moderate motions; larger gaps indicate nonlinearity (large roll, deck immersion).</span>`;
+      The two columns should agree within ~10 % for moderate motions; larger gaps indicate nonlinearity (large roll, deck immersion)${X.drag ? '; the spectral column uses the equivalent linear drag' : ''}${X.wind ? '; wind is in the time domain only' : ''}.</span>`;
+      showExtrasStats(stats, series, X, ptLin, s);
       $('waveInfo').innerHTML = `Statistics complete: ${v.text}.`;
     };
     K.worker.postMessage({
       verts: hull.verts.buffer.slice(0), idx: hull.idx.buffer.slice(0), mass: P.st.m, IGb: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw,
       fieldParams: { ...s }, A: sm.A, Bd: sm.Bd, dt, duration, ramp, vanishDeg: P.vanish || 180,
-      volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes, drift: driftParams(s),
+      volQ: hull.volQ ? hull.volQ.slice() : null, diffModes: P.diffModes, drift: driftParams(s), ...simExtras(X), p0: X.moor ? X.moor.offset : null,
     });
   };
+
+  // Tables and charts for the tracked points, the mooring and the wind after a statistics run.
+  function showExtrasStats(stats, series, X, ptLin, s) {
+    const cell = (v, u = '', d = 3) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : `${f(v, d)}${u}`);
+    if (stats.points && stats.points.length) {
+      $('ptCharts').classList.remove('hidden');
+      lineChart($('ptCv'), { series: stats.points.map((q, i) => ({ name: q.name, color: SERIES[i], x: series.t, y: series.ph[i] })), xLabel: 't (s)', yLabel: 'above water (m)', height: 150 });
+      const reg = s.mode === 'regular';
+      const rows = stats.points.map((q, i) => {
+        const L = ptLin ? ptLin[i] : null;
+        return `<tr class="h"><td colspan="3"><b>${q.name}</b>${q.clearance ? ` (clearance ${f(q.clearance)} m)` : ''}</td></tr>
+          <tr><td>Time above water</td><td>${cell(100 * q.fracAbove, ' %')}</td><td>${L ? cell(100 * L.fracAbove, ' %') : '—'}</td></tr>
+          <tr><td>Height above water: mean / σ</td><td>${cell(q.meanH, ' m')} / ${cell(q.sdH, ' m')}</td><td>${L && !reg ? `${cell(X.points[i].h0, ' m')} / ${cell(L.sdH, ' m')}` : L && reg ? `amp. ${cell(L.amp, ' m')}` : '—'}</td></tr>
+          <tr><td>Goes under: per hour / count</td><td>${cell(q.dunksPerHour, '', 3)} / ${q.dunks}</td><td>${L && !reg ? cell(L.dunksPerHour, '', 3) : '—'}</td></tr>
+          <tr><td>Longest underwater / above water</td><td>${cell(q.longestUnder, ' s')} / ${cell(q.longestAbove, ' s')}</td><td>${L && !reg && L.meanUnder !== null ? `mean under ${cell(L.meanUnder, ' s')}` : '—'}</td></tr>
+          <tr><td>Acceleration RMS x / y / z (body axes)</td><td>${q.accRms.map((a) => cell(a, '', 3)).join(' / ')} m/s²</td><td>${L && !reg ? `${L.accRms.map((a) => cell(a, '', 3)).join(' / ')} m/s²` : L && reg ? `amp. ${L.accAmp.map((a) => cell(a, '', 3)).join(' / ')}` : '—'}</td></tr>
+          <tr><td>Acceleration max |a|</td><td>${cell(q.accMag, ' m/s²')} (${cell(q.accMag / 9.80665, ' g', 2)})</td><td></td></tr>`;
+      });
+      $('ptStats').innerHTML = `<table class="grid"><tr class="h"><td></td><td>Time domain</td><td>Linear (RAO)</td></tr>${rows.join('')}</table>
+        <span class="hint">Height above the local incident wave surface (the body's own diffracted and radiated waves are not included), minus the clearance. Accelerations exclude gravity; an accelerometer reads these plus 1 g. Linear column: from the RAOs (Gaussian relative motion; Rice's rate for going under)${reg ? ', regular wave' : ''}. The linear acceleration axes are the floating (equilibrium) axes.</span>`;
+    } else $('ptCharts').classList.add('hidden');
+    if (stats.mooring) {
+      const m = stats.mooring;
+      $('moorCharts').classList.remove('hidden');
+      lineChart($('moorTcv'), { series: [{ name: 'max line tension', color: SERIES[1], x: series.t, y: series.tension }], xLabel: 't (s)', yLabel: 'tension (N)', height: 130, legend: false });
+      drawWatch(series.x, series.y, X.moor.cfg);
+      const Ts = Math.max(...m.Tstatic);
+      $('moorStats').innerHTML = `<table class="grid">
+        <tr><td>Static tension (at rest)</td><td>${m.Tstatic.map((T) => `${f(T)} N`).join(', ')}</td></tr>
+        <tr><td>Max / min fairlead tension</td><td>${f(m.maxT)} N / ${f(m.minT)} N${Ts > 0 ? ` (max ${f(m.maxT / Ts, 3)} × static)` : ''}</td></tr>
+        <tr><td>Slack events (below 10 % of static)</td><td>${m.slackEvents}${m.slackEvents ? ' <span class="warn">snap loads likely</span>' : ''}</td></tr>
+        <tr><td>Max anchor tension / uplift</td><td>${f(m.maxAnchorT)} N / ${f(m.maxUplift)} N${m.maxUplift > 0.01 * Math.max(1, m.maxAnchorT) ? ' <span class="warn">the anchor is lifted</span>' : ''}</td></tr>
+        <tr><td>Watch circle: max / mean offset</td><td>${f(m.maxOffset)} m / ${f(m.meanOffset)} m</td></tr>
+      </table><span class="hint">${X.moor.model === 'dynamic' ? `Dynamic lumped-mass line (${X.moor.nSeg} segments): tension peaks are resolved within each step.` : 'Quasi-static catenary: no line dynamics, so snap loads are not captured; use the dynamic model for those.'} Slack criterion as DNV-RP-H103 (dynamic load below −90 % of static). Offsets from the rest position.</span>`;
+    } else $('moorCharts').classList.add('hidden');
+    if (stats.wind) {
+      const w = stats.wind;
+      $('seaStats').insertAdjacentHTML('beforeend', `<div class="info">Wind: mean force ${f(Math.hypot(w.meanF[0], w.meanF[1]))} N toward ${f(((Math.atan2(w.meanF[1], w.meanF[0]) * 180 / Math.PI) + 360) % 360)}°, max ${f(w.maxF)} N · mean roll ${f(stats.roll.mean)}°, mean pitch ${f(stats.pitch.mean)}°.</div>`);
+    }
+  }
 
   const driftRow = (st) => (!st.drift ? '—' : st.drift.on
     ? `${f(st.drift.speed)} m/s toward ${f(st.drift.dir)}°, ${f(st.drift.dist)} m in the run`
@@ -503,25 +795,33 @@ export function initSeakeeping(api) {
     const s = sea();
     const sm = simModel(P, s);
     const bemOk = K.rao && K.rao.bem && K.rao.bodyKey === bodyKey(P.st) && !K.rao.stale;
-    const bemPts = bemOk ? bemSweep(P.model, K.rao.bem, [s.heading], bemExtraDamping(P.model, bemNatural(P.model, K.rao.bem), extraZeta()))[0].points : null;
+    const X = extrasFor(P, s);
+    const Kx = X.moor || X.plateA ? { K: X.moor ? X.moor.K : null, A: X.plateA } : null;
+    const bemBase = bemOk ? { kind: 'bem', model: P.model, bem: K.rao.bem, Bextra: bemExtraDamping(P.model, bemNatural(P.model, K.rao.bem, Kx), extraZeta()) } : null;
+    // without drag the sweep is the same for every sea state; with drag it is linearised for each row's sea
+    const bemPtsFor = (sx) => (bemBase ? bemSweep(P.model, K.rao.bem, [s.heading], bemBase.Bextra, (b) => linExtra(P, sx, b, bemBase))[0].points : null);
+    const bemPts0 = X.drag ? null : bemPtsFor(s);
     let usedBem = 0, usedEst = 0;
     const rows = SEA_STATES.filter((x) => x.Hs > 0).map((x) => {
       const gamma = $('ssDnvGamma').checked ? dnvGamma(x.Hs, x.Tp) : s.gamma;
       const S = spectrumFn(s.type, x.Hs, x.Tp, gamma);
       const wp = 2 * Math.PI / x.Tp;
       const m0 = x.Hs * x.Hs / 16;
+      const sx = { ...s, mode: 'spectrum', Hs: x.Hs, Tp: x.Tp, gamma, active: true, T0: x.Tp, label: `SS${x.ss}` };
+      const bemPts = X.drag ? bemPtsFor(sx) : bemPts0;
       const viaBem = bemPts && spectralFromSweep(bemPts, S, 2, 3 * 3600, m0).coverage >= 0.9;
       if (viaBem) usedBem++; else usedEst++;
-      const r = (j) => (viaBem ? spectralFromSweep(bemPts, S, j, 3 * 3600, m0)
-        : spectralResponse(sm.model, S, s.heading, j, 0.4 * wp, Math.max(4 * wp, ...sm.model.wn.map((w) => 1.5 * w)), 300, 3 * 3600));
+      const exFK = viaBem ? null : linExtra(P, sx, s.heading, { kind: 'fk', model: sm.model });
+      const spm = viaBem ? null : spectralResponseMulti(sm.model, S, s.heading, [2, 3, 4], 0.4 * wp, Math.max(4 * wp, ...sm.model.wn.filter((w, j) => j >= 2 && j <= 4).map((w) => 1.5 * w)), 300, 3 * 3600, exFK);
+      const r = (j) => (viaBem ? spectralFromSweep(bemPts, S, j, 3 * 3600, m0) : spm[j]);
       const roll = r(3), pitch = r(4), heave = r(2);
       const v = verdict({ ssLabel: `SS${x.ss}`, maxRoll: roll.mpm, vanish: P.vanish, capsized: false, greenFrac: 0 });
       const d = diffractionCheck(P.size, wp);
-      return `<tr><td>SS${x.ss}${viaBem ? '' : (bemPts ? ' <span class="hint" title="outside the panel-method frequency range: linear estimate model">†</span>' : '')}</td><td>${x.Hs}</td><td>${x.Tp}${x.tpDerived ? '*' : ''}</td><td>${f(heave.sig)}</td><td>${f(roll.sig)}</td><td>${f(roll.mpm)}</td><td>${f(pitch.sig)}</td>
+      return `<tr><td>SS${x.ss}${viaBem ? '' : (bemBase ? ' <span class="hint" title="outside the panel-method frequency range: linear estimate model">†</span>' : '')}</td><td>${x.Hs}</td><td>${x.Tp}${x.tpDerived ? '*' : ''}</td><td>${f(heave.sig)}</td><td>${f(roll.sig)}</td><td>${f(roll.mpm)}</td><td>${f(pitch.sig)}</td>
         <td><span class="badge ${v.level}">${v.icon} ${v.word}</span>${d.ok ? '' : ` <span class="badge warn" title="body is ${f(d.ratio, 2)} of the peak wavelength; diffraction not modelled">! D/λ ${f(d.ratio, 2)}</span>`}</td></tr>`;
     });
     $('ssTable').innerHTML = `<table class="ss-table"><tr><th>SS</th><th>Hs m</th><th>Tp s</th><th>heave sig m</th><th>roll sig °</th><th>roll max 3 h °</th><th>pitch sig °</th><th>verdict</th></tr>${rows.join('')}</table>
-      <span class="hint">Linear spectral estimate at β = ${s.heading}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (section 8)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemPts ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}). Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
+      <span class="hint">Linear spectral estimate at β = ${s.heading}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (section 8)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemBase ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}).${X.drag ? ' Viscous drag: linearised for each row\'s sea state.' : ''}${X.moor ? ' Mooring: linear catenary stiffness at the mean position.' : ''} Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
   };
 
   // ------------------------------------------------------------ RAO sweep
@@ -570,13 +870,17 @@ export function initSeakeeping(api) {
       if (!P) throw new Error('No floating body to analyse (the model sinks or none is loaded).');
       const freqs = Array.from({ length: n }, (_, i) => f0 + (f1 - f0) * i / (n - 1));
       const omegas = freqs.map((x) => TWO_PI * x);
+      const sNow = sea(), X = extrasFor(P, sNow);
       if (!bemOn()) {
-        const sweep = await raoSweepAsync(P.model, omegas, heads, (p) => progress(p, `Computing RAOs… ${Math.round(p * 100)} % (${heads.length} headings × ${n} frequencies)`));
-        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'fk', bodyKey: bodyKey(P.st) };
-        const wn = P.model.wn;
+        const base = { kind: 'fk', model: P.model };
+        const extraFor = (b) => linExtra(P, sNow, b, base);
+        const sweep = await raoSweepAsync(P.model, omegas, heads, (p) => progress(p, `Computing RAOs… ${Math.round(p * 100)} % (${heads.length} headings × ${n} frequencies)`), extraFor);
+        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'fk', bodyKey: bodyKey(P.st), extraFor, X, seaLin: sNow };
+        const wn = wnExtras(P, X, P.model.Am);
+        K.rao.wn = wn;
         $('raoInfo').innerHTML = `Froude–Krylov + estimates: ${heads.length} headings × ${n} frequencies in ${f((performance.now() - t0) / 1000)} s · ${P.model.quads.length.toLocaleString()} wetted panels.<br>
           Natural frequencies: heave ${f(wn[2] / TWO_PI)} Hz, roll ${f(wn[3] / TWO_PI)} Hz, pitch ${f(wn[4] / TWO_PI)} Hz.
-          Diffraction correction: ${P.diffModes[0] ? 'surge/sway on' : 'surge/sway off'}, ${P.diffModes[2] ? 'heave on' : 'heave off'}.`;
+          Diffraction correction: ${P.diffModes[0] ? 'surge/sway on' : 'surge/sway off'}, ${P.diffModes[2] ? 'heave on' : 'heave off'}.${extrasRaoNote(X, sNow, wn)}`;
       } else {
         const fid = $('bemFid').value, irr = $('bemIrr').checked, key = bodyKey(P.st);
         const bkey = JSON.stringify([key, f0, f1, n, fid, irr, heads]);
@@ -586,12 +890,15 @@ export function initSeakeeping(api) {
           K.bemRun = runBem({ rel: P.rel, zw: P.zw, rho: P.st.rho, omegas, headings: heads, fidelity: fid, irr, onProgress: (q) => progress(q.frac, q.text) });
           try { bem = await K.bemRun.promise; } finally { K.bemRun = null; $('raoCancel').classList.add('hidden'); }
         }
-        const nat = bemNatural(P.model, bem), Bextra = bemExtraDamping(P.model, nat, extraZeta());
-        const sweep = bemSweep(P.model, bem, heads, Bextra);
-        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'bem', bem, bemKey: bkey, bodyKey: key, nat, Bextra };
+        const Kx = X.moor || X.plateA ? { K: X.moor ? X.moor.K : null, A: X.plateA } : null;
+        const nat = bemNatural(P.model, bem, Kx), Bextra = bemExtraDamping(P.model, nat, extraZeta());
+        const base = { kind: 'bem', model: P.model, bem, Bextra };
+        const extraFor = (b) => linExtra(P, sNow, b, base);
+        const sweep = bemSweep(P.model, bem, heads, Bextra, extraFor);
+        K.rao = { freqs, omegas, heads, sweep, P, resp: new Map(), method: 'bem', bem, bemKey: bkey, bodyKey: key, nat, Bextra, extraFor, X, seaLin: sNow };
         if ($('hBemSim').checked && coversNatural(P, bem) && !(K.simBem && K.simBem.key === key && K.simBem.bem === bem)) K.simBem = { key, bem, source: 'the panel-method RAO sweep' };
         const I = bem.info, z = extraZeta();
-        const natTxt = [['heave', 2], ['roll', 3], ['pitch', 4]].map(([nm, j]) => nat[j].w > 0
+        const natTxt = (X.moor ? [['surge', 0], ['sway', 1], ['heave', 2], ['roll', 3], ['pitch', 4], ['yaw', 5]] : [['heave', 2], ['roll', 3], ['pitch', 4]]).map(([nm, j]) => nat[j].w > 0
           ? `${nm} ${f(nat[j].w / TWO_PI)} Hz (T ${f(TWO_PI / nat[j].w)} s, radiation damping ζ ${f(100 * nat[j].zeta, 2)} %${z[j] ? ` + ${f(100 * z[j], 2)} % extra` : ''})${nat[j].inRange ? '' : ' <span class="warn">outside the sweep</span>'}` : '').filter(Boolean).join(', ');
         const low = [['heave', 2], ['roll', 3], ['pitch', 4]].filter(([, j]) => nat[j].w > 0 && nat[j].inRange && nat[j].zeta + z[j] < 0.02).map(([nm]) => nm);
         // radiation damping is radiated wave energy, so B_jj < 0 means the panels are too coarse at that frequency.
@@ -610,7 +917,7 @@ export function initSeakeeping(api) {
           ${I.note ? `<br><span class="hint">${I.note}</span>` : ''}
           ${irr && !I.lidPanels ? '<br><span class="warn">⚠ The irregular-frequency lid could not be built for this waterplane, so the results may show spurious spikes at the hull\'s irregular frequencies.</span>' : ''}
           ${negB.length ? `<br><span class="warn">⚠ Radiation damping came out negative (${negB.map(([nm]) => nm).join(', ')}) from ${f(wNeg / TWO_PI)} Hz up. That is not physical: the panels are too coarse for those wavelengths, so use a finer fidelity or a lower top frequency.</span>` : ''}
-          ${low.length ? `<br><span class="warn">⚠ ${low.join(', ')} resonance has under 2 % of critical damping. That is what potential flow gives, but viscous effects make real peaks lower: add extra ζ in section 7 → Wave &amp; hydrodynamic settings if you know it.</span>` : ''}`;
+          ${low.length && !X.drag ? `<br><span class="warn">⚠ ${low.join(', ')} resonance has under 2 % of critical damping. That is what potential flow gives, but viscous effects make real peaks lower: add extra ζ in section 7 → Wave &amp; hydrodynamic settings, or viscous drag in section 11.</span>` : ''}${extrasRaoNote(X, sNow, nat.map((q) => q.w))}`;
       }
       $('raoCsv').disabled = false; $('raoRaw').disabled = false;
       progress(1, 'Rendering plots…');
@@ -626,6 +933,42 @@ export function initSeakeeping(api) {
     }
   };
   $('raoDof').onchange = () => drawRaoAsync(); $('raoNorm').onchange = () => drawRaoAsync();
+  $('followTol').onchange = () => drawFollow();
+  // natural frequencies of the estimate model with the mooring stiffness and plate added mass
+  function wnExtras(P, X, Am) {
+    const Km = X.moor ? X.moor.K : null, Ap = X.plateA || [0, 0, 0, 0, 0, 0];
+    return [0, 1, 2, 3, 4, 5].map((j) => { const c = P.model.Cm[j][j] + (Km ? Km[j][j] : 0); return c > 1e-9 * P.model.Mm[j][j] ? Math.sqrt(c / (P.model.Mm[j][j] + Am[j] + Ap[j])) : 0; });
+  }
+  function extrasRaoNote(X, s, wn) {
+    const out = [];
+    if (X.moor) out.push(`mooring stiffness from the catenary at the mean position${X.wind ? ' under the steady wind' : ''} (moored surge ${wn[0] > 0 ? `T ${f(TWO_PI / wn[0])} s` : '—'}, sway ${wn[1] > 0 ? `T ${f(TWO_PI / wn[1])} s` : '—'})`);
+    if (X.plateA) out.push(`${X.drag.plates.length} heave plate${X.drag.plates.length > 1 ? 's' : ''} (added mass ${f(X.plateA[2])} kg)`);
+    if (X.drag) out.push(s.active ? `viscous drag linearised for ${s.label} at each heading` : '<span class="warn">viscous drag is on, but the sea in section 7 is calm, so the RAOs have no drag damping (it is linearised for a sea state)</span>');
+    if (X.wind) out.push('wind is not in the RAOs (a mean load and slow gusts): see the wave runs');
+    return out.length ? `<br>Small-body options: ${out.join('; ')}.` : '';
+  }
+  // Wave-following quality: how closely heave, tilt and horizontal motion follow the wave (complex error, so phase lag
+  // counts), and the frequency up to which each stays within the tolerance.
+  function drawFollow() {
+    if (!K.rao || $('tabRao').classList.contains('hidden')) return;
+    const { freqs, heads, sweep } = K.rao, tol = Math.max(0.001, (parseFloat($('followTol').value) || 5) / 100);
+    const errs = sweep.map((h) => h.points.map((p) => followErrors(p, h.beta)));
+    const j = +$('raoDof').value, kind = j === 2 ? 'heave' : (j === 3 || j === 4) ? 'tilt' : j === 5 ? 'heave' : 'horiz';
+    const color = (i) => (heads.length === 1 ? SERIES[0] : rampColor(i / (heads.length - 1)));
+    lineChart($('followCv'), {
+      series: errs.map((e, i) => ({ name: `β ${heads[i]}°`, color: color(i), x: freqs, y: e.map((q) => 100 * q[kind]) })),
+      hlines: [{ y: 100 * tol, label: `tolerance ${f(100 * tol)} %` }],
+      xLabel: 'f (Hz)', yLabel: `${{ heave: 'heave', tilt: 'tilt', horiz: 'horizontal' }[kind]} error (%)`, height: 140, yMin: 0, yMax: Math.max(4 * 100 * tol, 1),
+      rampLegend: heads.length > 5 ? { label: 'heading', from: `β ${heads[0]}°`, to: `β ${heads[heads.length - 1]}°`, color: (t) => rampColor(t) } : null,
+    });
+    const desc = (c) => (c.status === 'never' ? '<span class="warn">exceeds at f min</span>' : c.status === 'within' ? `within up to ${f(c.f)} Hz (whole sweep)` : `${f(c.f)} Hz · T ${f(1 / c.f)} s · λ ${f(G / (TWO_PI * c.f * c.f))} m`);
+    const rows = heads.map((b, i) => {
+      const e = errs[i], cut = (k) => followCutoff(freqs, e.map((q) => q[k]), tol);
+      return `<tr><td>β ${b}°</td><td>${desc(cut('heave'))}</td><td>${desc(cut('tilt'))}</td><td>${desc(cut('horiz'))}</td></tr>`;
+    });
+    $('followInfo').innerHTML = `<table class="grid"><tr class="h"><td></td><td>heave</td><td>tilt (slope)</td><td>horizontal</td></tr>${rows.join('')}</table>
+      <span class="hint">Follows the waves within ${f(100 * tol)} % up to the frequency shown, i.e. for waves longer than that period. Error = |RAO − ideal| with phase, where an ideal follower heaves with the surface (1 m/m), tilts with the slope (z axis normal to the surface) and moves sideways with the surface water (deep water). Heave matters for displacement buoys, tilt for pitch-roll (directional) buoys, horizontal for GPS buoys. The chart shows the error for the RAO selected above (heave/yaw → heave, roll/pitch → tilt, surge/sway → horizontal).</span>`;
+  }
 
   // RAO tab: show a loading overlay, let it paint, then draw (charts) and fill the sea-state response table.
   async function drawRaoAsync() {
@@ -634,7 +977,7 @@ export function initSeakeeping(api) {
     $('raoLoadingText').textContent = 'Rendering RAO plots…';
     $('raoLoading').classList.remove('hidden');
     await nextPaint();
-    try { drawRao(); await drawResponse(); } finally { $('raoLoading').classList.add('hidden'); }
+    try { drawRao(); drawFollow(); await drawResponse(); } finally { $('raoLoading').classList.add('hidden'); }
   }
   function drawRao() {
     if (!K.rao || $('tabRao').classList.contains('hidden')) return;
@@ -644,7 +987,7 @@ export function initSeakeeping(api) {
     const unit = rot ? (slope ? 'deg/deg' : 'deg/m') : 'm/m';
     const color = (i) => (heads.length === 1 ? SERIES[0] : rampColor(i / (heads.length - 1)));
     const series = sweep.map((h, i) => ({ name: `β ${h.beta}°`, color: color(i), x: freqs, y: h.points.map(val) }));
-    const wnj = K.rao.nat ? K.rao.nat[j].w : P.model.wn[j];
+    const wnj = K.rao.nat ? K.rao.nat[j].w : (K.rao.wn || P.model.wn)[j];
     const vl = wnj > 0 ? [{ x: wnj / TWO_PI, label: `${DOF[j]} fn` }] : [];
     const rampLegend = heads.length > 5 ? { label: 'heading', from: `β ${heads[0]}°`, to: `β ${heads[heads.length - 1]}°`, color: (t) => rampColor(t) } : null;
     lineChart($('raoCv'), { series, xLabel: 'f (Hz)', yLabel: `${DOF[j]} RAO (${unit})`, vlines: vl, height: 180, rampLegend });
@@ -662,8 +1005,8 @@ export function initSeakeeping(api) {
     if (!s.active) { $('raoResp').innerHTML = ''; return; }
     if (s.mode === 'regular') {
       const amp = (b) => {
-        if (!K.rao.bem) return regularLinear(P, { ...s, heading: b }, j);
-        const r = raoAtBem(P.model, K.rao.bem, TWO_PI / s.T, b, K.rao.Bextra);
+        if (!K.rao.bem) { const x = raoAt(P.model, TWO_PI / s.T, b, K.rao.extraFor ? K.rao.extraFor(b) : null).xi[j]; return Math.hypot(...x) * s.A * (rot ? 180 / Math.PI : 1); }
+        const r = raoAtBem(P.model, K.rao.bem, TWO_PI / s.T, b, K.rao.Bextra, K.rao.extraFor ? K.rao.extraFor(b) : null);
         return r ? Math.hypot(...r.xi[j]) * s.A * (rot ? 180 / Math.PI : 1) : NaN;
       };
       const rows = heads.map((b) => `<tr><td>β ${b}°</td><td>${Number.isFinite(amp(b)) ? `${f(amp(b))} ${rot ? '°' : 'm'}` : 'period outside the sweep'}</td></tr>`);
@@ -684,7 +1027,7 @@ export function initSeakeeping(api) {
           fallback = true;
           $('raoLoadingText').textContent = `Sweep range covers ${Math.round(r.coverage * 100)} % of the sea's energy; re-solving on a full grid… (${i + 1}/${heads.length})`;
           await nextPaint();
-          r = { ...spectralResponse(P.model, S, heads[i], j, 0.4 * wp, Math.max(4 * wp, P.model.wn[j] * 1.5 || 0), 200, 3 * 3600), coverage: 1 };
+          r = { ...spectralResponse(P.model, S, heads[i], j, 0.4 * wp, Math.max(4 * wp, P.model.wn[j] * 1.5 || 0), 200, 3 * 3600, K.rao.extraFor ? K.rao.extraFor(heads[i]) : null), coverage: 1 };
         }
         resp.set(key, r);
       }
@@ -729,6 +1072,9 @@ export function initSeakeeping(api) {
         `# linear damping B (diagonal; N*s/m, N*m*s/rad): ${M.Bd.map(num6).join(' ')}`,
       ]),
       ...mat('mass matrix M', M.Mm), ...mat('restoring matrix C', M.Cm),
+      ...(K.rao.X && K.rao.X.moor ? mat('mooring stiffness K (added to C)', K.rao.X.moor.K) : []),
+      ...(K.rao.X && K.rao.X.plateA ? [`# heave-plate added mass (diagonal, added to A): ${K.rao.X.plateA.map(num6).join(' ')}`] : []),
+      ...(K.rao.X && K.rao.X.drag ? [`# viscous drag linearised for ${K.rao.seaLin.label} (equivalent linear damping per heading; xi and F include it)`] : []),
     ];
     const cols = ['beta_deg', 'f_Hz', 'omega_rad_s', 'k_rad_per_m', 'wavelength_m'];
     for (const d of DOF) cols.push(`${d}_xi_re`, `${d}_xi_im`, `${d}_xi_abs`, `${d}_xi_phase_deg`, `${d}_F_re`, `${d}_F_im`);
@@ -744,6 +1090,62 @@ export function initSeakeeping(api) {
     download('rao_raw.csv', lines.join('\n'));
   };
 
+  // ------------------------------------------------------------ info boxes for sections 11–13
+  function updateExtrasInfo() {
+    const cfg = api.extras.config();
+    const P = cfg.drag || cfg.moor || cfg.wind ? prepare() : null;
+    if (!P) { for (const id of ['dragInfo', 'moorInfo', 'windInfo']) api.extras.setInfo(id, ''); drawRestMooring(); return; }
+    const s = sea(), X = extrasFor(P, s), st = P.st, Lu = (m) => `${f(m)} m`;
+    // static heel from the mean line pull and wind (linear: C_rot δθ = M)
+    const Kt = P.model.Cm.map((row, i) => row.map((v, j) => v + (X.moor ? X.moor.K[i][j] : 0)));
+    const Mrest = [0, 0, 0];
+    if (X.moor) for (let k = 0; k < 3; k++) Mrest[k] += X.moor.under.M[k];
+    if (X.wind) for (let k = 0; k < 3; k++) Mrest[k] += X.wind.rest.M[k];
+    const det = Kt[3][3] * Kt[4][4] - Kt[3][4] * Kt[4][3];
+    const heel = det > 0 ? [(Kt[4][4] * Mrest[0] - Kt[3][4] * Mrest[1]) / det, (-Kt[4][3] * Mrest[0] + Kt[3][3] * Mrest[1]) / det].map((x) => x * 180 / Math.PI) : [NaN, NaN];
+    const heelTxt = `roll ${f(heel[0])}°, pitch ${f(heel[1])}°`;
+    if (X.drag) {
+      const g = X.drag.geo, sm = simModel(P, s);
+      let zTxt = '';
+      if (s.active) {
+        const ex = linExtra(P, s, s.heading, { kind: 'fk', model: sm.model });
+        if (ex && ex.lin) {
+          // equivalent damping ratio of each mode from the linearised drag (diagonal), at the natural frequency
+          const wn = sm.model.wn, Ap = X.plateA || [0, 0, 0, 0, 0, 0];
+          const Bt = [0, 0, 0, 0, 0, 0];
+          ex.els.forEach((e, i) => { for (let j = 0; j < 6; j++) Bt[j] += ex.lin.Beq[i] * e.gf[j] * e.gv[j]; });
+          const z = [2, 3, 4].map((j) => (wn[j] > 0 ? Bt[j] / (2 * (P.model.Mm[j][j] + sm.A[j]) * wn[j]) : NaN));
+          zTxt = `<br>Equivalent linear damping in ${s.label} (β ${s.heading}°): heave ζ ${f(100 * z[0], 2)} %, roll ζ ${f(100 * z[1], 2)} %, pitch ζ ${f(100 * z[2], 2)} % of critical.`;
+        }
+      }
+      api.extras.setInfo('dragInfo', `Projected areas: X ${f(g.A[0])} m², Y ${f(g.A[1])} m², from below ${f(g.A[2])} m².${X.plateA ? ` Heave plates: added mass ${f(X.plateA[2])} kg (body ${f(st.m)} kg).` : ''}${zTxt}`);
+    } else api.extras.setInfo('dragInfo', '');
+    if (X.moor) {
+      const mb = X.moor, rs = mb.rest.sols, w = mb.w;
+      const lines = rs.map((q, i) => `line ${i + 1}: ${q.sol.regime === 'touchdown' ? `${f(q.sol.LB)} m on the seabed` : q.sol.regime === 'slack' ? 'slack (hangs straight down, the rest lies on the seabed)' : q.sol.regime === 'taut' ? 'fully suspended (lifts off the anchor)' : (q.T > 0 ? 'taut' : 'slack')}, tension ${f(q.T)} N (H ${f(q.sol.H)}, V ${f(q.sol.V)})${q.sol.VA > 0 ? ' <span class="warn">anchor uplift</span>' : ''}`);
+      const k = mb.rest.Kf, dz = mb.zwFree - P.zw;
+      const off = Math.hypot(...mb.offset);
+      api.extras.setInfo('moorInfo', `At the mean position${off > 1e-6 ? ` (${Lu(off)} from where the anchors were laid out, toward ${f(((Math.atan2(mb.offset[1], mb.offset[0]) * 180 / Math.PI) + 360) % 360)}°)` : ''}: ${lines.join('; ')}.<br>
+        Submerged line weight ${f(w)} N/m. Line pull ${f(mb.Vline)} N down: the body floats ${Lu(Math.abs(dz))} ${dz < 0 ? 'deeper' : 'higher'} than free (draft used by the wave and RAO tools).<br>
+        Linear stiffness at the fairlead: horizontal ${f(k[0][0])} / ${f(k[1][1])} N/m, vertical ${f(k[2][2])} N/m${k[0][0] < 1e-6 && k[1][1] < 1e-6 ? ' (slack: the body is free to wander until a line lifts)' : ''}.${mb.under.converged ? '' : ' <span class="warn">No equilibrium found: the lines cannot hold the steady load.</span>'}
+        Static heel from the line pull${X.wind ? ' and wind' : ''} (linear): ${heelTxt}.
+        ${mb.tautish ? '<br><span class="warn">A line is close to taut: expect snap loads in waves (dynamic model) and a stiff, fast response (smaller time step).</span>' : ''}`);
+    } else api.extras.setInfo('moorInfo', '');
+    if (X.wind) {
+      const wr = X.wind.rest, Fh = Math.hypot(wr.F[0], wr.F[1]);
+      // free-drift estimate: wind drag balanced by water drag on the lateral area (drag coefficient from section 11 or the wave-drift C_d)
+      const d = X.wind.params.dirDeg * Math.PI / 180;
+      const Aw = X.drag ? Math.abs(Math.cos(d)) * X.drag.geo.A[0] * X.drag.geo.Cd[0] + Math.abs(Math.sin(d)) * X.drag.geo.A[1] * X.drag.geo.Cd[1] : null;
+      const vDrift = Aw ? Math.sqrt(Fh / (0.5 * st.rho * Aw)) : null;
+      api.extras.setInfo('windInfo', `Steady wind at rest: ${f(Fh)} N on ${f(wr.area)} m² of projected area (windage centre ${f(X.wind.zRef, 2)} m up, wind there ${f(X.wind.U)} m/s${X.wind.sigma ? `, gusts σ ${f(X.wind.sigma, 2)} m/s` : ''}).<br>
+        Heeling moment about G ${f(Math.hypot(wr.M[0], wr.M[1]))} N·m: static heel (linear) ${heelTxt}${X.moor ? ' with the mooring' : ''}.
+        ${vDrift ? `<br>Free wind drift ≈ ${f(vDrift)} m/s (wind drag = water drag on the side area; plus the wave drift)` : X.moor ? '' : '<br><span class="hint">Turn on viscous drag (section 11) for a free wind-drift estimate.</span>'}`);
+    } else api.extras.setInfo('windInfo', '');
+    drawRestMooring();
+  }
+  let infoQueued = false;
+  const queueInfo = () => { if (infoQueued) return; infoQueued = true; requestAnimationFrame(() => { infoQueued = false; try { updateExtrasInfo(); } catch (e) { console.error(e); } }); };
+
   // ------------------------------------------------------------ tabs
   function showTab(id, { skipDraw = false } = {}) {
     for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.tab === id);
@@ -757,6 +1159,7 @@ export function initSeakeeping(api) {
   function onInputs() {
     if (!$('tabSea').classList.contains('hidden')) drawSpectrum();
     if (!$('tabRao').classList.contains('hidden') && K.rao) { K.rao.resp.clear(); drawRaoAsync(); }
+    queueInfo();
   }
 
   applySS();
@@ -764,12 +1167,22 @@ export function initSeakeeping(api) {
     frame,
     onModelChange() {
       stopRun(); K.prep = null; K.stats = null; onInputs();
+      $('ptCharts').classList.add('hidden'); $('moorCharts').classList.add('hidden');
       if (K.rao && !K.rao.stale && !raoBusy) {
         K.rao.stale = true;
         $('raoInfo').insertAdjacentHTML('afterbegin', '<span class="warn">⚠ Inputs changed since these RAOs were computed. Click Compute RAOs to update them.</span><br>');
       }
     },
     showTab,
+    // a small-body option changed: the prepared body (mooring draft), the simulator model and the RAOs depend on them
+    onExtrasChange() {
+      if (K.running) { stopRun(); }
+      K.prep = null; K.stats = null; onInputs();
+      if (K.rao && !K.rao.stale && !raoBusy) {
+        K.rao.stale = true;
+        $('raoInfo').insertAdjacentHTML('afterbegin', '<span class="warn">⚠ Small-body options changed since these RAOs were computed. Click Compute RAOs to update them.</span><br>');
+      }
+    },
     // drop/rise test placement locks the wave and RAO tools (they assume the body floats at rest)
     setLocked(on) {
       K.locked = on;

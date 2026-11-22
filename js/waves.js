@@ -192,6 +192,19 @@ export class WaveField {
     return [ax * this.scale, ay * this.scale, az * this.scale];
   }
 
+  // Incident orbital velocity at (x, y, z), deep water, z clipped to ≤ 0 (as accel()): from φ = (g a/ω) e^{kz} sin ψ,
+  //   u_x = ω a (kₓ/k) e^{kz} cos ψ,  u_y = ω a (k_y/k) e^{kz} cos ψ,  u_z = ω a e^{kz} sin ψ
+  velocity(x, y, z, t) {
+    let ux = 0, uy = 0, uz = 0;
+    const zc = Math.min(0, z);
+    for (let i = 0; i < this.n; i++) {
+      const psi = this.kx[i] * x + this.ky[i] * y - this.w[i] * t + this.phi[i];
+      const e = this.w[i] * this.a[i] * Math.exp(this.k[i] * zc), c = Math.cos(psi);
+      ux += e * this.kx[i] / this.k[i] * c; uy += e * this.ky[i] / this.k[i] * c; uz += e * Math.sin(psi);
+    }
+    return [ux * this.scale, uy * this.scale, uz * this.scale];
+  }
+
   // Wheeler-stretched linear Froude–Krylov pressure at depth z below a surface of elevation e = η(x,y,t)
   // (call eta() first at the same x,y,t):  p = ρg[ −z + Σ aᵢ e^{kᵢ(z−η)} cos ψᵢ ].  Vanishes exactly at z = η.
   pressureAfterEta(z, e, rho) {

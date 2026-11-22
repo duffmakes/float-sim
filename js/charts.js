@@ -48,7 +48,10 @@ function tooltip(canvas) {
 // series: [{ name, color, x: [], y: [], width?, dash? }] — one shared y unit (never dual axis)
 // rampLegend: { label, from, to, color: (t) => css } draws a gradient key instead of per-series swatches
 // (used when many ordered series share one ramp, e.g. 13 wave headings).
-export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = '', vlines = [], yMin = null, yMax = null, legend = true, xFmt = fmt, rampLegend = null }) {
+// aspect: 'equal' keeps one unit the same length on both axes (e.g. a top-view track); its hover finds the nearest
+// point in 2-D, since x is not monotonic along a track. hlines: [{ y, label }] horizontal reference lines (a threshold),
+// drawn in neutral ink and kept out of the legend and tooltip.
+export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = '', vlines = [], hlines = [], yMin = null, yMax = null, legend = true, xFmt = fmt, rampLegend = null, aspect = null }) {
   const { ctx, W, H } = setup(canvas, height);
   const all = series.flatMap((s) => s.y.filter(Number.isFinite));
   const xs = series.flatMap((s) => s.x);
@@ -57,7 +60,12 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
   if (hi - lo < 1e-12) hi = lo + 1;
   const pad = (hi - lo) * 0.08; if (yMax === null) hi += pad; if (yMin === null && lo < 0) lo -= pad;
   const x0 = 44, x1 = W - 10, y0 = legend && (series.length > 1 || rampLegend) ? 22 : 10, y1 = H - 26;
-  const xa = Math.min(...xs), xb = Math.max(...xs);
+  let xa = Math.min(...xs), xb = Math.max(...xs);
+  if (aspect === 'equal') {
+    const ux = (xb - xa || 1) / (x1 - x0), uy = (hi - lo) / (y1 - y0), u = Math.max(ux, uy);
+    const cx = (xa + xb) / 2, cy = (lo + hi) / 2;
+    xa = cx - u * (x1 - x0) / 2; xb = cx + u * (x1 - x0) / 2; lo = cy - u * (y1 - y0) / 2; hi = cy + u * (y1 - y0) / 2;
+  }
   const X = (v) => x0 + (x1 - x0) * (v - xa) / (xb - xa || 1), Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
   ctx.font = '10px system-ui'; ctx.lineWidth = 1;
   // recessive grid + axes
@@ -76,6 +84,11 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
     if (!(v.x >= xa && v.x <= xb)) continue;
     ctx.setLineDash([3, 3]); ctx.strokeStyle = INK.axis; ctx.beginPath(); ctx.moveTo(X(v.x), y0); ctx.lineTo(X(v.x), y1); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = INK.secondary; ctx.textAlign = 'left'; ctx.fillText(v.label, X(v.x) + 3, y0 + 9 + (v.row || 0) * 11);
+  }
+  for (const h of hlines) {
+    if (!(h.y >= lo && h.y <= hi)) continue;
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = INK.axis; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x0, Y(h.y)); ctx.lineTo(x1, Y(h.y)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = INK.secondary; ctx.textAlign = 'right'; ctx.fillText(h.label, x1 - 2, Y(h.y) - 3);
   }
   // series: 2px lines
   for (const s of series) {
@@ -98,6 +111,7 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
   } else if (legend && series.length > 1) {
     let lx = x0; ctx.textAlign = 'left'; ctx.font = '11px system-ui';
     for (const s of series) {
+      if (!s.name) continue;
       ctx.fillStyle = s.color; ctx.fillRect(lx, 7, 12, 3);
       ctx.fillStyle = INK.primary; ctx.fillText(s.name, lx + 16, 12);
       lx += 24 + ctx.measureText(s.name).width;
@@ -107,6 +121,28 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
   // hover layer: crosshair + tooltip with every series' value at the nearest x
   const tip = tooltip(canvas);
   const base = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  if (aspect === 'equal') {
+    // 2-D nearest point (a track can pass the same x many times)
+    canvas.onmousemove = (e) => {
+      const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+      let best = null, bd = Infinity;
+      for (const s of series) {
+        if (!s.name) continue;
+        for (let i = 0; i < s.x.length; i++) { const d = Math.hypot(X(s.x[i]) - mx, Y(s.y[i]) - my); if (d < bd) { bd = d; best = { s, i }; } }
+      }
+      ctx.putImageData(base, 0, 0);
+      ctx.setTransform(Math.min(globalThis.devicePixelRatio || 1, 2), 0, 0, Math.min(globalThis.devicePixelRatio || 1, 2), 0, 0);
+      if (!best || bd > 24) { tip.style.display = 'none'; return; }
+      const { s, i } = best;
+      ctx.fillStyle = s.color; ctx.strokeStyle = INK.surface; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(X(s.x[i]), Y(s.y[i]), 4, 0, 7); ctx.fill(); ctx.stroke();
+      tip.innerHTML = `<div class="th">${s.name}</div><div>${xLabel.split(' (')[0]}<b>${fmt(s.x[i])}</b></div><div>${yLabel.split(' (')[0]}<b>${fmt(s.y[i])}</b></div>`;
+      tip.style.display = 'block';
+      tip.style.left = `${Math.min(mx + 12, W - tip.offsetWidth - 4)}px`; tip.style.top = `${Math.max(0, my - 40)}px`;
+    };
+    canvas.onmouseleave = () => { ctx.putImageData(base, 0, 0); tip.style.display = 'none'; };
+    return;
+  }
   canvas.onmousemove = (e) => {
     const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left;
     if (mx < x0 || mx > x1) { canvas.onmouseleave(); return; }
@@ -114,7 +150,7 @@ export function lineChart(canvas, { series, height = 170, xLabel = '', yLabel = 
     ctx.putImageData(base, 0, 0);
     ctx.setTransform(Math.min(globalThis.devicePixelRatio || 1, 2), 0, 0, Math.min(globalThis.devicePixelRatio || 1, 2), 0, 0);
     ctx.strokeStyle = INK.secondary; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(mx, y0); ctx.lineTo(mx, y1); ctx.stroke();
-    const rows = series.map((s) => {
+    const rows = series.filter((s) => s.name).map((s) => {
       let best = 0, bd = Infinity;
       for (let i = 0; i < s.x.length; i++) { const d = Math.abs(s.x[i] - xv); if (d < bd) { bd = d; best = i; } }
       const yv = s.y[best];

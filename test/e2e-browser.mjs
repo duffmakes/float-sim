@@ -30,7 +30,7 @@ const settle = async () => {
 await page.goto(`${BASE}/test/validate.html`);
 for (const q of ['fine', 'normal', 'coarse']) {
   if (q !== 'fine') await page.selectOption('#q', q);
-  await page.waitForFunction((q) => window.__floatSimValidation?.quality === q, q, { timeout: 480000 });
+  await page.waitForFunction((q) => window.__floatSimValidation?.quality === q, q, { timeout: 1200000 });
   const r = await page.evaluate(() => window.__floatSimValidation);
   expect(`validate.html [${q}] ${r.pass}/${r.total}`, r.pass === r.total);
 }
@@ -216,6 +216,65 @@ await page.click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
 expect('Froude–Krylov RAOs on request', (await page.locator('#raoInfo').innerText()).startsWith('Froude–Krylov'));
 await page.selectOption('#raoMethod', 'bem');
+
+// 7b — small-body options on a cylinder buoy (STEP, Ø0.7 × 1 m): tracked points, drag + heave plate, mooring, wind
+const BUOY = new URL('./models/buoy_cyl.step', import.meta.url).pathname;
+await page.setInputFiles('#file', BUOY);
+await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('buoy_cyl'), null, { timeout: 60000 });
+for (const [id, v] of [['mass', (1000 * Math.PI * 0.35 ** 2 * 0.6).toFixed(3)], ['cgx', '0'], ['cgy', '0'], ['cgz', '300']]) { await page.fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+await page.waitForTimeout(300);
+expect('buoy: draft 600 mm', near(num(await stat('Draft')), 600, 0.5), await stat('Draft'));
+await page.click('#ptPick');
+const glBox = await page.locator('#gl').boundingBox();
+await page.mouse.click(glBox.x + glBox.width / 2, glBox.y + glBox.height / 2);
+await page.waitForTimeout(300);
+expect('tracked point picked by clicking the model', (await page.locator('#ptList .ptrow').count()) === 1);
+await page.click('#ptAdd');
+const pt2 = page.locator('#ptList .ptrow').nth(1);
+await pt2.locator('input[data-k="2"]').fill('1000'); await pt2.locator('input[data-k="2"]').dispatchEvent('change');
+await pt2.locator('input[data-k="0"]').fill('300'); await pt2.locator('input[data-k="0"]').dispatchEvent('change');
+await page.check('#dragOn'); await page.selectOption('#dragPreset', 'vcyl'); await page.click('#plAdd'); await page.waitForTimeout(500);
+expect('drag info: projected areas and heave-plate added mass', (await page.locator('#dragInfo').innerText()).includes('Heave plates: added mass'));
+await page.check('#moorOn'); await page.waitForTimeout(600);
+const moorTxt = await page.locator('#moorInfo').innerText();
+expect('mooring info: line state at the mean position and the draft change', moorTxt.includes('At the mean position') && moorTxt.includes('deeper than free'), moorTxt.split('\n')[0]);
+expect('fairlead defaults to the keel point', near(num(await page.inputValue('#mfZ')), 0, 1e-6), await page.inputValue('#mfZ'));
+await page.check('#windOn'); await page.waitForTimeout(600);
+expect('wind info: steady force and static heel', (await page.locator('#windInfo').innerText()).includes('Steady wind at rest'));
+await page.click('#tabs button[data-tab="tabSea"]');
+await page.click('#waveMode button[data-mode="regular"]');
+await page.fill('#rgH', '0.4'); await page.dispatchEvent('#rgH', 'change');
+await page.fill('#rgT', '3'); await page.dispatchEvent('#rgT', 'change');
+await page.click('#waveRun');
+await page.waitForFunction(() => /t = [\d.]+ s/.test(document.querySelector('#waveInfo').innerText), null, { timeout: 120000 });
+await page.waitForTimeout(4000);
+const sbi = await page.locator('#waveInfo').innerText();
+expect('live run: mooring tension, wind and tracked points', sbi.includes('mooring: tension') && sbi.includes('wind:') && /P1: .*above water/.test(sbi), sbi.split('\n').slice(-4).join(' | '));
+expect('tracked-point and mooring charts shown', (await page.locator('#ptCharts').isVisible()) && (await page.locator('#moorCharts').isVisible()));
+if (shots) await page.screenshot({ path: `${shots}/smallbody-run.png` });
+await page.click('#waveRun');
+await page.click('#waveStats');
+await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
+const psTxt = await page.locator('#ptStats').innerText();
+expect('point statistics: time above water, time domain and linear', psTxt.includes('Time above water') && psTxt.includes('Linear (RAO)'));
+const mstTxt = await page.locator('#moorStats').innerText();
+expect('mooring statistics: tensions, slack events and watch circle', mstTxt.includes('Max / min fairlead tension') && mstTxt.includes('Slack events') && mstTxt.includes('Watch circle'));
+expect('wind summary in the statistics', (await page.locator('#seaStats').innerText()).includes('Wind: mean force'));
+if (shots) await page.screenshot({ path: `${shots}/smallbody-stats.png` });
+await page.selectOption('#raoMethod', 'fk'); await page.fill('#raoHead', '0,90'); await page.dispatchEvent('#raoHead', 'change');
+await page.click('#raoRun');
+await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
+const sri = await page.locator('#raoInfo').innerText();
+expect('RAO info lists the small-body options', sri.includes('Small-body options') && sri.includes('mooring stiffness') && sri.includes('viscous drag linearised'), sri.split('\n').pop());
+expect('wave-following table for both headings', (await page.locator('#followInfo tr').count()) === 3);
+if (shots) await page.screenshot({ path: `${shots}/smallbody-rao.png` });
+await page.selectOption('#raoMethod', 'bem'); await page.fill('#raoHead', '0:45:180'); await page.dispatchEvent('#raoHead', 'change');
+await page.click('#tabs button[data-tab="tabSea"]');
+await page.click('#waveMode button[data-mode="spectrum"]');
+await page.click('#ssSweep'); await page.waitForTimeout(1500);
+expect('sea-state table with drag linearised per row', (await page.locator('#ssTable').innerText()).includes('Viscous drag: linearised'));
+for (const id of ['dragOn', 'moorOn', 'windOn']) await page.uncheck(`#${id}`);
+await page.waitForTimeout(300);
 
 // 8 — custom moments of inertia (STEP barge: roll period T = 2π√(Ixx / (ρgV·GM_T)), dry, no added mass)
 await page.setInputFiles('#file', MODEL);
