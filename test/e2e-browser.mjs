@@ -149,7 +149,16 @@ await click('#ssSweep'); await page.waitForTimeout(800);
 const ssRows = await page.locator('#ssTable tr').count();
 expect('sea-state sweep table SS1–SS5', ssRows === 6, `${ssRows - 1} rows`);
 await click('#waveStats');
+await page.waitForFunction(() => !document.querySelector('#taskbox').classList.contains('hidden') && /Running statistics/.test(document.querySelector('#taskTitle').textContent), null, { timeout: 60000 });
+await page.waitForFunction(() => /\d+ %/.test(document.querySelector('#taskPct').textContent) && /elapsed/.test(document.querySelector('#taskTime').textContent), null, { timeout: 60000 });
+expect('statistics run: progress window over the view with title, % and elapsed time', true, `${await page.locator('#taskTitle').innerText()} · ${await page.locator('#taskPct').innerText()} · ${await page.locator('#taskTime').innerText()}`);
+expect('statistics run: Waves tab shows the percentage', /statistics \d+ %/.test(await page.locator('#stWaves').innerText()), await page.locator('#stWaves').innerText());
+await page.click('#taskHide');
+expect('Hide moves the progress to the status bar', !(await page.locator('#taskbox').isVisible()) && (await page.locator('#sbTask').isVisible()) && /^Running statistics.* · \d+ %$/.test(await page.locator('#sbTaskText').innerText()), await page.locator('#sbTaskText').innerText());
+await page.click('#sbTask');
+expect('clicking the status-bar progress brings the window back', await page.locator('#taskbox').isVisible());
 await page.waitForFunction(() => document.querySelector('#waveInfo').innerText.startsWith('Statistics complete'), null, { timeout: 900000 });
+expect('progress window closes when the run finishes', !(await page.locator('#taskbox').isVisible()) && !(await page.locator('#sbTask').isVisible()));
 const statRow = async (label) => page.evaluate((l) => {
   const r = [...document.querySelectorAll('#seaStats tr')].find((t) => t.cells[0]?.innerText.startsWith(l));
   return r ? [r.cells[1].innerText, r.cells[2].innerText] : null;
@@ -207,6 +216,11 @@ await click('#tabs [data-stage="waves"]'); await page.waitForTimeout(300);
 const head = await linPred();
 expect('global wave direction: yaw 90° turns beam seas into head seas (roll → 0, pitch appears)', beam.roll > 0.5 && head.roll < 0.05 && head.pitch > 0.1, `yaw 0: roll ±${beam.roll}°, pitch ±${beam.pitch}° · yaw 90: roll ±${head.roll}°, pitch ±${head.pitch}°`);
 await click('#resetOri'); await page.waitForTimeout(200);
+// Cancel in the progress window stops a statistics run
+await click('#waveStats');
+await page.waitForFunction(() => /Running statistics/.test(document.querySelector('#taskTitle').textContent) && !document.querySelector('#taskCancel').classList.contains('hidden'), null, { timeout: 60000 });
+await page.click('#taskCancel');
+expect('Cancel stops the statistics run and closes the progress window', (await page.locator('#waveInfo').innerText()).includes('cancelled') && !(await page.locator('#taskbox').isVisible()) && !(await page.locator('#waveStats').isDisabled()));
 await click('#waveMode button[data-mode="spectrum"]');
 expect('back to spectrum mode restores the sea-state picker', await page.locator('#ssSel').isVisible());
 
@@ -215,7 +229,12 @@ expect('RAO range shown in Hz → rad/s', (await page.locator('#raoRange').inner
 await click('#raoRun');
 await page.waitForFunction(() => !document.querySelector('#raoProgWrap').classList.contains('hidden'), null, { timeout: 10000 });
 expect('progress bar shown while computing', true);
+await page.waitForFunction(() => /Panel method: \d+\/\d+ frequencies/.test(document.querySelector('#taskDetail').textContent), null, { timeout: 60000 });
+expect('RAO solve: progress window shows the solver step, %, Cancel and the tab percentage',
+  (await page.locator('#taskTitle').innerText()).startsWith('Solving RAOs') && /\d+ %/.test(await page.locator('#taskPct').innerText()) && (await page.locator('#taskCancel').isVisible()) && /solving \d+ %/.test(await page.locator('#stRao').innerText()),
+  `${await page.locator('#taskDetail').innerText()} · ${await page.locator('#stRao').innerText()}`);
 await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
+expect('progress window closes after the RAO solve', !(await page.locator('#taskbox').isVisible()));
 const raoInfo = await page.locator('#raoInfo').innerText();
 expect('RAO sweep computed with the panel method by default', raoInfo.includes('5 headings') && raoInfo.startsWith('Panel method') && /[\d,]+ panels/.test(raoInfo), raoInfo.split('\n')[0]);
 expect('natural frequencies reported in Hz with radiation damping', /heave [\d.]+ Hz/.test(raoInfo) && raoInfo.includes('radiation damping'));
@@ -258,7 +277,10 @@ await select('#raoMethod', 'bem');
 // 7b — small-body options on a cylinder buoy (STEP, Ø0.7 × 1 m): tracked points, drag + heave plate, mooring, wind
 const BUOY = new URL('./models/buoy_cyl.step', import.meta.url).pathname;
 await page.setInputFiles('#file', BUOY);
+const loadBox = await page.evaluate(() => ({ title: document.querySelector('#taskTitle').textContent, shown: !document.querySelector('#taskbox').classList.contains('hidden'), scrim: !document.querySelector('#viewScrim').classList.contains('hidden') }));
+expect('model loading: progress window and dimmed view while the file loads', loadBox.shown && loadBox.scrim && loadBox.title === 'Loading buoy_cyl.step', JSON.stringify(loadBox));
 await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('buoy_cyl'), null, { timeout: 60000 });
+await page.waitForFunction(() => document.querySelector('#taskbox').classList.contains('hidden') && document.querySelector('#viewScrim').classList.contains('hidden'), null, { timeout: 10000 });
 for (const [id, v] of [['mass', (1000 * Math.PI * 0.35 ** 2 * 0.6).toFixed(3)], ['cgx', '0'], ['cgy', '0'], ['cgz', '0.3']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
 await page.waitForTimeout(300);
 expect('buoy: draft 0.6 m', near(num(await stat('Draft')), 0.6, 1e-3), await stat('Draft'));

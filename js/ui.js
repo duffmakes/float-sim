@@ -1,6 +1,8 @@
 // Workspace chrome: menu bar, stage tabs (Float · Waves · RAO, plus the drop / rise test mode), the tool panes
 // (mooring, wind, drag), the animation toolbar, the status bar and the drop-test orientation fields.
 // The simulation modules keep their own element IDs; this file only shows, hides and mirrors them.
+import { currentTask } from './progress.js';
+
 const $ = (id) => document.getElementById(id);
 
 // results tab → stage (the stage tabs are the results tabs, so the modules' showTab() also switches stage)
@@ -135,13 +137,15 @@ export function initUI(api) {
     st.textContent = vb ? vb.textContent.split(' · ')[0] : '';
     st.className = `s ${/good|ok/.test(v.className) ? 'ok' : /bad/.test(v.className) ? 'bad' : ''}`;
     const running = $('waveRun').textContent.includes('Stop');
-    if (running) wavesRan = true;
+    const task = currentTask(), pct = task && Number.isFinite(task.frac) ? ` ${Math.round(task.frac * 100)} %` : '…';
+    const statsRunning = !!task && task.title.startsWith('Running statistics');
+    if (running || statsRunning) wavesRan = true;
     const sw = $('stWaves');
-    sw.textContent = body.classList.contains('locked') ? 'paused' : running ? 'running' : wavesRan ? 'run' : 'not run';
-    sw.className = `s ${running ? 'run' : ''}`;
+    sw.textContent = body.classList.contains('locked') ? 'paused' : statsRunning ? `statistics${pct}` : running ? 'running' : wavesRan ? 'run' : 'not run';
+    sw.className = `s ${running || statsRunning ? 'run' : ''}`;
     const solving = !$('raoProgWrap').classList.contains('hidden');
     const sr = $('stRao');
-    sr.textContent = body.classList.contains('locked') ? 'paused' : solving ? 'solving…' : !$('raoCsv').disabled ? 'solved' : 'not run';
+    sr.textContent = body.classList.contains('locked') ? 'paused' : solving ? `solving ${$('raoProgText').textContent || '…'}` : !$('raoCsv').disabled ? 'solved' : 'not run';
     sr.className = `s ${solving ? 'run' : !$('raoCsv').disabled ? 'ok' : ''}`;
     const dv = $('dropVerdict').querySelector('b');
     $('stDrop').textContent = dv ? dv.textContent.replace(/^[✓✕]\s*/, '').toLowerCase() : '';
@@ -149,13 +153,13 @@ export function initUI(api) {
     $('modeText').textContent = placed
       ? 'The body is placed away from its float position, so Waves and RAO are paused until you exit.'
       : 'Set the start height and orientation, place the body, then release it.';
-    $('sbState').textContent = $('simRun').textContent.includes('Pause') ? 'Running free float'
-      : running ? 'Running waves'
-        : $('dzRun').textContent.includes('Pause') ? 'Running drop test'
-          : solving ? 'Solving RAOs'
-            : $('waveInfo').textContent.startsWith('Running statistics') ? 'Running statistics' : 'Ready';
+    $('sbState').textContent = task ? 'Busy'
+      : $('simRun').textContent.includes('Pause') ? 'Running free float'
+        : running ? 'Running waves'
+          : $('dzRun').textContent.includes('Pause') ? 'Running drop test' : 'Ready';
   }
   setInterval(refreshStatus, 400);
+  document.addEventListener('floatsim:task', () => refreshStatus());
 
   // ------------------------------------------------------------ hooks for app.js
   applyStage('float');

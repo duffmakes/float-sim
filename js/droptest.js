@@ -132,7 +132,7 @@ export function initDropTest(api) {
       if (api.ensureSimBem) {
         D.starting = true;
         try { await api.ensureSimBem((t) => { $('dzInfo').innerHTML = t; }); }
-        catch (err) { $('dzInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+        catch (err) { $('dzInfo').innerHTML = err && err.cancelled ? '<span class="warn">Panel method skipped: using the added-mass and damping estimates.</span>' : `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
         finally { D.starting = false; }
       }
       D.sim = makeSim(); D.done = false;
