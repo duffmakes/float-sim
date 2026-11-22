@@ -71,6 +71,39 @@ Section 9 releases the body from a chosen CoG height, above or below the still-w
 
 The **Drop test** tab plots CoG height, vertical speed and attitude, and reports water-entry speed, deepest plunge, surface breach, overshoot and settle time. While the body is placed, the sea-state, statistics, sea-state table, RAO and calm-simulate tools are locked until **Reset position**. No slamming pressures, splash or air-cavity effects are modelled.
 
+## Small-body options (sections 10–13)
+
+For buoys, gliders and other small bodies. Mooring, drag and wind are off by default, and tracked points are empty until you add one. When on, each option is used by the wave runs, the statistics, the RAOs and the sea-state table.
+
+- **Tracked points (section 10):** points on the body, such as an antenna, GPS, solar panel or IMU. Click **Pick on model** and then the model, or type model coordinates. An optional clearance counts the point as underwater until it stands that far clear of the surface.
+  - Wave runs show each point's height above the local water surface live.
+  - **Run statistics** reports the time above water, how often it goes under (per hour), the longest underwater and above-water stretches, and accelerations in the body axes (RMS and max, without gravity).
+  - A linear column comes from the RAOs. The relative motion is Gaussian, so the time above water is Φ(h₀/σ), and Rice's crossing rate gives how often the point goes under.
+- **Wave-following quality (RAO tab):** for wave-measuring buoys. For each heading it gives the frequency up to which the body follows the waves within a tolerance (5 % by default), with the matching period and wavelength:
+  - **heave**, for displacement buoys: |ξ₃ − 1|;
+  - **tilt**, for pitch-roll buoys: the error against the surface slope, so the z axis stays normal to the surface;
+  - **horizontal**, for GPS buoys: the error against the orbit of a surface particle.
+
+  The errors are complex, so a phase lag counts.
+- **Viscous drag & heave plates (section 11):**
+  - **Hull drag:** quadratic drag ½ρC<sub>d</sub>A|u|u along each axis of the floating body, on the body's speed relative to the wave orbital flow. A is the submerged area projected along that axis. Rotations get drag from the same coefficients on the wetted panels; a body of revolution spinning about its axis gets none. Hoerner presets are provided.
+  - **Heave plates:** thin discs with added mass ρD³/3, rotational added inertia ρD⁵/90, an inertia force from the wave acceleration and their own drag, all normal to the plate. When the body tilts, the plate's force tilts with it; its slow sideways part is filtered out with the Froude–Krylov mean force (see Wave drift), because without the matching second-order terms it is not a reliable drift force. On a rolling, moored buoy it otherwise reached ten times the actual wave-drift force.
+  - **Time domain vs RAOs:** wave runs use the full quadratic drag. The RAOs and the sea-state table use the equivalent linear damping for the sea state in section 7: stochastic linearisation ½ρC<sub>d</sub>A√(8/π)σ<sub>u</sub> for a spectrum (Borgman 1967), or 8/(3π)·U for a regular wave. The relative velocity depends on the motion, so this is iterated. The info box shows the resulting damping ratio of each mode.
+- **Mooring (section 12):** 1–4 lines sharing one fairlead, anchored on the seabed and spread evenly in direction. Presets are provided for chain, wire and synthetic ropes. Two line models:
+  - **Quasi-static:** an elastic catenary with seabed contact (Jonkman 2007; no seabed friction), solved at every step.
+  - **Dynamic:** a lumped-mass line in the style of MoorDyn (Hall & Goupee 2015). Segments take tension only, with strain-rate damping, Morison drag in the wave flow, normal added mass and a seabed spring. Explicit sub-steps resolve the axial wave speed, so a slack line going taut shows its snap load.
+
+  The lines' pull is included in the floating draft. The body starts where the lines (and the steady wind) balance; a single line pulls it toward its anchor until slack. The RAOs use the catenary's 6×6 linear stiffness at that position, including the geometric stiffness of the tension at the fairlead lever arm.
+
+  Statistics report the max and min fairlead tension, slack events (below 10 % of the static tension, the DNV-RP-H103 slack criterion), anchor tension and uplift, and the watch circle, with a tension chart and a top view.
+- **Wind (section 13):**
+  - **Wind field:** the mean wind U₁₀ follows the power law U(z) = U₁₀(z/10)^0.12 over open sea. Gusts come from the Frøya (NPD) spectrum of DNV-RP-C205 §2.3, taken as coherent over the body.
+  - **Loads:** every panel above the instantaneous water surface takes ½ρ<sub>air</sub>C<sub>d</sub>A⊥|u|u, with u the wind relative to the panel. That gives the steady heel, the wind drift and the gust response, and includes aerodynamic damping.
+  - **Info box:** the steady force, the heeling moment, the linear static heel, the gust σ, and a free-drift estimate.
+  - **Wave drift off:** the mean push is held on station like the wave drift. With wave drift on, or moored, the body moves.
+
+  Wind is not in the RAOs: it is a mean load plus slow gusts.
+
 ## Method
 
 The body is triangulated and each triangle is clipped to the part below the waterplane. Tetrahedra are taken from a point *on* the waterplane, so the waterplane "cap" adds nothing and the clipped surface gives the exact submerged volume and B. The cut edges form the waterplane boundary, and Green's theorem on them gives area, centroid and second moments (I<sub>xx</sub>, I<sub>yy</sub>, I<sub>xy</sub>). The waterline is solved by safeguarded Newton (dV/dz = waterplane area). `test/verify_physics.py` is a direct Python port of the core routine, checked against closed-form results (cube, box barge upright and heeled, half-submerged cylinder).
@@ -85,6 +118,12 @@ The body is triangulated and each triangle is clipped to the part below the wate
   - The Froude–Krylov option is reliable only when the body is small relative to the wavelength (D/λ ≤ 0.2). The app flags it when this isn't the case.
   - A free-floating body drifts downwave. With no mooring or viscous drag, the drift speed is indicative only.
 - STANAG values are open-ocean North Atlantic typicals.
+- **Small-body options:**
+  - Tracked points see the incident wave only, without the body's own diffracted or radiated waves.
+  - The drag coefficients and the heave-plate C<sub>d</sub> are inputs. Oscillating plates often show higher C<sub>d</sub> at small amplitudes than in steady flow, so use test data where you have it.
+  - Heave-plate added mass is the infinite-fluid disc value. Its heave–roll coupling is neglected for plates off the vertical through G.
+  - The mooring has no seabed friction. The waves acting on the lines are deep-water waves, and the water depth only places the anchors. The 6×6 linear stiffness is for small motions about the mean position.
+  - Wind gusts are taken as coherent over the body. The power law is not used below 0.1 m above the water.
 - The mesh should be closed (watertight). The model panel reports open edges. Overlapping bodies in an assembly double-count volume.
 - GZ curves are at fixed trim (the body isn't allowed to re-trim as it heels).
 - Coordinates: Z is up. Roll is about X, pitch about Y, yaw about Z, applied in the order X → Y → Z (extrinsic).
@@ -97,10 +136,10 @@ The body is triangulated and each triangle is clipped to the part below the wate
 |---|---|---|
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
-| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test | 264/264 |
-| http://localhost:8765/test/validate.html | Same checks, in the browser | 264/264 in headless Chromium, all three qualities |
+| `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test; at fine also the small-body checks (mooring, drag, wind, tracked points) | 322/322 fine, 264/264 normal and coarse |
+| http://localhost:8765/test/validate.html | Same checks, in the browser | 322/322 (fine) and 264/264 (normal, coarse) in headless Chromium |
 | `node test/validate-bem.mjs [quick]` | Panel method: special functions, meshing of 10 STEP bodies, Lamb's slender spheroid, A, B and X against WAMIT (2 bodies) and Capytaine (6 buoys), GMRES vs LU, RAO peaks, Kramer sphere decay through the drop test; then meshed as the app does: moonpool lids, Hulme's exact hemisphere (ka 0–10), the OC3-Hywind spar (WAMIT) and the ITI barge (Capytaine) ([docs/bem-validation.md](docs/bem-validation.md)) | 35/35 |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs, custom inertia, drop and rise tests with tool locking and panel-method coefficients, console errors | 71/71 |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs; small-body options on the cylinder buoy (point picked by clicking the model, drag and heave plate, mooring, wind, live run, statistics, RAOs with the wave-following table, sea-state table with linearised drag); custom inertia, drop and rise tests with tool locking and panel-method coefficients, console errors | 85/85 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):
@@ -130,6 +169,23 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | Panel method: OC3-Hywind spar (draft 120 m), A, B, X for ω 0.35–2 rad/s at Standard; at Very fine | WAMIT (OpenFAST r-test), Kh ≥ π | ≤ 4.0 %; ≤ 1.1 % |
 | Panel method: ITI barge hull 40 × 40 m, draft 4 m, ω 0.3–2 rad/s, incl. high-frequency heave and pitch damping | Capytaine 3.0 (direct, 1 m panels) | ≤ 1.0 % translational, ≤ 2.5 % rotational |
 | Floating sphere heave decay (D 0.3 m): A33, B33, damped period, decay rate | Kramer et al. 2021 (measured; WAMIT LPF0) | ≤ 2.5 % |
+
+**Small-body checks** (`test/validate-smallbody.js`, 58 checks, run with the fine quality by `validate-node.mjs` and `validate.html`; exact cylinder geometry generated in the test):
+
+| Check | Reference | Result |
+|---|---|---|
+| Touchdown catenary: T_H, V and horizontal stiffness at a = 20, 150, 400 m | Faltinsen (1990) eq. 8.12, 8.17 | ≤ 1e-6 |
+| Fully suspended catenary (H, anchor uplift); elastic tether; slack limit H = 0 | parametric catenary; Hooke | ≤ 1e-5 |
+| Lumped-mass line at rest (32 segments) vs catenary: 10 mm chain touchdown, taut nylon | Jonkman (2007) catenary | ≤ 0.03 % |
+| 6×6 mooring stiffness about G (surge, heave, roll, pitch columns, with geometric stiffness) | finite differences of the line loads | ≤ 1e-5 |
+| Spread mooring under 20 N: equilibrium residual; offset vs F/K₁₁ | Newton equilibrium; linear stiffness | 1e-6 N; 1 % |
+| Taut tether heave period, quasi-static and dynamic line; 3-line chain mooring surge period (16.7 s) | 2π√((m + A)/(C + K)) | ≤ 0.01 % |
+| Tow force; free heave decay with quadratic drag, Δ(1/X) per cycle = (8/3)·½ρC_dA/(m + A₃₃) | Morison drag; energy balance | exact; 0.03 % |
+| Heave plate at heave resonance: JONSWAP Hs 0.5 m heave σ; regular A = 2 cm amplitude | stochastic (Borgman 1967) and Lorentz linearisation | 9 %; 0.7 % |
+| Frøya spectrum variance (closed form vs numerical); synthesised gust σ; σ_u/U ≈ 10 % at 10 m | DNV-RP-C205 §2.3 | 0.01 %; 3.5 % |
+| Windage on a box face-on (force and moment); steady heel at 6 m/s; free wind-drift speed | ½ρC_dAU²; M/C₄₄; drag balance | exact; 2 %; 0.4 % |
+| Tracked points: mast-top acceleration in a regular wave; time above water (regular, and Hs 0.15 m irregular); σ of height above water; times under per hour | RAO kinematics; acos(−h₀/R)/π; Φ(h₀/σ); Rice (1944) | 0.6 %; 0.7 / 1.2 percentage points; 1 %; 9 % |
+| Ideal wave follower in long waves (ω 0.05 rad/s, β 0° and 45°): heave, tilt, horizontal error | ξ₃ = 1, θ = slope, surface-particle orbit | 0.55 %, 0.5 %, 0.02 % |
 
 ### RAO trade study
 

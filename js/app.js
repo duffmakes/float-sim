@@ -9,12 +9,14 @@ import { FloatSim } from './sim.js';
 import { readCad, soupFromIndexed, concat } from './loader.js';
 import { initSeakeeping } from './seakeeping.js';
 import { initDropTest } from './droptest.js';
+import { initExtras } from './extras.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------------ state
 let sea = null;   // seakeeping module, initialised after the scene is built
 let drop = null;  // drop / rise test module
+let extras = null;  // small-body options (sections 10–13)
 const S = {
   model: null,        // { name, raw: Float64Array (file units), tris (m), geo, mp, diag, open }
   rho: 1000,
@@ -45,6 +47,8 @@ const body = new THREE.Group();        // origin = CoG, rotation = attitude
 scene.add(body);
 const bodyMat = new THREE.MeshStandardMaterial({ color: 0xc9a46a, metalness: 0.1, roughness: 0.6, side: THREE.DoubleSide });
 let bodyMesh = null, bodyEdges = null;
+const bodyLocal = new THREE.Group();   // model coordinates inside the body (offset by −G like the mesh): markers
+body.add(bodyLocal);
 
 const waterMat = new THREE.MeshPhysicalMaterial({
   color: 0x1a6fb5, transparent: true, opacity: 0.55, roughness: 0.15, metalness: 0,
@@ -153,6 +157,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
     $('mass').value = +(S.model.mp.volume * S.rho * 0.4).toPrecision(4);
   }
   frameCamera();
+  if (extras) extras.onNewModel();
   update();
   if (drop) drop.onNewModel();
 }
@@ -255,6 +260,7 @@ $('units').addEventListener('change', () => {
   if (S.model.rawScale != null) {
     const conv = (id) => { const v = parseFloat($(id).value); if (Number.isFinite(v)) $(id).value = +(v * prev / now).toPrecision(6); };
     ['cgx', 'cgy', 'cgz', 'dzH'].forEach(conv);
+    if (extras) extras.onUnits(prev, now);
     if ($('tMode').value !== 'frac') conv('tVal');
     update();
   } else {
@@ -323,6 +329,7 @@ function update() {
   if (drop) drop.onModelChange();
   renderInertiaInfo();
   document.querySelectorAll('.unitLabel').forEach((e) => { e.textContent = unitName(); });
+  if (extras) extras.drawMarkers();
 }
 
 // world = rel + (0,0,-zw)  (water surface at z = 0)
@@ -336,6 +343,7 @@ function setBodyPose(R, pos) {
   const G = getCogM();
   bodyMesh.position.set(-G[0], -G[1], -G[2]);
   bodyEdges.position.copy(bodyMesh.position);
+  bodyLocal.position.copy(bodyMesh.position);
   const m4 = new THREE.Matrix4().set(R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, 0, 0, 0, 1);
   body.quaternion.setFromRotationMatrix(m4);
   body.position.set(...pos);
@@ -735,10 +743,33 @@ function frame(t) {
 }
 resize();
 $('tMode').dispatchEvent(new Event('change'));
+// ------------------------------------------------------------------ picking a point on the model (one click)
+// cb(pointInModelCoordinates_m | null). A drag (orbiting) is not a click; Esc cancels.
+const raycaster = new THREE.Raycaster();
+let pickCb = null, downAt = null;
+function pick(cb) { pickCb = cb; canvas.style.cursor = 'crosshair'; }
+function endPick(p) { const cb = pickCb; pickCb = null; canvas.style.cursor = ''; if (cb) cb(p); }
+canvas.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!pickCb || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4 || !bodyMesh) return;
+  const r = canvas.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = raycaster.intersectObject(bodyMesh, false)[0];
+  if (!hit) return;   // keep waiting for a click on the body
+  endPick(bodyMesh.worldToLocal(hit.point.clone()).toArray());
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && pickCb) endPick(null); });
+
 // ------------------------------------------------------------------ seakeeping (waves, RAOs)
 const staticOverlays = [mB, mMt, mMl, arrW, arrB, vertLine, gLine, wlLines];
+extras = initExtras({
+  THREE, scene, bodyLocal, unitScale, unitName, pick,
+  getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
+  setBanner: (t) => (t ? showBanner(t, 'Cancel', () => endPick(null)) : hideBanner()),
+  onChange: () => { if (sea) sea.onExtrasChange(); },
+});
 sea = initSeakeeping({
-  THREE, scene, renderer, water, waterDepth, mG,
+  THREE, scene, renderer, water, waterDepth, mG, extras,
   getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
   getEuler, setBodyPose, getInertiaBody: () => inertiaG(), inertiaKey: () => JSON.stringify(inertiaG()),
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
