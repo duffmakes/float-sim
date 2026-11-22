@@ -10,517 +10,604 @@
 </script>
 <script src="vendor/occt-import-js.js"></script>
 </head>
-<body>
-<aside id="panel">
-  <header>
-    <h1>Float Sim</h1>
-    <p class="sub">Hydrostatics &amp; stability for CAD bodies</p>
-  </header>
+<body data-stage="float">
+<div id="app">
 
-  <section>
-    <h2>1 · Model</h2>
-    <label class="file">
-      <input id="file" type="file" accept=".step,.stp,.iges,.igs,.brep,.stl">
-      <span>Load STEP / IGES / STL…</span>
-    </label>
-    <div class="row">
-      <label>Units
-        <select id="units">
-          <option value="0.001" selected>mm</option>
-          <option value="0.01">cm</option>
-          <option value="1">m</option>
-          <option value="0.0254">in</option>
-          <option value="0.3048">ft</option>
-        </select>
-      </label>
-      <label>Mesh quality
-        <select id="quality">
-          <option value="coarse">Coarse</option>
-          <option value="normal">Normal</option>
-          <option value="fine" selected>Fine</option>
-        </select>
-      </label>
+<!-- ======================================================== menu bar -->
+<header id="menubar">
+  <span class="appname">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 3.6h9M9 3.6V1.9M15 3.6V1.9" stroke="#3B4250" stroke-width="1.3" stroke-linecap="round" fill="none"/><circle cx="12" cy="5.4" r="1.15" fill="#E0A100"/><path d="M9.4 15.6L11 6.8M14.6 15.6L13 6.8M10 12.6h4M10.6 9.5h2.8" stroke="#3B4250" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M3.6 15.6h16.8l-2.1 3.9H5.7z" fill="#E8A33D" stroke="#8F5E14" stroke-width=".8" stroke-linejoin="round"/><path d="M1.5 20.4c1.7 0 1.7-1 3.4-1s1.7 1 3.4 1 1.7-1 3.4-1 1.7 1 3.4 1 1.7-1 3.4-1 1.7 1 3.4 1" stroke="#1F6FB2" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>
+    Float Sim
+  </span>
+  <div class="menuwrap">
+    <button class="mm" aria-haspopup="true" aria-expanded="false">File</button>
+    <div class="menu hidden" role="menu">
+      <button class="mi" role="menuitem" data-act="upload"><span class="ic">📂</span><span><b>Upload a model…</b><small>STEP · IGES · BREP · STL</small></span></button>
+      <div class="msep"></div>
+      <div class="mg">Demo models</div>
+      <button class="mi" role="menuitem" data-act="demo" data-demo="hull"><span class="ic"></span><span><b>Barge hull</b><small>4 × 1.6 × 0.8 m</small></span></button>
+      <button class="mi" role="menuitem" data-act="demo" data-demo="box"><span class="ic"></span><span><b>1 m cube</b></span></button>
+      <button class="mi" role="menuitem" data-act="demo" data-demo="log"><span class="ic"></span><span><b>Log (cylinder)</b><small>Ø 0.4 × 3 m</small></span></button>
     </div>
-    <p id="unitsHint" class="hint"></p>
-    <div class="row">
-      <label>Demo
-        <select id="demo">
-          <option value="">—</option>
-          <option value="hull">Barge hull</option>
-          <option value="box">1 m cube</option>
-          <option value="log">Log (cylinder)</option>
-        </select>
-      </label>
+  </div>
+  <div class="menuwrap">
+    <button class="mm" aria-haspopup="true" aria-expanded="false">View</button>
+    <div class="menu hidden" role="menu">
+      <button class="mi" role="menuitem" data-act="view" data-view="fit"><span class="ic"></span><span><b>Zoom to fit</b></span></button>
+      <button class="mi" role="menuitem" data-act="view" data-view="iso"><span class="ic"></span><span><b>Isometric</b></span></button>
+      <button class="mi" role="menuitem" data-act="view" data-view="front"><span class="ic"></span><span><b>Front</b><small>looking along +Y</small></span></button>
+      <button class="mi" role="menuitem" data-act="view" data-view="right"><span class="ic"></span><span><b>Right</b><small>looking along −X</small></span></button>
+      <button class="mi" role="menuitem" data-act="view" data-view="top"><span class="ic"></span><span><b>Top</b><small>looking down −Z</small></span></button>
     </div>
-    <div id="modelInfo" class="info">No model loaded.</div>
-  </section>
+  </div>
+  <div class="menuwrap">
+    <button class="mm" aria-haspopup="true" aria-expanded="false" id="toolsBtn">Tools</button>
+    <div class="menu hidden wide" role="menu">
+      <div class="mg">Add to the simulation</div>
+      <button class="mi" role="menuitem" data-act="tool" data-tool="moor">
+        <span class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="5" r="2"/><path d="M12 7v14M5 14a7 7 0 0 0 14 0M8.5 10.5h7"/></svg></span>
+        <span><b>Mooring…</b><small>Lines from the body to seabed anchors</small></span><span class="st" data-state="moorOn">Off</span>
+      </button>
+      <button class="mi" role="menuitem" data-act="tool" data-tool="wind">
+        <span class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7"/></svg></span>
+        <span><b>Wind…</b><small>Steady wind and gusts on the part above water</small></span><span class="st" data-state="windOn">Off</span>
+      </button>
+      <button class="mi" role="menuitem" data-act="tool" data-tool="drag">
+        <span class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><ellipse cx="12" cy="16" rx="8" ry="2.5"/><path d="M12 3v10.5M8 9l4 4 4-4"/></svg></span>
+        <span><b>Viscous drag &amp; heave plates…</b><small>Quadratic hull drag, add heave plates</small></span><span class="st" data-state="dragOn">Off</span>
+      </button>
+      <div class="msep"></div>
+      <div class="mg">Separate test</div>
+      <button class="mi" role="menuitem" data-act="drop">
+        <span class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3v10M8 9l4 4 4-4M3 19c2 0 2-1.5 4.5-1.5S10 19 12 19s2-1.5 4.5-1.5S19 19 21 19"/></svg></span>
+        <span><b>Drop / rise test…</b><small>Release from a height or from below and watch it settle. Pauses Waves and RAO while the body is placed.</small></span><span class="st"></span>
+      </button>
+      <div class="msep"></div>
+      <div class="mnote">Add-ons stay on across Waves and RAO until turned off. Each stage lists the ones in use.</div>
+    </div>
+  </div>
+  <div class="menuwrap">
+    <button class="mm" aria-haspopup="true" aria-expanded="false">Help</button>
+    <div class="menu hidden" role="menu">
+      <button class="mi" role="menuitem" data-act="help"><span class="ic"></span><span><b>Method notes…</b><small>What the models include and leave out</small></span></button>
+    </div>
+  </div>
+</header>
 
-  <section>
-    <h2>2 · Mass &amp; centre of gravity</h2>
-    <div class="row">
-      <label>Mass (kg) <input id="mass" type="number" step="any" min="0" value="1000"></label>
-    </div>
-    <div class="row three">
-      <label>CoG X <input id="cgx" type="number" step="any" value="0"></label>
-      <label>CoG Y <input id="cgy" type="number" step="any" value="0"></label>
-      <label>CoG Z <input id="cgz" type="number" step="any" value="0"></label>
-    </div>
-    <p class="hint">CoG in the model's own coordinates, in the units chosen above.</p>
-    <button id="useCentroid" class="ghost">Use geometric centroid (uniform density)</button>
-    <div id="massInfo" class="info"></div>
-    <div class="row">
-      <label>Moments of inertia
-        <select id="inMode">
-          <option value="auto" selected>Computed from geometry (uniform density)</option>
-          <option value="custom">Custom (enter values)</option>
-        </select>
-      </label>
-    </div>
-    <div id="inCustom" class="hidden">
-      <div class="row three">
-        <label><span>I<sub>xx</sub></span> <input id="inXX" type="number" step="any"></label>
-        <label><span>I<sub>yy</sub></span> <input id="inYY" type="number" step="any"></label>
-        <label><span>I<sub>zz</sub></span> <input id="inZZ" type="number" step="any"></label>
-      </div>
-      <div class="row three">
-        <label><span>I<sub>xy</sub></span> <input id="inXY" type="number" step="any" value="0"></label>
-        <label><span>I<sub>xz</sub></span> <input id="inXZ" type="number" step="any" value="0"></label>
-        <label><span>I<sub>yz</sub></span> <input id="inYZ" type="number" step="any" value="0"></label>
-      </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="inProdSign" type="checkbox"> <span>Products entered as P<sub>xy</sub> = +∫xy dm (negate into the tensor)</span></label>
-      <p class="hint">kg·m², about the CoG, in the CAD model's axes. Inertia-tensor convention: I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm; tick the box for those.</p>
-    </div>
-    <div id="inInfo" class="info"></div>
-  </section>
+<!-- ======================================================== stage tabs (also the results tabs) -->
+<nav id="tabs" class="stagetabs" aria-label="Workflow">
+  <button class="tab on" data-tab="tabHydro" data-stage="float"><span class="n">1</span><b>Float</b><span class="s" id="stFloat"></span></button>
+  <button class="tab" data-tab="tabSea" data-stage="waves"><span class="n">2</span><b>Waves</b><span class="s" id="stWaves">not run</span></button>
+  <button class="tab" data-tab="tabRao" data-stage="rao"><span class="n">3</span><b>RAO</b><span class="s" id="stRao">not run</span></button>
+  <button class="tab mode" data-tab="tabDrop" data-stage="drop" id="dropTab"><span class="n">↓</span><b>Drop / rise test</b><span class="s" id="stDrop"></span></button>
+</nav>
+<div id="modebar" role="status">
+  <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5L22 20H2z" fill="#F0B400" stroke="#8A6500" stroke-width="1.2" stroke-linejoin="round"/><path d="M12 9v5M12 16.6v.2" stroke="#3D3000" stroke-width="2.2" stroke-linecap="round"/></svg>
+  <span><b>Drop / rise test mode.</b> <span id="modeText">Place the body, then release it.</span></span>
+  <button class="b" id="exitDrop">Exit drop test</button>
+</div>
 
-  <section>
-    <h2>3 · Water</h2>
-    <div class="seg" id="water">
-      <button data-rho="1000" class="on">Fresh 1000</button>
-      <button data-rho="1025">Salt 1025</button>
-      <button data-rho="custom">Custom</button>
-    </div>
-    <label id="rhoWrap" class="hidden">Density (kg/m³) <input id="rho" type="number" step="any" value="1000"></label>
-  </section>
+<div id="work">
+<!-- ======================================================== left: setup panes -->
+<aside id="panel" class="pane" aria-label="Setup">
 
-  <section>
-    <h2>4 · Initial orientation</h2>
-    <div class="slider"><span>Roll (X)</span><input id="roll" type="range" min="-180" max="180" step="0.5" value="0"><input id="rollN" type="number" step="any" value="0"></div>
-    <div class="slider"><span>Pitch (Y)</span><input id="pitch" type="range" min="-90" max="90" step="0.5" value="0"><input id="pitchN" type="number" step="any" value="0"></div>
-    <div class="slider"><span>Yaw (Z)</span><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0"><input id="yawN" type="number" step="any" value="0"></div>
-    <div class="row">
-      <button id="resetOri" class="ghost">Reset</button>
-      <button id="quarterX" class="ghost">+90° X</button>
-      <button id="quarterY" class="ghost">+90° Y</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>5 · Free-float simulation</h2>
-    <p class="hint">Releases the body from the orientation above and lets weight &amp; buoyancy settle it to a stable floating attitude.</p>
-    <div class="row">
-      <button id="simRun" class="primary">▶ Simulate</button>
-      <button id="simSettle">Settle (fast)</button>
-      <button id="simReset" class="ghost">Reset</button>
-    </div>
-    <div class="slider"><span>Damping ζ</span><input id="zeta" type="range" min="0.02" max="1" step="0.01" value="0.25"><output id="zetaV">0.25</output></div>
-    <div class="slider"><span>Speed</span><input id="speed" type="range" min="0.1" max="20" step="0.1" value="1"><output id="speedV">1×</output></div>
-    <div id="simInfo" class="info"></div>
-    <button id="simApply" class="ghost" disabled>Use simulated attitude as orientation</button>
-  </section>
-
-  <section>
-    <h2>6 · Target float plane → required mass</h2>
-    <div class="row">
-      <label>Specify by
-        <select id="tMode">
-          <option value="draft">Draft (depth of lowest point)</option>
-          <option value="modelZ">Waterline at model Z</option>
-          <option value="frac">Submerged volume %</option>
-        </select>
-      </label>
-      <label><span id="tLabel">Draft</span> <input id="tVal" type="number" step="any" value="0"></label>
-    </div>
-    <div class="row">
-      <button id="tCalc" class="primary">Compute</button>
-      <button id="tPreview">Preview plane</button>
-      <button id="tApply" class="ghost" disabled>Apply mass</button>
-    </div>
-    <div id="tOut" class="info"></div>
-  </section>
-  <section>
-    <h2>7 · Sea state (waves)</h2>
-    <div class="seg" id="waveMode">
-      <button data-mode="spectrum" class="on">Spectrum (irregular)</button>
-      <button data-mode="regular">Regular waves</button>
-    </div>
-    <div id="regInputs" class="hidden">
-      <div class="row">
-        <label>Wave height (m) <input id="rgH" type="number" step="any" min="0" value="1"></label>
-        <label>Period T (s) <input id="rgT" type="number" step="any" min="0" value="6"></label>
+  <!-- ---------------- FLOAT -->
+  <section class="stagepane" data-pane="float">
+    <div class="ph">Float — Setup</div>
+    <div class="pb">
+      <div class="pg">
+        <details open>
+          <summary><span class="bx"></span>Geometry</summary>
+          <div class="bb top">
+            <label class="b def file"><input id="file" type="file" accept=".step,.stp,.iges,.igs,.brep,.stl"><span class="folder" aria-hidden="true"></span>Upload a model…</label>
+            <select id="demo" class="b" aria-label="Load a demo model">
+              <option value="">Demo…</option>
+              <option value="hull">Barge hull</option>
+              <option value="box">1 m cube</option>
+              <option value="log">Log (cylinder)</option>
+            </select>
+            <span class="u right">STEP · IGES · BREP · STL</span>
+          </div>
+          <label class="r"><span class="k">Mesh quality</span><span class="v"><select id="quality"><option value="coarse">Coarse</option><option value="normal">Normal</option><option value="fine" selected>Fine</option></select></span></label>
+          <label class="r hidden" id="stlUnitsRow"><span class="k">STL drawn in</span><span class="v"><select id="stlUnits"><option value="0.001" selected>millimetres</option><option value="0.01">centimetres</option><option value="1">metres</option></select></span></label>
+          <p id="unitsHint" class="note"></p>
+          <div id="modelInfo" class="info grid">No model loaded.</div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Mass &amp; centre of gravity</summary>
+          <label class="r"><span class="k">Mass</span><span class="v"><input id="mass" type="number" step="any" min="0" value="1000"><span class="u">kg</span></span></label>
+          <label class="r"><span class="k">CoG x</span><span class="v"><input id="cgx" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">CoG y</span><span class="v"><input id="cgy" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">CoG z</span><span class="v"><input id="cgz" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <div class="bb"><button id="useCentroid" class="b">Use geometric centroid</button><span class="u">model axes</span></div>
+          <div id="massInfo" class="info"></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Moments of inertia<span class="sv">about G</span></summary>
+          <label class="r"><span class="k">Source</span><span class="v"><select id="inMode"><option value="auto" selected>From geometry (uniform)</option><option value="custom">Enter values</option></select></span></label>
+          <div id="inCustom" class="hidden">
+            <label class="r"><span class="k">I<sub>xx</sub></span><span class="v"><input id="inXX" type="number" step="any"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">I<sub>yy</sub></span><span class="v"><input id="inYY" type="number" step="any"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">I<sub>zz</sub></span><span class="v"><input id="inZZ" type="number" step="any"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">I<sub>xy</sub></span><span class="v"><input id="inXY" type="number" step="any" value="0"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">I<sub>xz</sub></span><span class="v"><input id="inXZ" type="number" step="any" value="0"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">I<sub>yz</sub></span><span class="v"><input id="inYZ" type="number" step="any" value="0"><span class="u">kg·m²</span></span></label>
+            <label class="r"><span class="k">Products as +∫xy dm</span><span class="v"><input id="inProdSign" type="checkbox"><span class="u">negate into the tensor</span></span></label>
+            <p class="note">About the CoG in the model's axes. Tensor convention I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm: tick the box for those.</p>
+          </div>
+          <div id="inInfo" class="info"></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Water</summary>
+          <div class="r wide"><span class="k">Density</span><span class="v">
+            <span class="sg" id="water"><button data-rho="1000" class="on">Fresh 1000</button><button data-rho="1025">Salt 1025</button><button data-rho="custom">Custom</button></span>
+          </span></div>
+          <label id="rhoWrap" class="r hidden"><span class="k">Custom density</span><span class="v"><input id="rho" type="number" step="any" value="1000"><span class="u">kg/m³</span></span></label>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Free float</summary>
+          <label class="r"><span class="k">Damping ζ</span><span class="v"><input id="zeta" type="range" min="0.02" max="1" step="0.01" value="0.25"><output id="zetaV">0.25</output></span></label>
+          <div class="bb"><button id="simApply" class="b" disabled>Use resting attitude as start attitude</button></div>
+          <p class="note">Play in the toolbar under the view releases the body from the start attitude and lets weight and buoyancy settle it.</p>
+          <div id="simInfo" class="info"></div>
+        </details>
+        <details>
+          <summary><span class="bx"></span>Start attitude<span class="sv" id="attSummary">0°, 0°, 0°</span></summary>
+          <label class="r"><span class="k">Roll about x</span><span class="v"><input id="rollN" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <div class="r slim"><span class="k"></span><span class="v"><input id="roll" type="range" min="-180" max="180" step="0.5" value="0" aria-label="Roll slider"></span></div>
+          <label class="r"><span class="k">Pitch about y</span><span class="v"><input id="pitchN" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <div class="r slim"><span class="k"></span><span class="v"><input id="pitch" type="range" min="-90" max="90" step="0.5" value="0" aria-label="Pitch slider"></span></div>
+          <label class="r"><span class="k">Yaw about z</span><span class="v"><input id="yawN" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <div class="r slim"><span class="k"></span><span class="v"><input id="yaw" type="range" min="-180" max="180" step="0.5" value="0" aria-label="Yaw slider"></span></div>
+          <div class="bb"><button id="quarterX" class="b">+90° x</button><button id="quarterY" class="b">+90° y</button><button id="resetOri" class="b">Reset</button></div>
+        </details>
+        <details>
+          <summary><span class="bx"></span>Mass for a target float plane</summary>
+          <label class="r"><span class="k">Specify by</span><span class="v"><select id="tMode"><option value="draft">Draft (depth of lowest point)</option><option value="modelZ">Waterline at model z</option><option value="frac">Submerged volume %</option></select></span></label>
+          <label class="r"><span class="k" id="tLabel">Draft</span><span class="v"><input id="tVal" type="number" step="any" value="0"></span></label>
+          <div class="bb"><button id="tCalc" class="b def">Compute</button><button id="tPreview" class="b">Preview plane</button><button id="tApply" class="b" disabled>Apply mass</button></div>
+          <div id="tOut" class="info grid"></div>
+        </details>
       </div>
-      <label>Height means
-        <select id="rgKind">
-          <option value="H">crest-to-trough height H (amplitude H/2)</option>
-          <option value="Hs">significant height Hs (same energy, amplitude Hs/2√2)</option>
-        </select>
-      </label>
-      <div id="rgInfo" class="hint"></div>
-    </div>
-    <div id="specInputs">
-    <label>Sea state (NATO STANAG 4194, open-ocean N. Atlantic)
-      <select id="ssSel"></select>
-    </label>
-    <div class="row">
-      <label>Hs (m) <input id="ssHs" type="number" step="any" min="0"></label>
-      <label>Tp (s) <input id="ssTp" type="number" step="any" min="0"></label>
-    </div>
-    <div id="ssInfo" class="hint"></div>
-    <div class="seg" id="specType">
-      <button data-type="pm">Pierson–Moskowitz</button>
-      <button data-type="jonswap" class="on">JONSWAP</button>
-    </div>
-    <div class="row">
-      <label>JONSWAP γ <input id="ssGamma" type="number" step="any" min="1" max="7" value="3.3"></label>
-      <label class="tog" style="flex:none;align-self:flex-end;margin-bottom:6px"><input id="ssDnvGamma" type="checkbox"> DNV γ(Tp/√Hs)</label>
-    </div>
-    </div>
-    <div class="slider"><span>Heading β</span><input id="ssHead" type="range" min="0" max="360" step="5" value="90"><input id="ssHeadN" type="number" step="any" value="90"></div>
-    <p class="hint">β = direction the waves travel, relative to the model's +X axis: 180° head seas, 90° beam seas, 0° following.</p>
-    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="driftOn" type="checkbox" checked> Wave drift (Stokes drift + mean drift force)</label>
-    <div class="row">
-      <label><span>Drift drag C<sub>d</sub></span> <input id="driftCd" type="number" step="any" min="0" value="1"></label>
-      <label>&nbsp;</label>
-    </div>
-    <p class="hint" id="driftHint">On: the body is carried by the Stokes drift current and pushed by waves it reflects (Ursell barrier reflection, Longuet-Higgins drift force), against drag on its speed relative to the current (C<sub>d</sub> ≈ 1 for a bluff hull, Hoerner). Off: a very soft horizontal spring keeps it on station; wave-frequency surge and sway are unchanged.</p>
-    <details>
-      <summary>Wave &amp; hydrodynamic settings</summary>
-      <div id="specAdv">
-      <div class="row">
-        <label>Components <input id="ssN" type="number" min="5" max="300" value="50"></label>
-        <label>Seed <input id="ssSeed" type="number" value="1"></label>
-        <label>Spreading s <input id="ssSpread" type="number" min="0" step="1" value="0"></label>
-      </div>
-      <p class="hint">Spreading 0 gives long-crested waves; s &gt; 0 applies cos<sup>2s</sup> short-crested spreading.</p>
-      </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hBemSim" type="checkbox" checked> Panel-method added mass &amp; damping in the simulations</label>
-      <p class="hint" id="hBemHint">On: the wave runs and the drop test use added mass and radiation damping from the panel method (section 8), taken at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of this body, or from a quick coarse sweep the first time (a few seconds). The A fields below then apply to the estimates only. Off: the estimates below.</p>
-      <div class="row three">
-        <label>extra ζ heave <input id="hX3" type="number" step="any" min="0" value="0"></label>
-        <label>extra ζ roll <input id="hX4" type="number" step="any" min="0" value="0"></label>
-        <label>extra ζ pitch <input id="hX5" type="number" step="any" min="0" value="0"></label>
-      </div>
-      <p class="hint">Extra (viscous) damping, as a fraction of critical, added to the panel-method damping in the RAOs and the simulations. Potential flow has very little roll damping, so real roll peaks are lower; 0.02–0.05 is typical for a bare hull.</p>
-      <p class="hint">Estimates (used without the panel method): strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p>
-      <div class="row three">
-        <label>A11 (kg) <input id="hA11" type="number" step="any"></label>
-        <label>A22 (kg) <input id="hA22" type="number" step="any"></label>
-        <label>&nbsp;</label>
-      </div>
-      <div class="row three">
-        <label>A33 (kg) <input id="hA33" type="number" step="any"></label>
-        <label>A44 / I44 <input id="hA44" type="number" step="any" value="0.2"></label>
-        <label>A55 (kg·m²) <input id="hA55" type="number" step="any"></label>
-      </div>
-      <div class="row three">
-        <label>ζ heave <input id="hZ3" type="number" step="any" value="0.15"></label>
-        <label>ζ roll <input id="hZ4" type="number" step="any" value="0.08"></label>
-        <label>ζ pitch <input id="hZ5" type="number" step="any" value="0.15"></label>
-      </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hDiffH" type="checkbox" checked> Diffraction correction, surge &amp; sway</label>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="hDiffV" type="checkbox"> Diffraction correction, heave</label>
-      <p class="hint">Long-wave (G.I. Taylor) correction: adds added mass × the incident acceleration averaged over the submerged volume. In the trade study (docs/rao-trade-study.md) it fixes the 50 % low horizontal force of Froude–Krylov (spar within 5 % of MacCamy–Fuchs). For heave it helps in long waves but overcorrects near resonance unless A33 is calibrated, so it is off by default.</p>
-      <button id="hReset" class="ghost">Reset to estimates</button>
-    </details>
-    <div class="row">
-      <button id="waveRun" class="primary">▶ Run in waves</button>
-      <button id="waveStats">Run statistics (20 min)</button>
-    </div>
-    <div class="row">
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="waveFollow" type="checkbox" checked> Camera follows the body</label>
-      <button id="waveRestart" class="ghost" disabled title="Start the wave run again from the original position">↺ Restart run</button>
-    </div>
-    <div class="lock-note hidden">Locked: the body is placed for a drop / rise test. Use <b>Reset position</b> in section 9 to run waves.</div>
-    <div class="slider"><span>Speed</span><input id="waveSpeed" type="range" min="0.25" max="8" step="0.25" value="1"><output id="waveSpeedV">1×</output></div>
-    <div id="waveInfo" class="info"></div>
-  </section>
-
-  <section>
-    <h2>8 · RAO sweep</h2>
-    <div class="row three">
-      <label>f min (Hz) <input id="raoFmin" type="number" step="any" min="0.001" value="0.03"></label>
-      <label>f max (Hz) <input id="raoFmax" type="number" step="any" min="0.002" value="0.65"></label>
-      <label>Points <input id="raoN" type="number" min="5" max="400" value="80"></label>
-    </div>
-    <p class="hint" id="raoRange"></p>
-    <label>Headings β (deg): a list "0,90,180" or a range "start:step:end"
-      <input id="raoHead" type="text" value="0:45:180" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit">
-    </label>
-    <div class="row">
-      <label>Hydrodynamics <select id="raoMethod">
-        <option value="bem" selected>Panel method (BEM)</option>
-        <option value="fk">Froude–Krylov + estimates (fast)</option>
-      </select></label>
-      <label>Panels <select id="bemFid">
-        <option value="coarse">Coarse (~400)</option>
-        <option value="standard" selected>Standard (~1,000)</option>
-        <option value="fine">Fine (~2,500)</option>
-        <option value="vfine">Very fine (~6,000)</option>
-      </select></label>
-    </div>
-    <label class="tog" id="bemIrrWrap" style="flex-direction:row;gap:6px;align-items:center"><input id="bemIrr" type="checkbox" checked> Remove irregular frequencies (interior waterplane lid)</label>
-    <p class="hint" id="bemHint">Panel method: solves the linear diffraction–radiation problem on the wetted hull (deep water, zero speed, as WAMIT's low-order method) for frequency-dependent added mass, radiation damping and wave exciting forces with all couplings, then the 6-DOF RAOs. Checked against WAMIT, Capytaine and the Kramer sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations on buoys (docs/bem-validation.md). Panel counts are for flat-sided hulls; curved hulls get up to about 3× more, as panels are kept below 1/20 of the circumference where the hull curves. Runs in background workers; Standard takes from a few seconds to a few minutes. Extra viscous damping: section 7 → Wave &amp; hydrodynamic settings.</p>
-    <div class="row">
-      <button id="raoRun" class="primary">Compute RAOs</button>
-      <button id="raoCancel" class="ghost hidden">Cancel</button>
-      <button id="raoCsv" class="ghost" disabled title="Amplitudes and phases per heading and frequency">Export CSV</button>
-      <button id="raoRaw" class="ghost" disabled title="Complex RAOs, excitation forces and the model matrices">Export raw CSV</button>
-    </div>
-    <div class="lock-note hidden">Locked: the body is placed for a drop / rise test. Use <b>Reset position</b> in section 9 to compute RAOs.</div>
-    <div id="raoProgWrap" class="progress hidden"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
-    <div id="raoInfo" class="info"></div>
-  </section>
-  <section>
-    <h2>9 · Drop / rise test</h2>
-    <p class="hint">Release the body from a chosen height to watch it fall into the water, plunge and recover, or rise from below the surface and settle. Uses the mass, CoG, inertia and orientation above. It does not affect the RAO or sea-state tools, which are locked while the body is placed away from its float position.</p>
-    <label><span>Start height of the CoG above the still-water surface (<span class="unitLabel">mm</span>; negative = below)</span>
-      <input id="dzH" type="number" step="any" value="0">
-    </label>
-    <div class="row"><button id="dzUseEq" class="ghost">Use float height</button></div>
-    <div id="dzWhere" class="hint"></div>
-    <div class="row">
-      <label>Initial vertical speed (m/s, + up) <input id="dzV0" type="number" step="any" value="0"></label>
-    </div>
-    <div class="row three">
-      <label><span>Water C<sub>d</sub></span> <input id="dzCdW" type="number" step="any" min="0" value="1.0"></label>
-      <label><span>Air C<sub>d</sub></span> <input id="dzCdA" type="number" step="any" min="0" value="1.0"></label>
-      <label>Air ρ (kg/m³) <input id="dzRhoA" type="number" step="any" min="0" value="1.225"></label>
-    </div>
-    <label><span>Drag coefficient preset (Hoerner, <i>Fluid-Dynamic Drag</i>)</span>
-      <select id="dzPreset">
-        <option value="custom">Custom</option>
-        <option value="sphere">Sphere: 0.47</option>
-        <option value="cube">Cube, face-on: 1.05</option>
-        <option value="cylAxial">Cylinder, end-on: 0.82</option>
-        <option value="cylSide">Long cylinder, side-on: 1.2</option>
-        <option value="plate">Flat plate, face-on: 1.28</option>
-        <option value="streamlined">Streamlined body: 0.04</option>
-      </select>
-    </label>
-    <div class="row">
-      <button id="dzPlace">Place at start height</button>
-      <button id="dzRun" class="primary" disabled>▶ Release</button>
-      <button id="dzReset" class="ghost" disabled>Reset position</button>
-    </div>
-    <div class="slider"><span>Speed</span><input id="dzSpeed" type="range" min="0.1" max="8" step="0.1" value="1"><output id="dzSpeedV">1×</output></div>
-    <div id="dzInfo" class="info"></div>
-  </section>
-
-  <section>
-    <h2>10 · Tracked points</h2>
-    <p class="hint">Points on the body to follow during the wave runs: an antenna, GPS or solar panel (time above water, underwater stretches) or an IMU (accelerations). Coordinates in the model's own axes, in the units chosen in section 1. A clearance counts the point as underwater until it is that far above the surface (e.g. an antenna that needs to stand clear).</p>
-    <div id="ptList"></div>
-    <div class="row">
-      <button id="ptPick">Pick on model</button>
-      <button id="ptAdd" class="ghost">Add at CoG</button>
-    </div>
-    <div id="ptInfo" class="info"></div>
-  </section>
-
-  <section>
-    <h2>11 · Viscous drag &amp; heave plates</h2>
-    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="dragOn" type="checkbox"> Viscous drag (quadratic, Morison) and heave plates</label>
-    <div id="dragBox" class="dim">
-      <label>Hull drag coefficients (Hoerner, <i>Fluid-Dynamic Drag</i>)
-        <select id="dragPreset"></select>
-      </label>
-      <div class="row three">
-        <label><span>C<sub>d</sub> X (surge)</span> <input id="dragCx" type="number" step="any" min="0" value="1.2"></label>
-        <label><span>C<sub>d</sub> Y (sway)</span> <input id="dragCy" type="number" step="any" min="0" value="1.2"></label>
-        <label><span>C<sub>d</sub> Z (heave)</span> <input id="dragCz" type="number" step="any" min="0" value="0.82"></label>
-      </div>
-      <p class="hint">Quadratic drag ½ρC<sub>d</sub>A|u|u on the body's speed relative to the wave orbital flow, along the floating body's own axes; A is the submerged area projected along each axis (X and Y: side areas, Z: the area seen from below). Rotations get drag from the same coefficients on the wetted panels. The RAOs and the sea-state table use the equivalent linear damping for the sea state in section 7 (stochastic linearisation), so they include it too. Wave runs use the full quadratic drag.</p>
-      <h3 class="sub">Heave plates</h3>
-      <div id="plList"></div>
-      <button id="plAdd" class="ghost">Add heave plate</button>
-      <p class="hint">Thin discs fixed to the body, horizontal when floating; centre in model coordinates. Each adds added mass ρD³/3 normal to the plate, an inertia force from the wave acceleration and drag ½ρC<sub>d</sub>(πD²/4)|u|u. C<sub>d</sub> ≈ 1.2 in steady flow (Hoerner); oscillating plates at small motion amplitudes often show higher values, so use test data if you have it. Leave the plate out of the CAD model (a thin disc adds almost nothing there), but include its mass in section 2.</p>
-      <div id="dragInfo" class="info"></div>
     </div>
   </section>
 
-  <section>
-    <h2>12 · Mooring</h2>
-    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="moorOn" type="checkbox"> Moored</label>
-    <div id="moorBox" class="dim">
-      <label>Line <select id="moorPreset"></select></label>
-      <div class="row three">
-        <label>Water depth (m) <input id="moorDepth" type="number" step="any" min="0.1" value="20"></label>
-        <label>Line length (m) <input id="moorL" type="number" step="any" min="0.1" value="40"></label>
-        <label>Anchor radius (m) <input id="moorR" type="number" step="any" min="0" value="20"></label>
+  <!-- ---------------- WAVES -->
+  <section class="stagepane" data-pane="waves">
+    <div class="ph">Waves — Setup</div>
+    <div class="pb">
+      <div class="pg">
+        <details open>
+          <summary><span class="bx"></span>Add-ons in this run<span class="sv addons-sum">none</span></summary>
+          <div class="note addons-note">Mooring, wind and drag are added from the Tools menu.</div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Waves</summary>
+          <div class="r wide"><span class="k">Type</span><span class="v">
+            <span class="sg" id="waveMode"><button data-mode="spectrum" class="on">Irregular (spectrum)</button><button data-mode="regular">Regular</button></span>
+          </span></div>
+          <div id="regInputs" class="hidden">
+            <label class="r"><span class="k">Wave height</span><span class="v"><input id="rgH" type="number" step="any" min="0" value="1"><span class="u">m</span></span></label>
+            <label class="r"><span class="k">Period T</span><span class="v"><input id="rgT" type="number" step="any" min="0" value="6"><span class="u">s</span></span></label>
+            <label class="r"><span class="k">Height means</span><span class="v"><select id="rgKind"><option value="H">Crest-to-trough H (amplitude H/2)</option><option value="Hs">Significant Hs (amplitude Hs/2√2)</option></select></span></label>
+            <div id="rgInfo" class="note"></div>
+          </div>
+          <div id="specInputs">
+            <label class="r"><span class="k">Sea state <small>NATO STANAG 4194</small></span><span class="v"><select id="ssSel"></select></span></label>
+            <label class="r"><span class="k">Hs</span><span class="v"><input id="ssHs" type="number" step="any" min="0"><span class="u">m</span></span></label>
+            <label class="r"><span class="k">Tp</span><span class="v"><input id="ssTp" type="number" step="any" min="0"><span class="u">s</span></span></label>
+            <div id="ssInfo" class="note"></div>
+            <div class="r wide"><span class="k">Spectrum</span><span class="v">
+              <span class="sg" id="specType"><button data-type="pm">Pierson–Moskowitz</button><button data-type="jonswap" class="on">JONSWAP</button></span>
+            </span></div>
+            <label class="r"><span class="k">JONSWAP γ</span><span class="v"><input id="ssGamma" type="number" step="any" min="1" max="7" value="3.3"></span></label>
+            <label class="r"><span class="k">DNV γ(Tp/√Hs)</span><span class="v"><input id="ssDnvGamma" type="checkbox"><span class="u">set γ from Hs and Tp</span></span></label>
+          </div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Wave direction</summary>
+          <label class="r"><span class="k">Direction</span><span class="v"><input id="ssHeadN" type="number" step="any" min="0" max="360" value="90"><span class="u">°</span></span></label>
+          <p class="note">Direction the waves travel, 0–360° from global +X (90° = toward +Y).</p>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Drift</summary>
+          <label class="r"><span class="k">Wave drift</span><span class="v"><input id="driftOn" type="checkbox" checked><span class="u">Stokes drift + mean drift force</span></span></label>
+          <label class="r"><span class="k">Drift drag C<sub>d</sub></span><span class="v"><input id="driftCd" type="number" step="any" min="0" value="1"></span></label>
+          <details class="more"><summary>About drift</summary><p class="note" id="driftHint">On: the body is carried by the Stokes drift current and pushed by waves it reflects (Ursell barrier reflection, Longuet-Higgins drift force), against drag on its speed relative to the current (C<sub>d</sub> ≈ 1 for a bluff hull, Hoerner). Off: a very soft horizontal spring keeps it on station; wave-frequency surge and sway are unchanged.</p></details>
+        </details>
+        <details>
+          <summary><span class="bx"></span>Hydrodynamics &amp; wave detail<span class="sv">panel-method A, B</span></summary>
+          <div id="specAdv">
+            <label class="r"><span class="k">Components</span><span class="v"><input id="ssN" type="number" min="5" max="300" value="50"></span></label>
+            <label class="r"><span class="k">Seed</span><span class="v"><input id="ssSeed" type="number" value="1"></span></label>
+            <label class="r"><span class="k">Spreading s</span><span class="v"><input id="ssSpread" type="number" min="0" step="1" value="0"><span class="u">0 = long-crested</span></span></label>
+          </div>
+          <label class="r"><span class="k">Panel-method A &amp; B</span><span class="v"><input id="hBemSim" type="checkbox" checked><span class="u">in the simulations</span></span></label>
+          <details class="more"><summary>About panel-method coefficients</summary><p class="note" id="hBemHint">On: the wave runs and the drop test use added mass and radiation damping from the panel method, taken at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of this body, or from a quick coarse sweep the first time (a few seconds). The A fields below then apply to the estimates only. Off: the estimates below.</p></details>
+          <label class="r"><span class="k">Extra ζ heave</span><span class="v"><input id="hX3" type="number" step="any" min="0" value="0"></span></label>
+          <label class="r"><span class="k">Extra ζ roll</span><span class="v"><input id="hX4" type="number" step="any" min="0" value="0"></span></label>
+          <label class="r"><span class="k">Extra ζ pitch</span><span class="v"><input id="hX5" type="number" step="any" min="0" value="0"></span></label>
+          <p class="note">Extra (viscous) damping as a fraction of critical, added to the panel-method damping in the RAOs and simulations. Potential flow has very little roll damping; 0.02–0.05 is typical for a bare hull.</p>
+          <div class="subhead">Estimates (used without the panel method)</div>
+          <label class="r"><span class="k">A11</span><span class="v"><input id="hA11" type="number" step="any"><span class="u">kg</span></span></label>
+          <label class="r"><span class="k">A22</span><span class="v"><input id="hA22" type="number" step="any"><span class="u">kg</span></span></label>
+          <label class="r"><span class="k">A33</span><span class="v"><input id="hA33" type="number" step="any"><span class="u">kg</span></span></label>
+          <label class="r"><span class="k">A44 / I44</span><span class="v"><input id="hA44" type="number" step="any" value="0.2"></span></label>
+          <label class="r"><span class="k">A55</span><span class="v"><input id="hA55" type="number" step="any"><span class="u">kg·m²</span></span></label>
+          <label class="r"><span class="k">ζ heave</span><span class="v"><input id="hZ3" type="number" step="any" value="0.15"></span></label>
+          <label class="r"><span class="k">ζ roll</span><span class="v"><input id="hZ4" type="number" step="any" value="0.08"></span></label>
+          <label class="r"><span class="k">ζ pitch</span><span class="v"><input id="hZ5" type="number" step="any" value="0.15"></span></label>
+          <label class="r"><span class="k">Diffraction, surge &amp; sway</span><span class="v"><input id="hDiffH" type="checkbox" checked><span class="u">G.I. Taylor long-wave correction</span></span></label>
+          <label class="r"><span class="k">Diffraction, heave</span><span class="v"><input id="hDiffV" type="checkbox"></span></label>
+          <details class="more"><summary>About the diffraction correction</summary><p class="note">Adds added mass × the incident acceleration averaged over the submerged volume. In the trade study (docs/rao-trade-study.md) it fixes the 50 % low horizontal force of Froude–Krylov (spar within 5 % of MacCamy–Fuchs). For heave it helps in long waves but overcorrects near resonance unless A33 is calibrated, so it is off by default. Estimates: strip-theory semicircle for heave, 0.2·I for roll, damping as a fraction of critical.</p></details>
+          <div class="bb"><button id="hReset" class="b">Reset to estimates</button></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Tracked points</summary>
+          <div id="ptList"></div>
+          <div class="bb">
+            <button id="ptPick" class="b">⌖ Pick on model</button>
+            <button id="ptAdd" class="b">Add at CoG</button>
+          </div>
+          <details class="more"><summary>About tracked points</summary><p class="note">Points on the body to follow during the wave runs: an antenna, GPS or solar panel (time above water, underwater stretches) or an IMU (accelerations). Model axes, metres. A clearance counts the point as underwater until it is that far above the surface (e.g. an antenna that needs to stand clear).</p></details>
+          <div id="ptInfo" class="info"></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Statistics</summary>
+          <div class="bb"><button id="waveStats" class="b">Run statistics (20 min)</button></div>
+          <div class="lock-note hidden">Locked while the body is placed for a drop / rise test. Exit the drop test to run waves.</div>
+          <div id="waveInfo" class="info"></div>
+        </details>
       </div>
-      <div class="row">
-        <label>Lines <select id="moorN"><option value="1">1 (single point)</option><option value="2">2</option><option value="3">3 (spread, 120°)</option><option value="4">4</option></select></label>
-        <label>Direction of line 1 (deg) <input id="moorDir" type="number" step="any" value="0"></label>
+    </div>
+  </section>
+
+  <!-- ---------------- RAO -->
+  <section class="stagepane" data-pane="rao">
+    <div class="ph">RAO — Setup</div>
+    <div class="pb">
+      <div class="pg">
+        <details open>
+          <summary><span class="bx"></span>Add-ons in this run<span class="sv addons-sum">none</span></summary>
+          <div class="note addons-note">Mooring and viscous drag change the RAOs too. Add them from Tools.</div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Frequencies</summary>
+          <label class="r"><span class="k">From</span><span class="v"><input id="raoFmin" type="number" step="any" min="0.001" value="0.03"><span class="u">Hz</span></span></label>
+          <label class="r"><span class="k">To</span><span class="v"><input id="raoFmax" type="number" step="any" min="0.002" value="0.65"><span class="u">Hz</span></span></label>
+          <label class="r"><span class="k">Points</span><span class="v"><input id="raoN" type="number" min="5" max="400" value="80"></span></label>
+          <p class="note" id="raoRange"></p>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Headings β<span class="sv">from model +x</span></summary>
+          <label class="r"><span class="k">List or start:step:end</span><span class="v"><input id="raoHead" type="text" value="0:45:180"><span class="u">°</span></span></label>
+          <p class="note warnnote"><b>Note:</b> RAO headings are measured from the model's +x axis, not the global axes used for wave runs.</p>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Solver</summary>
+          <label class="r"><span class="k">Hydrodynamics</span><span class="v"><select id="raoMethod"><option value="bem" selected>Panel method (BEM)</option><option value="fk">Froude–Krylov + estimates (fast)</option></select></span></label>
+          <label class="r"><span class="k">Panels</span><span class="v"><select id="bemFid"><option value="coarse">Coarse (~400)</option><option value="standard" selected>Standard (~1,000)</option><option value="fine">Fine (~2,500)</option><option value="vfine">Very fine (~6,000)</option></select></span></label>
+          <label class="r" id="bemIrrWrap"><span class="k">Irregular frequencies</span><span class="v"><input id="bemIrr" type="checkbox" checked><span class="u">remove (interior waterplane lid)</span></span></label>
+          <details class="more" id="bemHint"><summary>About the panel method</summary><p class="note">Solves the linear diffraction–radiation problem on the wetted hull (deep water, zero speed, as WAMIT's low-order method) for frequency-dependent added mass, radiation damping and wave exciting forces with all couplings, then the 6-DOF RAOs. Checked against WAMIT, Capytaine and the Kramer sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations on buoys (docs/bem-validation.md). Panel counts are for flat-sided hulls; curved hulls get up to about 3× more. Runs in background workers; Standard takes from a few seconds to a few minutes. Extra viscous damping: Waves › Hydrodynamics.</p></details>
+        </details>
       </div>
-      <p class="hint">Anchors on the seabed at the anchor radius from the fairlead's position above them at the start, spread evenly in direction (measured like the wave heading, from the model's +X). The body then settles where the lines (and the steady wind) balance: a single line pulls it toward its anchor until the line goes slack, so the wave runs start there. Lines are in metres; the fairlead is in model coordinates.</p>
-      <div class="row three">
-        <label>Fairlead X <input id="mfX" type="number" step="any" value="0"></label>
-        <label>Fairlead Y <input id="mfY" type="number" step="any" value="0"></label>
-        <label>Fairlead Z <input id="mfZ" type="number" step="any" value="0"></label>
-      </div>
-      <div class="row">
-        <button id="mfPick" class="ghost">Pick fairlead on model</button>
-        <button id="mfKeel" class="ghost">Keel point under the CoG</button>
-      </div>
-      <div class="row">
-        <label>Line model <select id="moorModel">
-          <option value="dynamic">Dynamic (lumped mass): snap loads, line drag</option>
-          <option value="quasi">Quasi-static catenary (faster)</option>
-        </select></label>
-        <label id="moorSegWrap">Segments <input id="moorSeg" type="number" min="4" max="60" value="16"></label>
-      </div>
-      <details>
-        <summary>Line properties</summary>
-        <div class="row three">
-          <label>Mass (kg/m, in air) <input id="mlM" type="number" step="any" min="0"></label>
-          <label>Material ρ (kg/m³) <input id="mlRhoM" type="number" step="any" min="1"></label>
-          <label>EA (N) <input id="mlEA" type="number" step="any" min="1"></label>
+      <div class="solvebox">
+        <div class="bb plain">
+          <button id="raoRun" class="b def solve"><span class="bolt" aria-hidden="true"></span>Solve RAOs</button>
+          <button id="raoCancel" class="b hidden">Cancel</button>
         </div>
-        <div class="row three">
-          <label>Diameter (mm) <input id="mlD" type="number" step="any" min="0"></label>
-          <label><span>C<sub>d</sub> normal</span> <input id="mlCdn" type="number" step="any" min="0"></label>
-          <label><span>C<sub>d</sub> along</span> <input id="mlCdt" type="number" step="any" min="0"></label>
-        </div>
-        <div class="row three">
-          <label><span>C<sub>a</sub> normal</span> <input id="mlCa" type="number" step="any" min="0" value="1"></label>
-          <label>&nbsp;</label><label>&nbsp;</label>
-        </div>
-        <p class="hint">Presets are typical values (chain: DNV-OS-E301 / Orcina, mass 19.9D² t/m and EA 0.854·10⁸D² kN, volume-equivalent diameter 1.8D). Check the manufacturer's data for ropes, whose stiffness depends on load and age. The diameter sets drag and added mass; buoyancy comes from the material density.</p>
-      </details>
-      <p class="hint">Quasi-static: elastic catenary with seabed contact at every step (Jonkman 2007; no seabed friction). Dynamic: a lumped-mass line (MoorDyn-style, Hall &amp; Goupee 2015) with tension-only segments, line drag in the wave flow and seabed contact, so it shows snap loads when a slack line goes taut. The RAOs use the catenary's linear stiffness at the mean position (under the steady wind, if on). The line's pull is included in the floating draft of the wave and RAO tools; the Hydrostatics tab shows the free-floating body.</p>
-      <div id="moorInfo" class="info"></div>
+        <div class="lock-note hidden">Locked while the body is placed for a drop / rise test. Exit the drop test to compute RAOs.</div>
+        <div id="raoProgWrap" class="progress hidden"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
+        <div id="raoInfo" class="info"></div>
+      </div>
     </div>
   </section>
 
-  <section>
-    <h2>13 · Wind</h2>
-    <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windOn" type="checkbox"> Wind on the above-water part</label>
-    <div id="windBox" class="dim">
-      <div class="row">
-        <label><span>U<sub>10</sub> (m/s, 1-hour mean at 10 m)</span> <input id="windU" type="number" step="any" min="0" value="8"></label>
-        <label>Toward (deg) <input id="windDir" type="number" step="any" value="90"></label>
+  <!-- ---------------- TOOL: MOORING -->
+  <section class="stagepane" data-pane="tool-moor">
+    <div class="ph"><button class="crumb" data-act="closetool">‹ Waves</button><span class="slash">/</span>Mooring
+      <label class="ph-on"><input id="moorOn" type="checkbox"> Enabled</label></div>
+    <div class="pb">
+      <div id="moorBox" class="pg dim">
+        <details open>
+          <summary><span class="bx"></span>Lines</summary>
+          <label class="r"><span class="k">Line</span><span class="v"><select id="moorPreset"></select></span></label>
+          <label class="r"><span class="k">Number of lines</span><span class="v"><select id="moorN"><option value="1">1 (single point)</option><option value="2">2</option><option value="3">3 (spread, 120°)</option><option value="4">4</option></select></span></label>
+          <label class="r"><span class="k">Direction of line 1</span><span class="v"><input id="moorDir" type="number" step="any" value="0"><span class="u">° from model +x</span></span></label>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Geometry</summary>
+          <label class="r"><span class="k">Water depth</span><span class="v"><input id="moorDepth" type="number" step="any" min="0.1" value="20"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">Line length</span><span class="v"><input id="moorL" type="number" step="any" min="0.1" value="40"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">Anchor radius</span><span class="v"><input id="moorR" type="number" step="any" min="0" value="20"><span class="u">m</span></span></label>
+          <details class="more"><summary>About the layout</summary><p class="note">Anchors on the seabed at the anchor radius from the fairlead's position above them at the start, spread evenly in direction. The body then settles where the lines (and the steady wind) balance: a single line pulls it toward its anchor until the line goes slack, so the wave runs start there.</p></details>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Fairlead on the body<span class="sv">model axes</span></summary>
+          <label class="r"><span class="k">x</span><span class="v"><input id="mfX" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">y</span><span class="v"><input id="mfY" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <label class="r"><span class="k">z</span><span class="v"><input id="mfZ" type="number" step="any" value="0"><span class="u">m</span></span></label>
+          <div class="bb"><button id="mfPick" class="b">⌖ Pick on model</button><button id="mfKeel" class="b">Keel under CoG</button></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Line model</summary>
+          <label class="r"><span class="k">Model</span><span class="v"><select id="moorModel"><option value="dynamic">Dynamic (lumped mass)</option><option value="quasi">Quasi-static catenary</option></select></span></label>
+          <label class="r" id="moorSegWrap"><span class="k">Segments</span><span class="v"><input id="moorSeg" type="number" min="4" max="60" value="16"></span></label>
+          <details class="more"><summary>About the line models</summary><p class="note">Quasi-static: elastic catenary with seabed contact at every step (Jonkman 2007; no seabed friction). Dynamic: a lumped-mass line (MoorDyn-style, Hall &amp; Goupee 2015) with tension-only segments, line drag in the wave flow and seabed contact, so it shows snap loads when a slack line goes taut. The RAOs use the catenary's linear stiffness at the mean position. The line's pull is included in the floating draft of the wave and RAO tools; the Hydrostatics results show the free-floating body.</p></details>
+        </details>
+        <details>
+          <summary><span class="bx"></span>Line properties<span class="sv">from preset</span></summary>
+          <label class="r"><span class="k">Mass in air</span><span class="v"><input id="mlM" type="number" step="any" min="0"><span class="u">kg/m</span></span></label>
+          <label class="r"><span class="k">Material ρ</span><span class="v"><input id="mlRhoM" type="number" step="any" min="1"><span class="u">kg/m³</span></span></label>
+          <label class="r"><span class="k">EA</span><span class="v"><input id="mlEA" type="number" step="any" min="1"><span class="u">N</span></span></label>
+          <label class="r"><span class="k">Diameter</span><span class="v"><input id="mlD" type="number" step="any" min="0"><span class="u">mm</span></span></label>
+          <label class="r"><span class="k">C<sub>d</sub> normal</span><span class="v"><input id="mlCdn" type="number" step="any" min="0"></span></label>
+          <label class="r"><span class="k">C<sub>d</sub> along</span><span class="v"><input id="mlCdt" type="number" step="any" min="0"></span></label>
+          <label class="r"><span class="k">C<sub>a</sub> normal</span><span class="v"><input id="mlCa" type="number" step="any" min="0" value="1"></span></label>
+          <p class="note">Presets are typical values (chain: DNV-OS-E301 / Orcina, mass 19.9D² t/m and EA 0.854·10⁸D² kN, volume-equivalent diameter 1.8D). Check the manufacturer's data for ropes. The diameter sets drag and added mass; buoyancy comes from the material density.</p>
+        </details>
       </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windSame" type="checkbox" checked> Same direction as the waves (β)</label>
-      <div class="row">
-        <label><span>Windage C<sub>d</sub></span> <input id="windCd" type="number" step="any" min="0" value="1.0"></label>
-        <label>Gust seed <input id="windSeed" type="number" value="7"></label>
-      </div>
-      <label class="tog" style="flex-direction:row;gap:6px;align-items:center"><input id="windGust" type="checkbox" checked> Gusts (Frøya / NPD spectrum)</label>
-      <p class="hint">Wind profile U(z) = U<sub>10</sub>(z/10)<sup>0.12</sup> over open sea, with gusts from the Frøya spectrum (DNV-RP-C205 §2.3). Every panel of the model above the instantaneous water surface takes ½ρ<sub>air</sub>C<sub>d</sub>A|u|u on its projected area, with u the wind minus the panel's own velocity. Typical C<sub>d</sub>: 1.0–1.2 for bluff shapes and masts, 1.28 for a flat panel face-on (Hoerner). Wave runs show the heel, drift (with wave drift on, or moored) and gust response. With wave drift off and no mooring, the mean push is held on station like the wave drift.</p>
-      <div id="windInfo" class="info"></div>
+      <div id="moorInfo" class="info pad"></div>
     </div>
+    <div class="pf"><button class="b def" data-act="closetool">OK</button></div>
   </section>
-  <footer>Hydrostatics: rigid body, uniform density for inertia. Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), added mass and damping from the panel method or estimates, zero forward speed, deep water (also for the wave kinematics on mooring lines; the water depth in section 12 only places the anchors).</footer>
+
+  <!-- ---------------- TOOL: WIND -->
+  <section class="stagepane" data-pane="tool-wind">
+    <div class="ph"><button class="crumb" data-act="closetool">‹ Waves</button><span class="slash">/</span>Wind
+      <label class="ph-on"><input id="windOn" type="checkbox"> Enabled</label></div>
+    <div class="pb">
+      <div id="windBox" class="pg dim">
+        <details open>
+          <summary><span class="bx"></span>Wind</summary>
+          <label class="r"><span class="k">U<sub>10</sub> (1-h mean at 10 m)</span><span class="v"><input id="windU" type="number" step="any" min="0" value="8"><span class="u">m/s</span></span></label>
+          <label class="r"><span class="k">Same direction as waves</span><span class="v"><input id="windSame" type="checkbox" checked></span></label>
+          <label class="r"><span class="k">Blowing toward</span><span class="v"><input id="windDir" type="number" step="any" value="90"><span class="u">° from global +X</span></span></label>
+          <label class="r"><span class="k">Windage C<sub>d</sub></span><span class="v"><input id="windCd" type="number" step="any" min="0" value="1.0"></span></label>
+          <label class="r"><span class="k">Gusts</span><span class="v"><input id="windGust" type="checkbox" checked><span class="u">Frøya / NPD spectrum</span></span></label>
+          <label class="r"><span class="k">Gust seed</span><span class="v"><input id="windSeed" type="number" value="7"></span></label>
+          <details class="more"><summary>About the wind model</summary><p class="note">Wind profile U(z) = U<sub>10</sub>(z/10)<sup>0.12</sup> over open sea, with gusts from the Frøya spectrum (DNV-RP-C205 §2.3). Every panel of the model above the instantaneous water surface takes ½ρ<sub>air</sub>C<sub>d</sub>A|u|u on its projected area, with u the wind minus the panel's own velocity. Typical C<sub>d</sub>: 1.0–1.2 for bluff shapes and masts, 1.28 for a flat panel face-on (Hoerner). With wave drift off and no mooring, the mean push is held on station like the wave drift.</p></details>
+        </details>
+      </div>
+      <div id="windInfo" class="info pad"></div>
+    </div>
+    <div class="pf"><button class="b def" data-act="closetool">OK</button></div>
+  </section>
+
+  <!-- ---------------- TOOL: DRAG & PLATES -->
+  <section class="stagepane" data-pane="tool-drag">
+    <div class="ph"><button class="crumb" data-act="closetool">‹ Waves</button><span class="slash">/</span>Drag &amp; heave plates
+      <label class="ph-on"><input id="dragOn" type="checkbox"> Enabled</label></div>
+    <div class="pb">
+      <div id="dragBox" class="pg dim">
+        <details open>
+          <summary><span class="bx"></span>Hull drag (Morison)</summary>
+          <label class="r"><span class="k">Preset (Hoerner)</span><span class="v"><select id="dragPreset"></select></span></label>
+          <label class="r"><span class="k">C<sub>d</sub> x (surge)</span><span class="v"><input id="dragCx" type="number" step="any" min="0" value="1.2"></span></label>
+          <label class="r"><span class="k">C<sub>d</sub> y (sway)</span><span class="v"><input id="dragCy" type="number" step="any" min="0" value="1.2"></span></label>
+          <label class="r"><span class="k">C<sub>d</sub> z (heave)</span><span class="v"><input id="dragCz" type="number" step="any" min="0" value="0.82"></span></label>
+          <details class="more"><summary>About hull drag</summary><p class="note">Quadratic drag ½ρC<sub>d</sub>A|u|u on the body's speed relative to the wave orbital flow, along the floating body's own axes; A is the submerged area projected along each axis. Rotations get drag from the same coefficients on the wetted panels. The RAOs and the sea-state table use the equivalent linear damping for the sea state (stochastic linearisation); wave runs use the full quadratic drag.</p></details>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Heave plates</summary>
+          <div id="plList"></div>
+          <div class="bb"><button id="plAdd" class="b">Add heave plate</button></div>
+          <details class="more"><summary>About heave plates</summary><p class="note">Thin discs fixed to the body, horizontal when floating; centre in model coordinates. Each adds added mass ρD³/3 normal to the plate, an inertia force from the wave acceleration and drag ½ρC<sub>d</sub>(πD²/4)|u|u. C<sub>d</sub> ≈ 1.2 in steady flow (Hoerner); oscillating plates at small motion amplitudes often show higher values. Leave the plate out of the CAD model, but include its mass in Float.</p></details>
+        </details>
+      </div>
+      <div id="dragInfo" class="info pad"></div>
+    </div>
+    <div class="pf"><button class="b def" data-act="closetool">OK</button></div>
+  </section>
+
+  <!-- ---------------- DROP / RISE TEST -->
+  <section class="stagepane" data-pane="drop">
+    <div class="ph">Drop / rise test — Setup</div>
+    <div class="pb">
+      <div class="pg">
+        <details open>
+          <summary><span class="bx"></span>Start position</summary>
+          <label class="r"><span class="k">CoG height above water</span><span class="v"><input id="dzH" type="number" step="any" value="0"><span class="u"><span class="unitLabel">m</span></span></span></label>
+          <p class="note">Negative starts it below the surface for a rise test.</p>
+          <label class="r"><span class="k">Initial vertical speed</span><span class="v"><input id="dzV0" type="number" step="any" value="0"><span class="u">m/s, + up</span></span></label>
+          <div class="bb"><button id="dzUseEq" class="b">Use float height</button></div>
+          <div id="dzWhere" class="note"></div>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Initial orientation<span class="sv" id="dzAttSummary"></span></summary>
+          <label class="r"><span class="k">Roll about x</span><span class="v"><input id="dzRoll" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <label class="r"><span class="k">Pitch about y</span><span class="v"><input id="dzPitch" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <label class="r"><span class="k">Yaw about z</span><span class="v"><input id="dzYaw" type="number" step="any" value="0"><span class="u">°</span></span></label>
+          <div class="bb"><button class="b" data-act="ori" data-ori="x">+90° x</button><button class="b" data-act="ori" data-ori="y">+90° y</button><button class="b" data-act="ori" data-ori="reset">Reset</button></div>
+          <p class="note">The same start attitude as in Float. Change it and release again to compare runs.</p>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Drag</summary>
+          <label class="r"><span class="k">Preset (Hoerner)</span><span class="v"><select id="dzPreset">
+            <option value="custom">Custom</option>
+            <option value="sphere">Sphere: 0.47</option>
+            <option value="cube">Cube, face-on: 1.05</option>
+            <option value="cylAxial">Cylinder, end-on: 0.82</option>
+            <option value="cylSide">Long cylinder, side-on: 1.2</option>
+            <option value="plate">Flat plate, face-on: 1.28</option>
+            <option value="streamlined">Streamlined body: 0.04</option>
+          </select></span></label>
+          <label class="r"><span class="k">Water C<sub>d</sub></span><span class="v"><input id="dzCdW" type="number" step="any" min="0" value="1.0"></span></label>
+          <label class="r"><span class="k">Air C<sub>d</sub></span><span class="v"><input id="dzCdA" type="number" step="any" min="0" value="1.0"></span></label>
+          <label class="r"><span class="k">Air ρ</span><span class="v"><input id="dzRhoA" type="number" step="any" min="0" value="1.225"><span class="u">kg/m³</span></span></label>
+        </details>
+      </div>
+      <div id="dzInfo" class="info pad"></div>
+    </div>
+    <div class="pf"><button id="dzPlace" class="b def">Place at start</button><button class="b" id="dropDone">Exit drop test</button></div>
+  </section>
 </aside>
 
-<main id="view">
-  <canvas id="gl"></canvas>
-  <div id="labels"></div>
-  <div id="banner" class="hidden"></div>
-  <div id="legend">
-    <span><i style="background:#ff5a5a"></i>G · CoG</span>
-    <span><i style="background:#4aa8ff"></i>B · buoyancy</span>
-    <span><i style="background:#47e08a"></i>M<sub>T</sub> roll metacentre</span>
-    <span><i style="background:#e0c547"></i>M<sub>L</sub> pitch metacentre</span>
-    <span><i style="background:#ffffff"></i>waterline</span>
+<!-- ======================================================== centre: graphics -->
+<section id="vcol" aria-label="Graphics">
+  <div id="gtb" role="toolbar" aria-label="View">
+    <button class="tb" data-view="fit" title="Zoom to fit" aria-label="Zoom to fit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#333" stroke-width="1.7" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <button class="tb" data-view="iso">Iso</button><button class="tb" data-view="front">Front</button><button class="tb" data-view="right">Right</button><button class="tb" data-view="top">Top</button>
+    <span class="sep"></span>
+    <label class="tb tog"><input id="showWater" type="checkbox" checked>Water</label>
+    <label class="tb tog"><input id="showEdges" type="checkbox" checked>Edges</label>
+    <label class="tb tog"><input id="showLabels" type="checkbox" checked>Labels</label>
+    <label class="tb tog"><input id="showMl" type="checkbox" checked><span>M<sub>L</sub></span></label>
+    <label class="tb tog"><input id="showAxes" type="checkbox" checked>Model axes</label>
   </div>
-  <div id="results">
-    <div class="seg small tabs" id="tabs">
-      <button data-tab="tabHydro" class="on">Hydrostatics</button>
-      <button data-tab="tabSea">Seakeeping</button>
-      <button data-tab="tabRao">RAO</button>
-      <button data-tab="tabDrop">Drop test</button>
-    </div>
-    <div id="tabHydro" class="tab">
-    <div class="rhead">
-      <h2>Hydrostatics</h2>
-      <label class="tog"><input id="showWater" type="checkbox" checked> water</label>
-      <label class="tog"><input id="showMl" type="checkbox" checked> <span>M<sub>L</sub></span></label>
-    </div>
-    <div id="verdict" class="verdict"></div>
-    <table id="stats"></table>
-    <div class="rhead">
-      <h2>Righting arm GZ</h2>
-      <div class="seg small" id="gzAxis">
-        <button data-axis="x" class="on">Roll</button>
-        <button data-axis="y">Pitch</button>
+  <main id="view">
+    <canvas id="gl"></canvas>
+    <div id="labels"></div>
+    <div id="hud">
+      <b id="hudTitle">Free float</b><br><span id="hudModel"></span>
+      <div id="legend">
+        <span class="lg"><i style="background:#ff5a5a"></i>G · centre of gravity</span>
+        <span class="lg"><i style="background:#4aa8ff"></i>B · centre of buoyancy</span>
+        <span class="lg"><i style="background:#47e08a"></i><span>M<sub>T</sub> · roll metacentre</span></span>
+        <span class="lg"><i style="background:#e0c547"></i><span>M<sub>L</sub> · pitch metacentre</span></span>
+        <span class="lg"><i class="wl"></i>Waterline</span>
+        <span class="lg"><i class="ax"></i><span><em>xyz</em> model axes at G · XYZ global</span></span>
       </div>
     </div>
-    <canvas id="gz" width="360" height="170"></canvas>
-    <div id="gzInfo" class="info"></div>
+    <svg id="triad" width="96" height="88" viewBox="0 0 96 88" role="img" aria-label="Global axes"></svg>
+    <div id="banner" class="hidden"></div>
+    <div id="busy" class="hidden">Loading…</div>
+  </main>
+  <div id="anim" role="toolbar" aria-label="Animation">
+    <span class="grp" data-for="float">
+      <button id="simRun" class="b def">▶ Simulate</button>
+      <button id="simSettle" class="b">Settle (fast)</button>
+      <button id="simReset" class="b">↺ Reset</button>
+      <span class="sep"></span><b>Free float</b><span class="sep"></span>
+      <label class="spd">Speed <input id="speed" type="range" min="0.1" max="20" step="0.1" value="1"><output id="speedV">1×</output></label>
+    </span>
+    <span class="grp" data-for="waves">
+      <button id="waveRun" class="b def">▶ Run in waves</button>
+      <button id="waveRestart" class="b" disabled title="Start the wave run again from the original position">↺ Restart run</button>
+      <span class="sep"></span><b>Wave run</b><span class="sep"></span>
+      <label class="spd">Speed <input id="waveSpeed" type="range" min="0.25" max="8" step="0.25" value="1"><output id="waveSpeedV">1×</output></label>
+      <label class="chk"><input id="waveFollow" type="checkbox" checked> Follow body</label>
+    </span>
+    <span class="grp" data-for="rao">
+      <b>Frequency domain</b><span class="sep"></span><span class="muted">RAOs have no animation. Use Waves for runs in time.</span>
+    </span>
+    <span class="grp" data-for="drop">
+      <button id="dzRun" class="b def" disabled>▶ Release</button>
+      <button id="dzReset" class="b" disabled>Reset position</button>
+      <span class="sep"></span><b>Drop / rise test</b><span class="sep"></span>
+      <label class="spd">Speed <input id="dzSpeed" type="range" min="0.1" max="8" step="0.1" value="1"><output id="dzSpeedV">1×</output></label>
+    </span>
+  </div>
+</section>
+
+<!-- ======================================================== right: results -->
+<aside id="results" class="pane" aria-label="Results">
+  <div id="tabHydro" class="tab-body">
+    <div class="ph">Results — Hydrostatics</div>
+    <div class="pb">
+      <div id="verdict" class="verdict"></div>
+      <table id="stats" class="pgtable"></table>
+      <div class="gh">Righting arm GZ<span class="sp"></span>
+        <span class="sg" id="gzAxis"><button data-axis="x" class="on">Roll</button><button data-axis="y">Pitch</button></span>
+      </div>
+      <div class="chartwrap"><canvas id="gz" width="360" height="170"></canvas></div>
+      <div id="gzInfo" class="info pad"></div>
     </div>
-    <div id="tabSea" class="tab hidden">
-      <div id="seaVerdict" class="verdict">Pick a sea state, then run the waves or the statistics.</div>
-      <div class="rhead"><h2 id="specTitle">Wave spectrum</h2></div>
-      <canvas id="specCv" class="chart"></canvas>
-      <div id="specInfo" class="info"></div>
-      <div class="rhead"><h2>Motions</h2></div>
-      <canvas id="thRot" class="chart"></canvas>
-      <canvas id="thLin" class="chart"></canvas>
-      <div id="seaStats" class="info"></div>
+  </div>
+  <div id="tabSea" class="tab-body hidden">
+    <div class="ph">Results — Motions</div>
+    <div class="pb">
+      <div id="seaVerdict" class="verdict">Pick a sea, then run the waves or the statistics.</div>
+      <div class="gh" id="specTitle">Wave spectrum</div>
+      <div class="chartwrap"><canvas id="specCv" class="chart"></canvas></div>
+      <div id="specInfo" class="info pad"></div>
+      <div class="gh">Motions</div>
+      <div class="chartwrap"><canvas id="thRot" class="chart"></canvas><canvas id="thLin" class="chart"></canvas></div>
+      <div id="seaStats" class="info pad"></div>
       <div id="ptCharts" class="hidden">
-        <div class="rhead"><h2>Tracked points: height above water</h2></div>
-        <canvas id="ptCv" class="chart"></canvas>
-        <div id="ptStats" class="info"></div>
+        <div class="gh">Tracked points: height above water</div>
+        <div class="chartwrap"><canvas id="ptCv" class="chart"></canvas></div>
+        <div id="ptStats" class="info pad"></div>
       </div>
       <div id="moorCharts" class="hidden">
-        <div class="rhead"><h2>Mooring line tension</h2></div>
-        <canvas id="moorTcv" class="chart"></canvas>
-        <div class="rhead"><h2>Watch circle (top view, from the mean position)</h2></div>
-        <canvas id="moorXY" class="chart"></canvas>
-        <div id="moorStats" class="info"></div>
+        <div class="gh">Mooring line tension</div>
+        <div class="chartwrap"><canvas id="moorTcv" class="chart"></canvas></div>
+        <div class="gh">Watch circle (top view, from the mean position)</div>
+        <div class="chartwrap"><canvas id="moorXY" class="chart"></canvas></div>
+        <div id="moorStats" class="info pad"></div>
       </div>
-      <div class="rhead"><h2>Sea states 0–5 (linear spectral estimate)</h2><button id="ssSweep" class="ghost">Compute</button></div>
-      <div id="ssTable" class="info"></div>
+      <div class="gh">Sea states 0–5 (linear spectral estimate)<span class="sp"></span><button id="ssSweep" class="b sm">Compute</button></div>
+      <div id="ssTable" class="info pad"></div>
     </div>
-    <div id="tabRao" class="tab hidden">
+  </div>
+  <div id="tabRao" class="tab-body hidden">
+    <div class="ph">Results — Response amplitude operators<span class="sp"></span>
+      <button id="raoCsv" class="b sm" disabled title="Amplitudes and phases per heading and frequency">Export CSV</button>
+      <button id="raoRaw" class="b sm" disabled title="Complex RAOs, excitation forces and the model matrices">Raw CSV</button>
+    </div>
+    <div class="pb">
       <div id="raoLoading" class="tab-loading hidden"><div class="spinner"></div><span id="raoLoadingText">Rendering RAO plots…</span></div>
-      <div id="raoEmpty" class="info">No RAOs yet. Set the frequency range and headings in section 8, then click <b>Compute RAOs</b>.</div>
-      <div class="rhead">
-        <h2>Response amplitude operators</h2>
-        <select id="raoDof" style="width:auto">
+      <div id="raoEmpty" class="info pad">No RAOs yet. Set the frequency range and headings, then click <b>Solve RAOs</b>.</div>
+      <div class="gh">Response amplitude operators<span class="sp"></span>
+        <select id="raoDof" class="b">
           <option value="2">Heave</option><option value="3" selected>Roll</option><option value="4">Pitch</option>
           <option value="0">Surge</option><option value="1">Sway</option><option value="5">Yaw</option>
         </select>
-        <select id="raoNorm" style="width:auto">
+        <select id="raoNorm" class="b">
           <option value="slope">deg / deg slope</option><option value="m">deg / m</option>
         </select>
       </div>
-      <canvas id="raoCv" class="chart"></canvas>
-      <div class="rhead"><h2>Phase</h2></div>
-      <canvas id="raoPh" class="chart"></canvas>
-      <div class="rhead"><h2>Heading × frequency</h2></div>
-      <canvas id="raoHeat" class="chart"></canvas>
-      <div id="raoResp" class="info"></div>
-      <div class="rhead"><h2>Wave-following quality</h2>
-        <label class="tog" style="flex-direction:row;gap:6px;align-items:center">tolerance <input id="followTol" type="number" step="any" min="0.1" value="5" style="width:56px"> %</label>
+      <p class="note warnnote pad">Note: β is the wave heading measured from the model's +x axis.</p>
+      <div class="chartwrap"><canvas id="raoCv" class="chart"></canvas></div>
+      <div class="gh">Phase</div>
+      <div class="chartwrap"><canvas id="raoPh" class="chart"></canvas></div>
+      <div class="gh">Heading × frequency</div>
+      <div class="chartwrap"><canvas id="raoHeat" class="chart"></canvas></div>
+      <div id="raoResp" class="info pad"></div>
+      <div class="gh">Wave-following quality<span class="sp"></span>
+        <label class="inl">tolerance <input id="followTol" type="number" step="any" min="0.1" value="5"> %</label>
       </div>
-      <canvas id="followCv" class="chart"></canvas>
-      <div id="followInfo" class="info"></div>
-    </div>
-    <div id="tabDrop" class="tab hidden">
-      <div id="dropVerdict" class="verdict"><b>Not placed</b>Set a start height in section 9 and press Place.</div>
-      <div class="rhead"><h2>CoG height</h2></div>
-      <canvas id="dzCvZ" class="chart"></canvas>
-      <div class="rhead"><h2>Vertical speed</h2></div>
-      <canvas id="dzCvV" class="chart"></canvas>
-      <div class="rhead"><h2>Attitude</h2></div>
-      <canvas id="dzCvA" class="chart"></canvas>
-      <div id="dzStats" class="info"></div>
+      <div class="chartwrap"><canvas id="followCv" class="chart"></canvas></div>
+      <div id="followInfo" class="info pad"></div>
     </div>
   </div>
-  <div id="busy" class="hidden">Loading…</div>
-</main>
+  <div id="tabDrop" class="tab-body hidden">
+    <div class="ph">Results — Drop / rise test</div>
+    <div class="pb">
+      <div id="dropVerdict" class="verdict"><b>Not placed</b>Set a start height and press Place at start.</div>
+      <div class="gh">CoG height</div>
+      <div class="chartwrap"><canvas id="dzCvZ" class="chart"></canvas></div>
+      <div class="gh">Vertical speed</div>
+      <div class="chartwrap"><canvas id="dzCvV" class="chart"></canvas></div>
+      <div class="gh">Attitude</div>
+      <div class="chartwrap"><canvas id="dzCvA" class="chart"></canvas></div>
+      <div id="dzStats" class="info pad"></div>
+      <div class="gh">Runs<span class="sp"></span><button id="dzRunsClear" class="b sm">Clear</button></div>
+      <div id="dzRuns" class="info pad"></div>
+    </div>
+  </div>
+</aside>
+</div>
+
+<!-- ======================================================== status bar -->
+<footer id="statusbar">
+  <span id="sbState">Ready</span>
+  <span id="sbModel">No model</span>
+  <span>Units: m · kg · s · N</span>
+  <span id="sbWater">ρ 1000 kg/m³</span>
+  <span id="sbAddons">Add-ons: none</span>
+  <span class="right" id="sbView">Isometric</span>
+</footer>
+</div>
+
+<dialog id="helpDlg">
+  <div class="ph">Method notes<span class="sp"></span><button class="b sm" data-act="closehelp">Close</button></div>
+  <div class="dlgbody">
+    <p>Hydrostatics: rigid body, uniform density for the computed inertia. Units are metric throughout (m, kg, s, N).</p>
+    <p>Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), added mass and damping from the panel method or estimates, zero forward speed, deep water (also for the wave kinematics on mooring lines; the mooring water depth only places the anchors).</p>
+    <p>Wave direction in the Waves stage is measured from the global +X axis. RAO headings and the mooring line direction are measured from the model's +x axis.</p>
+  </div>
+</dialog>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

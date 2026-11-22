@@ -6,9 +6,19 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 ./serve.sh          # then open http://localhost:8765
 ```
 
+## Workspace
+
+The page is laid out like a CAD / FEA tool: a menu bar, stage tabs, a setup pane on the left (property grid), the 3D view with its view toolbar and an animation toolbar, a results pane on the right and a status bar.
+
+- **Stages:** **1 · Float** (start here: upload a model, mass, CoG, inertia, water, free float, hydrostatics and GZ), **2 · Waves** (regular or irregular seas, wave direction, drift, tracked points, motions) and **3 · RAO** (panel-method sweep and plots). Each tab shows its status (Stable, running, solved…).
+- **Tools menu:** add-ons that change the wave runs and RAOs — **Mooring**, **Wind**, **Viscous drag & heave plates** — open in the setup pane and stay on until turned off; and the **Drop / rise test**, a separate mode that pauses Waves and RAO while the body is placed.
+- **Units:** metric throughout (m, kg, s, N). An STL file has no units, so for an STL a *STL drawn in* menu (mm, cm, m) gives the file's units.
+- **Axes:** a global XYZ triad in the corner of the view turns with the camera, and the model's own xyz axes are drawn at the CoG and turn with the body. The **wave direction** (and the wind direction) is measured from **global +X**; **RAO headings** and the **mooring line direction** are measured from the **model's +x**.
+- The previous dark, single-column layout is tagged **`classic-ui`** in git (`git checkout classic-ui` to run it).
+
 ## What it does
 
-- **Imports STEP / IGES / BREP** files (via `occt-import-js`, OpenCascade compiled to WASM) and **STL**. STEP, IGES and BREP files carry their own units, so the **Units** menu only changes how lengths are shown and entered (mm, cm, m, in, ft); the body keeps its real size. STL files have no units, so for an STL the menu sets the units the file was drawn in and rescales it.
+- **Imports STEP / IGES / BREP** files (via `occt-import-js`, OpenCascade compiled to WASM) and **STL**. STEP, IGES and BREP files carry their own units, so the body keeps its real size; lengths are shown and entered in metres. STL files have no units, so for an STL the *STL drawn in* menu sets the units the file was drawn in and rescales it.
 - **Inputs:** mass, CoG (x, y, z in model coordinates), fresh (1000 kg/m³), salt (1025 kg/m³) or custom water, and an initial roll/pitch/yaw.
 - **Moments of inertia:** computed from the geometry for uniform density, or entered as a custom tensor (kg·m² about the CoG, model axes). There's a sign option for CAD tools that report products of inertia as +∫xy dm. Custom values are checked for positive-definiteness and the triangle inequality, and are used by the hydrostatic periods, both simulators and the RAOs.
 - **Static float solve:** for the chosen attitude, finds the waterline where buoyancy = weight, then shows
@@ -29,19 +39,19 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
   - JONSWAP (Hasselmann et al. 1973), with γ, σ = 0.07/0.09 and A<sub>γ</sub> = 1 − 0.287 ln γ, plus the DNV γ(Tp/√Hs) option.
   - The spectrum plot marks the body's natural heave, roll and pitch frequencies and warns when one falls inside the spectral peak.
 - **Irregular sea:** random-phase superposition (seeded), long-crested or cos<sup>2s</sup> short-crested.
-- **Wave drift** (toggle in section 7, on by default):
+- **Wave drift** (Waves stage › Drift, on by default):
   - **On:** the body is carried by the Stokes drift current, averaged over its draft: u = Σ ω k a² e^{2kz} (Stokes 1847). It is also pushed by the mean drift force of the waves it reflects, F = ½ρga²R² per unit width (Longuet-Higgins 1977), with R from Ursell's (1947) barrier solution at the body's draft. Quadratic drag ½ρC<sub>d</sub>A|v−u|(v−u) on the speed relative to the current sets the drift speed; C<sub>d</sub> is editable (default 1).
   - The slowly varying horizontal force from the Froude–Krylov pressure integration is not physical without diffraction, so it is low-pass filtered out whenever the drift model is active. On a 4×2 m box this filter was the difference between 0.39 m/s of spurious drift and the expected 0.09 m/s.
   - **Off:** a very soft, critically damped horizontal spring (natural period ≥ 60 s and ≥ 10 wave periods) holds the body on station. Wave-frequency surge and sway are unchanged.
   - The live run shows drift speed, direction and distance. **Camera follows the body** can be switched off, and **↺ Restart run** starts again from the original position (suggested once the body has drifted more than 10 body lengths). Statistics runs report the mean drift.
-- **Regular waves** (the *Regular waves* switch in section 7): a single Airy wave from your own height, period and heading, not tied to any spectrum or sea state.
+- **Regular waves** (Waves stage › Type › Regular): a single Airy wave from your own height, period and direction, not tied to any spectrum or sea state.
   - Height can mean the crest-to-trough height H (amplitude H/2) or a significant height Hs with the same energy (amplitude Hs/2√2, since a sinusoid has σ = A/√2).
   - Reports wavelength, celerity and steepness H/λ (warns above 1/20 and at the 1/7 breaking limit), and warns when the period is within 15 % of a natural period.
   - Shows the linear steady-state heave, roll and pitch (|RAO| × A) during the 3D run. **Run statistics** simulates 5 min and compares the measured steady-state amplitudes against that prediction.
 - **Time-domain stability in waves:**
   - Loads are Wheeler-stretched Froude–Krylov pressure integrated over the *instantaneous* wetted hull (nonlinear in body motion and wave elevation), plus gravity, estimated added mass and linear damping per mode.
   - **Run in waves** animates it in 3D. The water surface is shaded by height (crests lighter, troughs darker), carries faint grid lines fixed in the world that ride on the waves, and reflects a soft sky, so the wave motion is easy to follow. **Run statistics** simulates 20 min in a Web Worker and reports significant and maximum roll, pitch and heave, green water on deck and capsize. A verdict compares maximum roll against the GZ range of stability, e.g. "SS3: max roll 7.73° of 109° range: safe".
-- **Sea-state table:** a linear spectral estimate (|RAO|²·S) for SS1–5 at the chosen heading: significant amplitudes, most-probable 3-hour maximum roll, and a verdict. Sea states whose waves are short relative to the body (D/λ > 0.2) are flagged.
+- **Sea-state table:** a linear spectral estimate (|RAO|²·S) for SS1–5 at the chosen wave direction: significant amplitudes, most-probable 3-hour maximum roll, and a verdict. Sea states whose waves are short relative to the body (D/λ > 0.2) are flagged.
 - **RAOs:**
   - Enter a frequency range **in Hz** (the equivalent rad/s, periods and wavelengths are shown) and a list or range of incident headings (e.g. `0:15:180`). A progress bar shows the sweep, and the RAO tab shows a loading indicator while plots render.
   - **Panel method (default).** A low-order boundary-element (BEM) solver, the same formulation as WAMIT's low-order method, solves the linear radiation and diffraction problem on the wetted hull. It gives frequency-dependent added mass A(ω), radiation damping B(ω) and wave exciting forces X(ω, β) with all couplings. The 6-DOF RAOs follow from [−ω²(M + A) + iω(B + B<sub>extra</sub>) + C] ξ = X. Details:
@@ -51,31 +61,31 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
     - GMRES for large meshes, dense LU otherwise
   - The CAD or STL tessellation is **remeshed** into near-equilateral panels (isotropic remeshing, Botsch & Kobbelt 2004). Sharp edges and the waterline are kept exactly, panels are refined where the surface is curved, and the panel size is never coarser than 1/7 of the shortest wavelength. **Panels:** Coarse ~400, Standard ~1,000, Fine ~2,500 or Very fine ~6,000.
   - Runs on a pool of Web Workers sized to the CPU and memory, with progress, an ETA and **Cancel**. The page stays usable. A Standard sweep takes seconds to a few minutes; Very fine on a non-symmetric hull can take 10–20 min.
-  - Reports the natural frequencies with frequency-dependent added mass and the radiation damping ratio at each. Warns when a resonance has under 2 % of critical damping, since potential flow gives almost no roll damping and real peaks are lower. **Extra ζ** (viscous damping) can be added in section 7. Also warns if the irregular-frequency lid could not be built, or if any radiation damping comes out negative (panels too coarse for the top frequencies).
+  - Reports the natural frequencies with frequency-dependent added mass and the radiation damping ratio at each. Warns when a resonance has under 2 % of critical damping, since potential flow gives almost no roll damping and real peaks are lower. **Extra ζ** (viscous damping) can be added in Waves › Hydrodynamics & wave detail. Also warns if the irregular-frequency lid could not be built, or if any radiation damping comes out negative (panels too coarse for the top frequencies).
   - Validated against WAMIT, Capytaine, Hulme's exact floating-hemisphere solution, Lamb's exact spheroid added mass and the Kramer et al. (2021) sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations and couplings on buoy shapes. Also checked on two offshore-wind platforms: the OC3-Hywind spar against WAMIT, and the 40 m ITI barge, with and without its moonpool, against Capytaine ([docs/bem-validation.md](docs/bem-validation.md)).
   - **Froude–Krylov + estimates** remains available as a fast option: the same 6-DOF model with estimated added mass and damping and Froude–Krylov excitation on the mean wetted surface (Faltinsen 1990; Journée & Massie 2001).
   - Plots: amplitude (m/m, deg/m or deg per degree of wave slope), phase, and a heading × frequency heatmap.
   - Also reports the response in the current sea state, computed from the sweep and cached.
   - **Export CSV** gives amplitudes and phases per heading and frequency. **Export raw CSV** gives complex RAOs (re/im) and excitation forces per DOF, plus the panel-method A(ω) and B(ω) (diagonal and the surge–pitch and sway–roll couplings). The mass and restoring matrices are in the header comments.
-- **Added mass and damping in the simulations.** With *Panel-method added mass & damping in the simulations* on (section 7, default), the wave runs and the drop test take A and B from the panel method at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of the body, or from a quick coarse sweep (a few seconds) the first time.
+- **Added mass and damping in the simulations.** With *Panel-method added mass & damping in the simulations* on (Waves › Hydrodynamics & wave detail, default), the wave runs and the drop test take A and B from the panel method at each mode's natural frequency (surge, sway and yaw at the wave frequency). They come from the last panel-method RAO sweep of the body, or from a quick coarse sweep (a few seconds) the first time.
 - **Long-wave diffraction correction** (G.I. Taylor, Froude–Krylov option and time domain): Froude–Krylov alone captures only ρ∫a dV (C_m = 1). The correction adds A<sub>jj</sub> × the incident acceleration averaged over the submerged volume, computed with an exact cone quadrature. It is applied identically in the RAO solver and the time-domain simulator. Defaults are on for surge and sway, off for heave, as justified by the trade study below.
 - **Added-mass estimates** (used without the panel method; editable): heave uses a floating elliptic disk of the waterplane's area and aspect ratio, (2/3)πρab²/E(e) (Lamb §373). Surge and sway use whichever strip direction suits the body's proportions. A spar gets ρπa²T (C<sub>a</sub> = 1) and a ship-like hull gets ρπT²L/2.
 
 ## Drop / rise test
 
-Section 9 releases the body from a chosen CoG height, above or below the still-water surface, at the current orientation, with an optional initial vertical speed. You can watch it fall in, plunge and recover, or rise from depth, break the surface and settle. It's deliberately simple:
+The drop / rise test (Tools menu) releases the body from a chosen CoG height, above or below the still-water surface, at an initial orientation set in the drop-test pane (shared with Float's start attitude), with an optional initial vertical speed. You can watch it fall in, plunge and recover, or rise from depth, break the surface and settle. It's deliberately simple:
 - gravity, water buoyancy at B, and air buoyancy at the dry-volume centroid
 - quadratic drag ½ρC<sub>d</sub>A⊥|v|v on the CoG velocity, with A⊥ the hull's projected area normal to the motion, and water/air blended by the submerged fraction. Water and air C<sub>d</sub> are editable, with presets from Hoerner, *Fluid-Dynamic Drag*.
 - added mass and rotational water damping: the floating values (panel method or estimates), scaled by submergence relative to the float position (zero in air, full at the float draft and below)
 - linear wave-making damping while the body pierces the surface: the panel-method radiation damping at the heave natural frequency. Against the Kramer et al. (2021) floating-sphere decay test this gives a damped period of 0.755 s (measured 0.76 s) and a decay rate within 3 % of WAMIT's.
 
-The **Drop test** tab plots CoG height, vertical speed and attitude, and reports water-entry speed, deepest plunge, surface breach, overshoot and settle time. While the body is placed, the sea-state, statistics, sea-state table, RAO and calm-simulate tools are locked until **Reset position**. No slamming pressures, splash or air-cavity effects are modelled.
+The **Drop test** tab plots CoG height, vertical speed and attitude, and reports water-entry speed, **max submersion depth** (lowest point of the body below the still water), **max rise rate** (largest upward CoG speed), deepest CoG, surface breach, overshoot and settle time. A runs table lists every release so heights and orientations can be compared. While the body is placed, the sea-state, statistics, sea-state table, RAO and calm-simulate tools are locked until **Reset position** or **Exit drop test**. No slamming pressures, splash or air-cavity effects are modelled.
 
-## Small-body options (sections 10–13)
+## Small-body options (tracked points and the Tools add-ons)
 
 For buoys, gliders and other small bodies. Mooring, drag and wind are off by default, and tracked points are empty until you add one. When on, each option is used by the wave runs, the statistics, the RAOs and the sea-state table.
 
-- **Tracked points (section 10):** points on the body, such as an antenna, GPS, solar panel or IMU. Click **Pick on model** and then the model, or type model coordinates. An optional clearance counts the point as underwater until it stands that far clear of the surface.
+- **Tracked points (Waves stage):** points on the body, such as an antenna, GPS, solar panel or IMU. Click **Pick on model** and then the model, or type model coordinates. An optional clearance counts the point as underwater until it stands that far clear of the surface.
   - Wave runs show each point's height above the local water surface live.
   - **Run statistics** reports the time above water, how often it goes under (per hour), the longest underwater and above-water stretches, and accelerations in the body axes (RMS and max, without gravity).
   - A linear column comes from the RAOs. The relative motion is Gaussian, so the time above water is Φ(h₀/σ), and Rice's crossing rate gives how often the point goes under.
@@ -85,18 +95,18 @@ For buoys, gliders and other small bodies. Mooring, drag and wind are off by def
   - **horizontal**, for GPS buoys: the error against the orbit of a surface particle.
 
   The errors are complex, so a phase lag counts.
-- **Viscous drag & heave plates (section 11):**
+- **Viscous drag & heave plates (Tools menu):**
   - **Hull drag:** quadratic drag ½ρC<sub>d</sub>A|u|u along each axis of the floating body, on the body's speed relative to the wave orbital flow. A is the submerged area projected along that axis. Rotations get drag from the same coefficients on the wetted panels; a body of revolution spinning about its axis gets none. Hoerner presets are provided.
   - **Heave plates:** thin discs with added mass ρD³/3, rotational added inertia ρD⁵/90, an inertia force from the wave acceleration and their own drag, all normal to the plate. When the body tilts, the plate's force tilts with it; its slow sideways part is filtered out with the Froude–Krylov mean force (see Wave drift), because without the matching second-order terms it is not a reliable drift force. On a rolling, moored buoy it otherwise reached ten times the actual wave-drift force.
-  - **Time domain vs RAOs:** wave runs use the full quadratic drag. The RAOs and the sea-state table use the equivalent linear damping for the sea state in section 7: stochastic linearisation ½ρC<sub>d</sub>A√(8/π)σ<sub>u</sub> for a spectrum (Borgman 1967), or 8/(3π)·U for a regular wave. The relative velocity depends on the motion, so this is iterated. The info box shows the resulting damping ratio of each mode.
-- **Mooring (section 12):** 1–4 lines sharing one fairlead, anchored on the seabed and spread evenly in direction. Presets are provided for chain, wire and synthetic ropes. Two line models:
+  - **Time domain vs RAOs:** wave runs use the full quadratic drag. The RAOs and the sea-state table use the equivalent linear damping for the sea state set in Waves: stochastic linearisation ½ρC<sub>d</sub>A√(8/π)σ<sub>u</sub> for a spectrum (Borgman 1967), or 8/(3π)·U for a regular wave. The relative velocity depends on the motion, so this is iterated. The info box shows the resulting damping ratio of each mode.
+- **Mooring (Tools menu):** 1–4 lines sharing one fairlead, anchored on the seabed and spread evenly in direction. Presets are provided for chain, wire and synthetic ropes. Two line models:
   - **Quasi-static:** an elastic catenary with seabed contact (Jonkman 2007; no seabed friction), solved at every step.
   - **Dynamic:** a lumped-mass line in the style of MoorDyn (Hall & Goupee 2015). Segments take tension only, with strain-rate damping, Morison drag in the wave flow, normal added mass and a seabed spring. Explicit sub-steps resolve the axial wave speed, so a slack line going taut shows its snap load.
 
   The lines' pull is included in the floating draft. The body starts where the lines (and the steady wind) balance; a single line pulls it toward its anchor until slack. The RAOs use the catenary's 6×6 linear stiffness at that position, including the geometric stiffness of the tension at the fairlead lever arm.
 
   Statistics report the max and min fairlead tension, slack events (below 10 % of the static tension, the DNV-RP-H103 slack criterion), anchor tension and uplift, and the watch circle, with a tension chart and a top view.
-- **Wind (section 13):**
+- **Wind (Tools menu):**
   - **Wind field:** the mean wind U₁₀ follows the power law U(z) = U₁₀(z/10)^0.12 over open sea. Gusts come from the Frøya (NPD) spectrum of DNV-RP-C205 §2.3, taken as coherent over the body.
   - **Loads:** every panel above the instantaneous water surface takes ½ρ<sub>air</sub>C<sub>d</sub>A⊥|u|u, with u the wind relative to the panel. That gives the steady heel, the wind drift and the gust response, and includes aerodynamic damping.
   - **Info box:** the steady force, the heeling moment, the linear static heel, the gust σ, and a free-drift estimate.
@@ -139,7 +149,7 @@ The body is triangulated and each triangle is clipped to the part below the wate
 | `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test; at fine also the small-body checks (mooring, drag, wind, tracked points) | 322/322 fine, 264/264 normal and coarse |
 | http://localhost:8765/test/validate.html | Same checks, in the browser | 322/322 (fine) and 264/264 (normal, coarse) in headless Chromium |
 | `node test/validate-bem.mjs [quick]` | Panel method: special functions, meshing of 10 STEP bodies, Lamb's slender spheroid, A, B and X against WAMIT (2 bodies) and Capytaine (6 buoys), GMRES vs LU, RAO peaks, Kramer sphere decay through the drop test; then meshed as the app does: moonpool lids, Hulme's exact hemisphere (ka 0–10), the OC3-Hywind spar (WAMIT) and the ITI barge (Capytaine) ([docs/bem-validation.md](docs/bem-validation.md)) | 35/35 |
-| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, display units, panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs; small-body options on the cylinder buoy (point picked by clicking the model, drag and heave plate, mooring, wind, live run, statistics, RAOs with the wave-following table, sea-state table with linearised drag); custom inertia, drop and rise tests with tool locking and panel-method coefficients, console errors | 85/85 |
+| `node test/e2e-browser.mjs [shotDir]` | Drives the app UI in Chromium: import, inputs, settle, cube demo, sea-state run and statistics, regular-wave run and statistics, wave drift on/off, restart and camera follow, the workspace (metric only, stage tabs, Tools menu panes, view presets and the axes triad), global wave direction (a 90° yaw turns beam seas into head seas), panel-method added mass and damping in the simulations, RAO sweep with the panel method (Hz, progress, CSV and raw CSV with A(ω) and B(ω), tab reload, cancel, Froude–Krylov option), sea-state table from the panel-method RAOs; small-body options on the cylinder buoy (point picked by clicking the model, drag and heave plate, mooring, wind, live run, statistics, RAOs with the wave-following table, sea-state table with linearised drag); custom inertia, drop and rise tests from the Tools menu (orientation, max submersion depth, max rise rate, runs table, tool locking, Exit drop test) with panel-method coefficients, console errors | 97/97 |
 | `node test/trade-study-node.mjs` | Regenerates the RAO trade study, [docs/rao-trade-study.md](docs/rao-trade-study.md) | — |
 
 **Wave and seakeeping checks** (`test/validate-waves.js`, values from `test/make_models.py`):

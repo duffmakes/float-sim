@@ -156,6 +156,7 @@ export function initDropTest(api) {
     const sinks = st.H.status === 'sinks' && sim.last.f >= 0.999 && sim.v[2] < 0 && sim.t > 5;
     if (sim.settled()) { D.done = true; stop(); $('dzRun').textContent = '▶ Release again'; }
     if (sinks || sim.t > sim.maxTime) { D.done = true; stop(); }
+    if (D.done && !sim.logged) { sim.logged = true; logRun(sim, sinks); }
     const now = performance.now();
     if (now - D.lastChart > 200 || D.done) {
       D.lastChart = now;
@@ -174,7 +175,7 @@ export function initDropTest(api) {
     const ref = (val) => r.t.map(() => val);
     lineChart($('dzCvZ'), { series: [
       { name: 'CoG height', color: SERIES[0], x: r.t, y: zU },
-      { name: 'water surface', color: '#8a9ab5', x: r.t, y: ref(0), width: 1, dash: [4, 3] },
+      { name: 'water surface', color: '#6b7380', x: r.t, y: ref(0), width: 1, dash: [4, 3] },
       ...(eq && Number.isFinite(eq.zG) ? [{ name: 'float height', color: SERIES[2], x: r.t, y: ref(eq.zG / k), width: 1, dash: [2, 3] }] : []),
     ], xLabel: 't (s)', yLabel: `height (${units().name})`, height: 160 });
     lineChart($('dzCvV'), { series: [{ name: 'vertical speed', color: SERIES[1], x: r.t, y: r.vz }], xLabel: 't (s)', yLabel: 'speed (m/s)', height: 120, legend: false });
@@ -185,11 +186,14 @@ export function initDropTest(api) {
   }
   function renderStats(sinks = false) {
     const sim = D.sim, eq = equilibrium();
-    if (!sim) { $('dzStats').innerHTML = ''; $('dropVerdict').innerHTML = D.placed ? '<b>Placed</b>Press Release to start the test.' : '<b>Not placed</b>Set a start height in section 9 and press Place.'; $('dropVerdict').className = 'verdict'; return; }
+    if (!sim) { $('dzStats').innerHTML = ''; $('dropVerdict').innerHTML = D.placed ? '<b>Placed</b>Press Release to start the test.' : '<b>Not placed</b>Set a start height and orientation, then press Place at start.'; $('dropVerdict').className = 'verdict'; return; }
     const s = sim.st, startAir = s.startFrac === 0, startSub = s.startFrac >= 0.999;
     const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+    const depth = Number.isFinite(s.minBottom) ? Math.max(0, -s.minBottom) : 0;
     const rows = [
       row('Start', `${startAir ? 'in air' : startSub ? 'fully submerged' : 'at the surface'}, CoG at ${Lm(D.start.zG)}`),
+      row('<b>Max submersion depth</b>', `<b>${Lm(depth)}</b> (lowest point below the still water)`),
+      row('<b>Max rise rate</b>', `<b>${f(s.maxRise)} m/s</b> (largest upward speed of the CoG)`),
       startAir ? row('Water entry speed', s.entrySpeed !== null ? `${f(s.entrySpeed)} m/s (drag-free fall of the lowest point from ${Lm(geometryAt(D.start.zG).bottom)}: √(2gh) = ${f(Math.sqrt(Math.max(0, (parseFloat($('dzV0').value) || 0) ** 2 + 2 * 9.80665 * Math.max(0, geometryAt(D.start.zG).bottom))))} m/s)` : 'not yet') : '',
       row('Deepest CoG position', `${Lm(s.minZ)}${eq && Number.isFinite(eq.zG) ? ` (${Lm(s.minZ - eq.zG)} relative to the float height)` : ''}`),
       row('Went fully under water', s.fullySubmerged ? 'yes' : 'no'),
@@ -204,8 +208,27 @@ export function initDropTest(api) {
     else { v.className = 'verdict'; v.innerHTML = `<b>Running</b>t = ${f(sim.t, 4)} s`; }
   }
 
+  // ------------------------------------------------------------ runs table (repeat drops with other heights / attitudes)
+  D.runs = [];
+  function logRun(sim, sinks) {
+    const e = api.getEuler ? api.getEuler() : [0, 0, 0], s = sim.st;
+    D.runs.push({
+      n: D.runs.length + 1, zG: D.start.zG, euler: e, depth: Number.isFinite(s.minBottom) ? Math.max(0, -s.minBottom) : 0,
+      rise: s.maxRise, entry: s.entrySpeed, result: sinks ? 'sinks' : sim.settled() ? `settled ${f(sim.t)} s` : 'time limit',
+    });
+    renderRuns();
+  }
+  function renderRuns() {
+    if (!D.runs.length) { $('dzRuns').innerHTML = '<span class="hint">Each finished release is listed here, so you can change the height or orientation and compare.</span>'; return; }
+    const deg = (v) => `${+(+v).toFixed(1)}`;
+    $('dzRuns').innerHTML = `<table class="runs"><tr><th>Run</th><th>Start</th><th>Roll, pitch, yaw °</th><th>Max depth</th><th>Max rise</th><th>Result</th></tr>${D.runs.map((r, i) => `
+      <tr class="${i === D.runs.length - 1 ? 'last' : ''}"><td>${r.n}</td><td>${Lm(r.zG)}</td><td>${r.euler.map(deg).join(', ')}</td><td>${Lm(r.depth)}</td><td>${f(r.rise)} m/s</td><td>${r.result}</td></tr>`).join('')}</table>`;
+  }
+  renderRuns();
+
   return {
     frame,
+    clearRuns() { D.runs = []; renderRuns(); },
     get placed() { return D.placed; },
     get running() { return D.running; },
     onTab() { drawCharts(); renderStats(); },

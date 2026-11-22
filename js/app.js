@@ -10,13 +10,15 @@ import { readCad, soupFromIndexed, concat } from './loader.js';
 import { initSeakeeping } from './seakeeping.js';
 import { initDropTest } from './droptest.js';
 import { initExtras } from './extras.js';
+import { initUI } from './ui.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------------ state
 let sea = null;   // seakeeping module, initialised after the scene is built
 let drop = null;  // drop / rise test module
-let extras = null;  // small-body options (sections 10–13)
+let extras = null;  // small-body options (tracked points, drag, mooring, wind)
+let ui = null;      // workspace chrome (stages, menus, status bar)
 const S = {
   model: null,        // { name, raw: Float64Array (file units), tris (m), geo, mp, diag, open }
   rho: 1000,
@@ -32,7 +34,15 @@ const canvas = $('gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0d1420);
+// classic CAD viewport: grey at the top fading to white (screen-space background; the water materials are unchanged)
+scene.background = (() => {
+  const c = document.createElement('canvas'); c.width = 2; c.height = 512;
+  const g = c.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 512);
+  [[0, '#9aa2ad'], [0.45, '#cdd2d8'], [0.8, '#f4f5f7'], [1, '#ffffff']].forEach(([t, col]) => gr.addColorStop(t, col));
+  g.fillStyle = gr; g.fillRect(0, 0, 2, 512);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.001, 1e6);
 camera.up.set(0, 0, 1);
 const controls = new OrbitControls(camera, canvas);
@@ -81,10 +91,54 @@ const arrW = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector
 const arrB = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 1, 0x4aa8ff);
 for (const a of [arrW, arrB]) { a.line.material.depthTest = false; a.cone.material.depthTest = false; a.renderOrder = 9; scene.add(a); }
 
+// model axes at the CoG: they turn with the body (the body group's frame is the model's own axes)
+const axesGroup = new THREE.Group(); body.add(axesGroup);
+const AXES = [['x', [1, 0, 0], 0xd32f2f], ['y', [0, 1, 0], 0x2e9e44], ['z', [0, 0, 1], 0x1e5fd6]];
+const axisArrows = AXES.map(([, d, c]) => {
+  const a = new THREE.ArrowHelper(new THREE.Vector3(...d), new THREE.Vector3(), 1, c);
+  for (const m of [a.line.material, a.cone.material]) { m.depthTest = false; m.transparent = true; }
+  a.renderOrder = 12; axesGroup.add(a); return a;
+});
+let axisLen = 1;
+
 const labelBox = $('labels');
 const labels = {};
 for (const k of ['G', 'B', 'Mᴛ', 'Mʟ']) { const d = document.createElement('div'); d.textContent = k; labelBox.appendChild(d); labels[k] = d; }
 const labelTargets = { G: mG, B: mB, 'Mᴛ': mMt, 'Mʟ': mMl };
+const axisLabels = AXES.map(([n]) => { const d = document.createElement('div'); d.className = `ax ${n}`; d.textContent = n; labelBox.appendChild(d); return d; });
+
+// global axes triad (corner of the view): drawn each frame from the camera orientation
+const triad = $('triad');
+const TRIAD = [['X', [1, 0, 0], '#d32f2f', '#b71c1c'], ['Y', [0, 1, 0], '#2e9e44', '#1b6e2e'], ['Z', [0, 0, 1], '#1e5fd6', '#163f99']];
+const SVGNS = 'http://www.w3.org/2000/svg';
+const triadAxes = TRIAD.map(([n, , col, ink]) => {
+  const g = document.createElementNS(SVGNS, 'g');
+  const line = document.createElementNS(SVGNS, 'line'); line.setAttribute('stroke', col); line.setAttribute('stroke-width', '2.4'); line.setAttribute('stroke-linecap', 'round');
+  const head = document.createElementNS(SVGNS, 'polygon'); head.setAttribute('fill', col);
+  const txt = document.createElementNS(SVGNS, 'text');
+  for (const [k, v] of [['fill', ink], ['font-size', '12'], ['font-weight', '700'], ['stroke', '#fff'], ['stroke-width', '3'], ['paint-order', 'stroke'], ['text-anchor', 'middle'], ['dominant-baseline', 'central'], ['font-family', 'Segoe UI, Noto Sans, sans-serif']]) txt.setAttribute(k, v);
+  txt.textContent = n;
+  g.append(line, head, txt); triad.appendChild(g);
+  return { g, line, head, txt };
+});
+const triadDot = document.createElementNS(SVGNS, 'circle'); triadDot.setAttribute('r', '3'); triadDot.setAttribute('fill', '#6b7380'); triad.appendChild(triadDot);
+const qInv = new THREE.Quaternion(), vAx = new THREE.Vector3();
+function drawTriad() {
+  const cx = 42, cy = 50, Lt = 30;
+  qInv.copy(camera.quaternion).invert();
+  const parts = TRIAD.map(([, d], i) => { vAx.set(...d).applyQuaternion(qInv); return { i, x: vAx.x, y: vAx.y, z: vAx.z }; });
+  parts.sort((a, b) => a.z - b.z);   // far axes first
+  for (const p of parts) {
+    const A = triadAxes[p.i], ex = cx + Lt * p.x, ey = cy - Lt * p.y, l2 = Math.hypot(p.x, p.y);
+    A.line.setAttribute('x1', cx); A.line.setAttribute('y1', cy); A.line.setAttribute('x2', ex); A.line.setAttribute('y2', ey);
+    if (l2 > 0.15) {
+      const ux = p.x / l2, uy = -p.y / l2, bx = ex - 8 * ux, by = ey - 8 * uy;
+      A.head.setAttribute('points', `${ex + 2 * ux},${ey + 2 * uy} ${bx - 4 * uy},${by + 4 * ux} ${bx + 4 * uy},${by - 4 * ux}`);
+      A.txt.setAttribute('x', ex + 9 * ux); A.txt.setAttribute('y', ey + 9 * uy);
+    } else { A.head.setAttribute('points', ''); A.txt.setAttribute('x', ex + 8); A.txt.setAttribute('y', ey - 8); }
+    triad.insertBefore(A.g, triadDot);
+  }
+}
 
 function resize() {
   const r = canvas.parentElement.getBoundingClientRect();
@@ -93,10 +147,14 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize);
+new ResizeObserver(resize).observe(canvas.parentElement);
 
 // ------------------------------------------------------------------ units & formatting
-const unitScale = () => parseFloat($('units').value);
-const unitName = () => $('units').selectedOptions[0].textContent;
+// Metric throughout: lengths are entered and shown in metres. STEP/IGES/BREP carry their own size; an STL has no
+// units, so the "STL drawn in" menu (shown only for STL models) gives the file's units.
+const unitScale = () => 1;
+const unitName = () => 'm';
+const stlScale = () => parseFloat($('stlUnits').value) || 0.001;
 const fmt = (x, d = 3) => {
   if (!isFinite(x)) return '—';
   if (Math.abs(x) < 1e-9) x = 0;  // hide floating-point round-off (e.g. -1.7e-14)
@@ -124,11 +182,9 @@ async function loadFile(file) {
     } else {
       parts = await readCad(buf, ext, $('quality').value);
       S.lastCad = file;
-      // the units the user last picked (mm by default); demos switch the menu to metres without counting as a choice
-      $('units').value = S.userUnits || '0.001'; S.dispScale = unitScale(); $('tMode').dispatchEvent(new Event('change'));
     }
-    // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known
-    // and the units menu only sets display units. STL has no units: the menu then gives the file's units.
+    // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known.
+    // STL has no units: the "STL drawn in" menu gives the file's units.
     setModel(file.name, concat(parts), parts.length, { rawScale: ext === 'stl' ? null : 0.001 });
   } catch (e) {
     console.error(e);
@@ -157,6 +213,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
     $('mass').value = +(S.model.mp.volume * S.rho * 0.4).toPrecision(4);
   }
   frameCamera();
+  if (ui) ui.onModel(name, { stl: S.model.rawScale == null });
   if (extras) extras.onNewModel();
   update();
   if (drop) drop.onNewModel();
@@ -164,7 +221,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
 
 function rescaleModel() {
   const M = S.model; if (!M) return;
-  const k = M.rawScale ?? unitScale();
+  const k = M.rawScale ?? stlScale();
   M.tris = M.raw.map((v) => v * k);
   M.mp = massProperties(M.tris);
   const bb = bbox(M.tris);
@@ -181,9 +238,12 @@ function rescaleModel() {
   geo.computeVertexNormals();
   bodyMesh = new THREE.Mesh(geo, bodyMat);
   bodyEdges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), new THREE.LineBasicMaterial({ color: 0x5b4a2e }));
+  bodyEdges.visible = $('showEdges').checked;
   body.add(bodyMesh, bodyEdges);
 
   const d = M.diag;
+  axisLen = d * 0.22;
+  for (const a of axisArrows) a.setLength(axisLen, axisLen * 0.16, axisLen * 0.07);
   water.scale.set(d * 12, d * 12, 1);
   waterDepth.scale.set(d * 12, d * 12, d * 2); waterDepth.position.set(0, 0, -d - d * 0.002);
   grid.scale.set(d * 12, 1, d * 12); grid.position.z = -2 * d;
@@ -197,7 +257,7 @@ function rescaleModel() {
     <table>
       <tr><td>File</td><td>${M.name}${M.nParts > 1 ? ` (${M.nParts} bodies)` : ''}</td></tr>
       <tr><td>Triangles</td><td>${(M.tris.length / 9).toLocaleString()}</td></tr>
-      <tr><td>Size X×Y×Z</td><td>${M.size.map((s) => fmt(s / k, 1)).join(' × ')} ${unitName()}</td></tr>
+      <tr><td>Size X×Y×Z</td><td>${M.size.map((s) => fmt(s, 3)).join(' × ')} m</td></tr>
       <tr><td>Enclosed volume</td><td>${vol(M.mp.volume)}</td></tr>
       <tr><td>Centroid</td><td>${vecL(M.mp.centroid)}</td></tr>
       <tr><td>Watertight</td><td>${M.open === 0 ? '<span class="good">yes</span>' : `<span class="warn">${M.open.toLocaleString()} open edges</span>`}</td></tr>
@@ -214,10 +274,23 @@ function frameCamera() {
   camera.near = d / 1000; camera.far = d * 200; camera.updateProjectionMatrix();
   controls.update();
 }
+// standard views about the current orbit target (Front looks along +Y, Right along −X, Top down −Z)
+const VIEW_DIRS = { iso: [1.3, -1.6, 0.9], front: [0, -1, 0], right: [1, 0, 0], top: [0, -0.002, 1] };
+function setView(v) {
+  if (!S.model) return;
+  const d = S.model.diag, dist = Math.hypot(1.3, 1.6, 0.9) * d;
+  const dir = v === 'fit' ? camera.position.clone().sub(controls.target) : new THREE.Vector3(...VIEW_DIRS[v]);
+  if (dir.lengthSq() < 1e-12) dir.set(...VIEW_DIRS.iso);
+  camera.position.copy(controls.target).add(dir.normalize().multiplyScalar(dist));
+  controls.update();
+}
+$('showEdges').onchange = (e) => { if (bodyEdges) bodyEdges.visible = e.target.checked; };
+$('showAxes').onchange = (e) => { axesGroup.visible = e.target.checked; };
 
 // ------------------------------------------------------------------ inputs
 const getCogM = () => ['cgx', 'cgy', 'cgz'].map((id) => (parseFloat($(id).value) || 0) * unitScale());
-function setCog(cm) { ['cgx', 'cgy', 'cgz'].forEach((id, i) => { $(id).value = +(cm[i] / unitScale()).toPrecision(6); }); }
+// round-off below a nanometre (e.g. a centroid of −1.2e-17 m) shows as 0
+function setCog(cm) { ['cgx', 'cgy', 'cgz'].forEach((id, i) => { const v = cm[i] / unitScale(); $(id).value = Math.abs(v) < 1e-9 ? 0 : +v.toPrecision(6); }); }
 const getMass = () => Math.max(0, parseFloat($('mass').value) || 0);
 const getEuler = () => ['rollN', 'pitchN', 'yawN'].map((id) => parseFloat($(id).value) || 0);
 function setEuler(e) {
@@ -242,31 +315,14 @@ $('quarterX').onclick = () => quarter(mat3.rotX(Math.PI / 2));
 $('quarterY').onclick = () => quarter(mat3.rotY(Math.PI / 2));
 
 for (const id of ['mass', 'cgx', 'cgy', 'cgz']) $(id).addEventListener('change', () => { stopSim(); S.sim = null; S.preview = null; update(); });
-// Units menu. For a model of known size (STEP, demos) it is the display/input unit: the geometry stays the same and
-// every length input is converted. For an STL it is the file's unit: the model is rescaled and the CoG numbers keep
-// their place on the model.
-S.dispScale = unitScale();
+// An STL has no units: the menu gives the file's units and rescales the model (the CoG numbers keep their place).
 function unitsHint() {
-  const known = S.model && S.model.rawScale != null;
-  $('unitsHint').textContent = !S.model ? '' : known
-    ? 'This model has known units, so this setting only changes how lengths are shown and entered. The model keeps its size.'
-    : 'STL files have no units: pick the units the file was drawn in. Changing this rescales the model.';
+  const stl = S.model && S.model.rawScale == null;
+  $('unitsHint').textContent = stl ? 'STL files carry no units: pick the units the file was drawn in. Everything else is in metres.' : '';
 }
-$('units').addEventListener('change', () => {
-  const prev = S.dispScale, now = unitScale();
-  S.dispScale = now; S.userUnits = $('units').value;
-  $('tMode').dispatchEvent(new Event('change'));
-  if (!S.model) return;
-  if (S.model.rawScale != null) {
-    const conv = (id) => { const v = parseFloat($(id).value); if (Number.isFinite(v)) $(id).value = +(v * prev / now).toPrecision(6); };
-    ['cgx', 'cgy', 'cgz', 'dzH'].forEach(conv);
-    if (extras) extras.onUnits(prev, now);
-    if ($('tMode').value !== 'frac') conv('tVal');
-    update();
-  } else {
-    rescaleModel(); frameCamera(); update();
-  }
-  unitsHint();
+$('stlUnits').addEventListener('change', () => {
+  if (!S.model || S.model.rawScale != null) return;
+  rescaleModel(); frameCamera(); update();
 });
 $('useCentroid').onclick = () => { if (S.model) { setCog(S.model.mp.centroid); onAttitude(); } };
 $('quality').addEventListener('change', async () => {
@@ -330,6 +386,7 @@ function update() {
   renderInertiaInfo();
   document.querySelectorAll('.unitLabel').forEach((e) => { e.textContent = unitName(); });
   if (extras) extras.drawMarkers();
+  if (ui) ui.onUpdate({ rho: S.rho });
 }
 
 // world = rel + (0,0,-zw)  (water surface at z = 0)
@@ -522,24 +579,24 @@ function drawGZ() {
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
   const x0 = 46, x1 = W - 10, y0 = 10, y1 = Hh - 24;
   const X = (deg) => x0 + (x1 - x0) * deg / 180, Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
-  ctx.font = '10px system-ui'; ctx.fillStyle = '#8a9ab5'; ctx.strokeStyle = '#26344f'; ctx.lineWidth = 1;
+  ctx.font = '10px "Segoe UI", "Noto Sans", sans-serif'; ctx.fillStyle = '#444'; ctx.strokeStyle = '#e3e3e3'; ctx.lineWidth = 1;
   for (let d = 0; d <= 180; d += 30) {
     ctx.beginPath(); ctx.moveTo(X(d), y0); ctx.lineTo(X(d), y1); ctx.stroke();
     ctx.textAlign = 'center'; ctx.fillText(`${d}°`, X(d), Hh - 8);
   }
   ctx.textAlign = 'right';
   for (const v of [lo + pad, 0, hi - pad]) ctx.fillText(fmt(v, 2), x0 - 4, Y(v) + 3);
-  ctx.strokeStyle = '#4b5d80'; ctx.beginPath(); ctx.moveTo(x0, Y(0)); ctx.lineTo(x1, Y(0)); ctx.stroke();
+  ctx.strokeStyle = '#7a7a7a'; ctx.beginPath(); ctx.moveTo(x0, Y(0)); ctx.lineTo(x1, Y(0)); ctx.stroke();
   // GM tangent at origin: GZ ≈ GM·φ
-  ctx.setLineDash([4, 4]); ctx.strokeStyle = '#47e08a88';
+  ctx.setLineDash([4, 4]); ctx.strokeStyle = '#1baf7a';
   const phiT = 57.3; ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(phiT), Y(GM * k)); ctx.stroke();
   ctx.setLineDash([]);
   // curve
-  ctx.strokeStyle = '#4aa8ff'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.strokeStyle = '#2a78d6'; ctx.lineWidth = 2; ctx.beginPath();
   curve.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(p.deg), Y(p.gz * k)));
   ctx.stroke();
-  if (sum.max > 0) { ctx.fillStyle = '#47e08a'; ctx.beginPath(); ctx.arc(X(sum.maxDeg), Y(sum.max * k), 3.5, 0, 7); ctx.fill(); }
-  ctx.save(); ctx.translate(11, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillStyle = '#8a9ab5';
+  if (sum.max > 0) { ctx.fillStyle = '#2a78d6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X(sum.maxDeg), Y(sum.max * k), 4, 0, 7); ctx.fill(); ctx.stroke(); }
+  ctx.save(); ctx.translate(11, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillStyle = '#444';
   ctx.fillText(`GZ (${unitName()})`, 0, 0); ctx.restore();
 
   const axisName = S.gzAxis === 'x' ? 'roll' : 'pitch';
@@ -685,7 +742,7 @@ function simFrame(dtReal) {
   $('simInfo').innerHTML = `t = <b>${fmt(sim.t, 2)} s</b> · roll <b>${fmt(e[0], 1)}°</b> pitch <b>${fmt(e[1], 1)}°</b> yaw <b>${fmt(e[2], 1)}°</b><br>
     draft <b>${L(H.draft)}</b> · GM<sub>T</sub> <b>${L(H.GMt)}</b> · B–G offset <b>${L(Math.hypot(...H.offset))}</b>
     ${settled ? '<br><span class="good">Settled — this is a stable resting attitude.</span>' : ''}
-    ${settled && S.simFromRest ? '<br><span class="hint">It started at rest in this attitude, so there was nothing to move. Tilt it in section 4 (Initial orientation) to watch it right itself.</span>' : ''}`;
+    ${settled && S.simFromRest ? '<br><span class="hint">It started at rest in this attitude, so there was nothing to move. Tilt it under Start attitude to watch it right itself.</span>' : ''}`;
   if (S.settling && !settled && sim.t > 900) {
     stopSim(); $('simInfo').innerHTML += '<br><span class="warn">Did not settle within 900 s of simulated time — try more damping.</span>';
   }
@@ -714,14 +771,13 @@ function loadDemo(kind) {
     mass = 1500; name = 'Barge hull 4×1.6×0.8 m (demo)';
   }
   const g2 = geo.index ? geo.toNonIndexed() : geo;
-  $('units').value = '1'; S.dispScale = 1; $('tMode').dispatchEvent(new Event('change'));
   setModel(name, soupFromIndexed(g2.attributes.position.array, null), 1, { mass, rawScale: 1 });
   if (kind === 'hull') { const c = S.model.mp.centroid; setCog([c[0], c[1], 0.3]); update(); }
 }
 
 // ------------------------------------------------------------------ render loop
 let lastT = performance.now();
-const tmp = new THREE.Vector3();
+const tmp = new THREE.Vector3(), tmpW = new THREE.Vector3();
 function frame(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
   if (S.simRunning && S.sim) simFrame(dt);
@@ -730,15 +786,26 @@ function frame(t) {
   controls.update();
   renderer.render(scene, camera);
   const r = canvas.getBoundingClientRect();
-  for (const [k, obj] of Object.entries(labelTargets)) {
-    const el = labels[k];
-    if (!S.model || !obj.visible) { el.style.display = 'none'; continue; }
-    tmp.copy(obj.position).project(camera);
-    if (tmp.z > 1) { el.style.display = 'none'; continue; }
+  const showLabels = $('showLabels').checked;
+  const place = (el, world) => {
+    tmp.copy(world).project(camera);
+    if (tmp.z > 1) { el.style.display = 'none'; return; }
     el.style.display = '';
     el.style.left = `${(tmp.x * 0.5 + 0.5) * r.width}px`;
     el.style.top = `${(-tmp.y * 0.5 + 0.5) * r.height}px`;
+  };
+  // world positions: during a wave run the scene is turned to the global frame (see setFrameYaw)
+  for (const [k, obj] of Object.entries(labelTargets)) {
+    const el = labels[k];
+    if (!S.model || !obj.visible || !showLabels) { el.style.display = 'none'; continue; }
+    place(el, obj.getWorldPosition(tmpW));
   }
+  AXES.forEach(([, d], i) => {
+    const el = axisLabels[i];
+    if (!S.model || !axesGroup.visible || !showLabels) { el.style.display = 'none'; return; }
+    place(el, body.localToWorld(tmpW.set(...d).multiplyScalar(axisLen * 1.12)));
+  });
+  drawTriad();
   requestAnimationFrame(frame);
 }
 resize();
@@ -760,6 +827,13 @@ canvas.addEventListener('pointerup', (e) => {
 });
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && pickCb) endPick(null); });
 
+// ------------------------------------------------------------------ workspace chrome
+ui = initUI({
+  setView,
+  onStage: () => {},
+  clearDropRuns: () => { if (drop) drop.clearRuns(); },
+});
+
 // ------------------------------------------------------------------ seakeeping (waves, RAOs)
 const staticOverlays = [mB, mMt, mMl, arrW, arrB, vertLine, gLine, wlLines];
 extras = initExtras({
@@ -776,14 +850,21 @@ sea = initSeakeeping({
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
   refresh: () => update(),
   onTabShown: (id) => { if (id === 'tabDrop' && drop) drop.onTab(); },
-  // keep the camera on the body while it drifts in waves (pan camera and orbit target together)
+  // Wave runs are computed with the model's yaw removed (its +x along the run's x axis). Turning the scene by the
+  // yaw shows them in the global frame, so the wave direction (entered from global +X) reads as it should.
+  setFrameYaw: (a) => { scene.rotation.z = a; scene.updateMatrixWorld(); },
+  // keep the camera on the body while it drifts in waves (pan camera and orbit target together); x, y in the run frame
   follow: (x, y, z = null) => {
-    const dx = x - controls.target.x, dy = y - controls.target.y, dz = z === null ? 0 : z - controls.target.z;
+    const a = scene.rotation.z, c = Math.cos(a), s = Math.sin(a);
+    const dx = c * x - s * y - controls.target.x, dy = s * x + c * y - controls.target.y, dz = z === null ? 0 : z - controls.target.z;
     controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
     camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
   },
   recenter: () => frameCamera(),
-  viewCenter: () => [controls.target.x, controls.target.y],
+  viewCenter: () => {
+    const a = -scene.rotation.z, c = Math.cos(a), s = Math.sin(a), tx = controls.target.x, ty = controls.target.y;
+    return [c * tx - s * ty, s * tx + c * ty];
+  },
 });
 drop = initDropTest({
   THREE, scene, mG, mB,
@@ -791,7 +872,8 @@ drop = initDropTest({
   getInertiaBody: () => inertiaG(), setBodyPose, unitScale, unitName, diag: () => S.model.diag,
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
-  setLocked: (on) => { sea.setLocked(on); for (const id of ['simRun', 'simSettle']) $(id).disabled = on; },
+  setLocked: (on) => { sea.setLocked(on); for (const id of ['simRun', 'simSettle']) $(id).disabled = on; ui.setLocked(on); },
+  getEuler,
   showTab: (id) => sea.showTab(id),
   simCoeffs: () => sea.simCoeffs(),
   ensureSimBem: (cb) => sea.ensureSimBem(cb),
