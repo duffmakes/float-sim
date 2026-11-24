@@ -9,6 +9,7 @@ import { FloatSim } from '../js/sim.js';
 import { runWaveValidation } from './validate-waves.js';
 import { runDropValidation } from './validate-drop.js';
 import { runSmallBodyValidation } from './validate-smallbody.js';
+import { runRefCsysValidation } from './validate-refcsys.js';
 
 export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, vendorDir, onCase = () => {}, waves = true }) {
   const results = [];
@@ -117,7 +118,7 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
     try {
       const t1 = performance.now();
       // the small-body checks generate their own geometry, so they run once (at the fine quality), not per mesh quality
-      const small = quality === 'fine' ? await runSmallBodyValidation({ chkFactory }) : [];
+      const small = quality === 'fine' ? [...await runSmallBodyValidation({ chkFactory }), ...await runRefCsysValidation({ chkFactory })] : [];
       for (const c of [...await runWaveValidation({ exp, getTris, chkFactory }), ...await runDropValidation({ getTris, chkFactory }), ...small]) {
         c.meta = c.meta || '';
         results.push(c); onCase(c, c.rows, c.meta);

@@ -383,6 +383,92 @@ if (shots) await page.screenshot({ path: `${shots}/drop.png` });
 await click('#exitDrop'); await page.waitForTimeout(300);
 expect('Exit drop test resets the position, unlocks the tools and returns to Float', (await lockState()).every((d) => !d) && (await page.evaluate(() => document.body.dataset.stage)) === 'float');
 
+// 10 — reference coordinate system (the CAD csys): box 4 × 2 × 1 m with its file origin at a bottom corner edge
+//       (x 0…4, y −1…1, z 0…1). The ref csys is at the keel centre (2, 0, 0), turned 90° about Z, so ref x = file y.
+// (the same file is already loaded, so clear the model info to wait for the reload itself)
+await page.evaluate(() => { document.querySelector('#modelInfo').textContent = ''; });
+await page.setInputFiles('#file', MODEL);
+await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
+expect('reload starts upright (the drop test left a 20° roll)', (await page.inputValue('#rollN')) === '0');
+await fill('#mass', '3200'); await page.press('#mass', 'Enter');
+expect('ref csys defaults to the file origin and axes', (await page.inputValue('#refMode')) === 'file' && (await page.locator('#refInfo').innerText()).includes("file's own origin"));
+expect('unturned box: GM_T 0.533 m (beam 2 m), GM_L 3.033 m', near(num(await stat('GMT')), 0.2 + 4 / 4.8 - 0.5, 2e-3) && near(num(await stat('GML')), 0.2 + 16 / 4.8 - 0.5, 2e-3), `${await stat('GMT')} · ${await stat('GML')}`);
+await select('#refMode', 'custom');
+for (const [id, v] of [['refOx', '2'], ['refOy', '0'], ['refOz', '0'], ['refRz', '90']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+await page.waitForTimeout(300);
+const cogNow = async () => Promise.all(['cgx', 'cgy', 'cgz'].map(async (id) => num(await page.inputValue(`#${id}`))));
+const cg1 = await cogNow();
+expect('the default CoG (centroid) stays on the body: (2, 0, 0.5) in the file → (0, 0, 0.5) in the ref csys', near(cg1[0], 0, 1e-6) && near(cg1[1], 0, 1e-6) && near(cg1[2], 0.5, 1e-6), cg1.join(', '));
+expect('ref axes listed in file coordinates: x → (0, 1, 0)', (await page.locator('#refInfo').innerText()).includes('x → (0, 1, 0)'), (await page.locator('#refInfo').innerText()).split('\n')[0]);
+expect('model size in the ref axes: 2 × 4 × 1 m', (await page.locator('#modelInfo').innerText()).includes('2 × 4 × 1 m'));
+expect('turned 90°: roll is now across the 4 m side (GM_T 3.033 m, GM_L 0.533 m), draft 0.4 m',
+  near(num(await stat('GMT')), 0.2 + 16 / 4.8 - 0.5, 2e-3) && near(num(await stat('GML')), 0.2 + 4 / 4.8 - 0.5, 2e-3) && near(num(await stat('Draft')), 0.4, 1e-4), `${await stat('GMT')} · ${await stat('GML')} · ${await stat('Draft')}`);
+// inertia taken at the ref origin (CAD "taken at the output coordinate system"): moved to G by −m·0.5² on I_xx
+await select('#inMode', 'custom'); await select('#inAt', 'origin'); await page.waitForTimeout(200);
+const IxxO = 3200 * (16 + 1) / 12 + 3200 * 0.25;
+expect(`prefilled I_xx at the ref origin = m(4² + 1²)/12 + m·0.5² = ${IxxO.toFixed(1)}`, near(num(await page.inputValue('#inXX')), IxxO, 0.5), await page.inputValue('#inXX'));
+await fill('#inXX', '6800'); await page.press('#inXX', 'Enter'); await page.waitForTimeout(300);
+const TrollRef = 2 * Math.PI * Math.sqrt((6800 - 800) / (1000 * 9.80665 * 3.2 * (0.2 + 16 / 4.8 - 0.5)));
+expect(`I_xx 6800 at the ref origin → 6000 about G → roll period ${TrollRef.toFixed(3)} s`, near(num(await stat('Roll')), TrollRef, 0.01) && (await page.locator('#inInfo').innerText()).includes('moved to the CoG'), await stat('Roll'));
+await select('#inMode', 'auto');
+// RAOs at the ref origin (0.5 m below G): roll and heave as at G, sway gains θ_x × 0.5 m
+await select('#raoMethod', 'fk'); await fill('#raoN', '20'); await fill('#raoHead', '90'); await page.dispatchEvent('#raoHead', 'change');
+await click('#raoRun');
+await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.includes('headings'), null, { timeout: 120000 });
+expect('RAO info names the reference point and its offset from G', (await page.locator('#raoInfo').innerText()).includes('Motions at the ref csys origin, (0, 0, -0.5) m from G'), (await page.locator('#raoInfo').innerText()).split('\n').pop());
+const readCsv = async (sel) => { const d = page.waitForEvent('download'); await click(sel); const dl = await d; return { name: dl.suggestedFilename(), text: await dl.createReadStream().then((st) => new Promise((res) => { let s = ''; st.on('data', (c) => { s += c; }); st.on('end', () => res(s)); })) }; };
+const rows = (t) => t.trim().split('\n').filter((l) => !l.startsWith('#')).slice(1).map((l) => l.split(',').map(Number));
+const atRef = await readCsv('#raoCsv'), rawRef = await readCsv('#raoRaw');
+await select('#raoRef', 'G'); await page.waitForTimeout(500);
+const atG = await readCsv('#raoCsv');
+const rR = rows(atRef.text), rG = rows(atG.text), maxDiff = (c) => Math.max(...rR.map((r, i) => Math.abs(r[c] - rG[i][c])));
+expect('CSV file names say the reference point', atRef.name === 'rao_at_ref_origin.csv' && atG.name === 'rao_at_G.csv', `${atRef.name}, ${atG.name}`);
+expect('ref origin vs G: same roll and heave, different sway', rR.length === 20 && maxDiff(8) < 1e-9 && maxDiff(7) < 1e-9 && maxDiff(6) > 1e-3, `roll Δ ${maxDiff(8)}, heave Δ ${maxDiff(7)}, sway Δ ${maxDiff(6)}`);
+expect('raw CSV header gives the reference point and the axes', rawRef.text.includes('# motions xi: of the ref csys origin O, at 0 0 -0.5 m from G') && rawRef.text.includes('reference csys: custom'));
+await select('#raoRef', 'ref');
+// typed CoG numbers stay as typed when the csys moves: the origin 0.2 m higher puts G 0.2 m higher on the body
+await fill('#cgz', '0.6'); await page.press('#cgz', 'Enter'); await page.waitForTimeout(200);
+const gmTyped = num(await stat('GMT'));
+await fill('#refOz', '0.2'); await page.press('#refOz', 'Enter'); await page.waitForTimeout(300);
+expect('typed CoG z 0.6 stays as typed in the moved csys, so G rises 0.2 m: GM_T 2.933 → 2.733 m', near(num(await page.inputValue('#cgz')), 0.6, 1e-9) && near(gmTyped, 0.2 + 16 / 4.8 - 0.6, 2e-3) && near(num(await stat('GMT')), 0.2 + 16 / 4.8 - 0.8, 2e-3), `${gmTyped} m → ${await stat('GMT')}`);
+// switching to axis directions fills them with the same axes (the model does not turn)
+await select('#refAxes', 'dirs'); await page.waitForTimeout(300);
+const dirs = await Promise.all(['refXx', 'refXy', 'refXz', 'refZx', 'refZy', 'refZz'].map(async (id) => num(await page.inputValue(`#${id}`))));
+expect('angles → directions keeps the frame: x (0, 1, 0), z (0, 0, 1), still 2 × 4 × 1 m', dirs.join() === '0,1,0,0,0,1' && (await page.locator('#modelInfo').innerText()).includes('2 × 4 × 1 m'), dirs.join(', '));
+// axis directions: ref z = file Y (a Y-up export) makes the 2 m side the height
+for (const [id, v] of [['refOz', '0'], ['refXx', '1'], ['refXy', '0'], ['refXz', '0'], ['refZx', '0'], ['refZy', '1'], ['refZz', '0']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+await page.waitForTimeout(300);
+expect('axis directions: ref z = file Y gives a 4 × 1 × 2 m body', (await page.locator('#modelInfo').innerText()).includes('4 × 1 × 2 m'));
+await page.selectOption('#demo', 'box'); await page.waitForTimeout(500);
+expect('a different model starts in its file csys again', (await page.inputValue('#refMode')) === 'file' && (await page.locator('#refCustom').isHidden()));
+if (shots) await page.screenshot({ path: `${shots}/ref-csys.png` });
+
+// 11 — Solve with Capytaine (tools/serve.py): off, with the reason, where the server has no Capytaine; otherwise the
+//      same panel mesh solved by Capytaine gives the same RAOs as Float Sim's own solver.
+const capyStatus = await page.evaluate(() => fetch('api/capytaine/status', { headers: { 'X-Float-Sim': '1' } })
+  .then((r) => (r.ok && (r.headers.get('content-type') || '').includes('json') ? r.json() : { available: false })).catch(() => ({ available: false })));
+await reveal('#raoCapy');
+if (!capyStatus.available) {
+  expect('Solve with Capytaine is off without Capytaine on this server, and says why', (await page.isDisabled('#raoCapy')) && (await page.locator('#capyStatus').innerText()).includes('is off'), await page.locator('#capyStatus').innerText());
+} else {
+  expect(`Capytaine ${capyStatus.version} found: the button is on and the Solver section says so`, !(await page.isDisabled('#raoCapy')) && (await page.locator('#capyStatus').innerText()).includes(`Capytaine ${capyStatus.version} found`));
+  await select('#raoMethod', 'bem'); await select('#bemFid', 'coarse');
+  for (const [id, v] of [['raoFmin', '0.1'], ['raoFmax', '0.6'], ['raoN', '12'], ['raoHead', '0:90:180']]) { await fill(`#${id}`, v); await page.dispatchEvent(`#${id}`, 'change'); }
+  await select('#raoRef', 'G');
+  await click('#raoRun');
+  await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.startsWith('Panel method'), null, { timeout: 180000 });
+  const own = await readCsv('#raoCsv');
+  await click('#raoCapy');
+  expect('both solve buttons are off while Capytaine runs', (await page.isDisabled('#raoCapy')) && (await page.isDisabled('#raoRun')));
+  await page.waitForFunction(() => !document.querySelector('#raoRun').disabled && document.querySelector('#raoInfo').innerText.startsWith('Capytaine'), null, { timeout: 300000 });
+  expect('RAO info names Capytaine and the shared panel mesh', (await page.locator('#raoInfo').innerText()).includes("Float Sim's panel mesh"), (await page.locator('#raoInfo').innerText()).split('\n')[0]);
+  const cap = await readCsv('#raoCsv'), capRaw = await readCsv('#raoRaw');
+  const ro = rows(own.text), rc = rows(cap.text);
+  const rel = [5, 6, 7, 8, 9].map((c) => Math.max(...ro.map((r, i) => Math.abs(r[c] - rc[i][c]))) / Math.max(1e-12, ...rc.map((r) => Math.abs(r[c]))));
+  expect('same RAOs from both solvers on the same mesh: surge, sway, heave, roll, pitch within 3 % of their peaks', ro.length === 36 && rc.length === 36 && rel.every((e) => e < 0.03), rel.map((e) => `${(100 * e).toFixed(2)} %`).join(', '));
+  expect('raw CSV header says Capytaine solved it', capRaw.text.includes(`# hydrodynamics: Capytaine ${capyStatus.version} (direct formulation, deep water) on Float Sim's panel mesh`));
+}
+
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

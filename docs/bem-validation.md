@@ -125,6 +125,8 @@ The volume deficits on curved hulls are chordal faceting: flat panels whose vert
 
 ### RAOs
 
+A full RAO comparison with Capytaine run on its own, covering all 12 test models over 0.01–1 Hz and headings 0–180°, is in [rao-compare/README.md](rao-compare/README.md). Away from resonances the two agree within 4.3 % of peak, and natural frequencies agree within 1.2 %.
+
 The same equations of motion for the cylinder buoy, solved with Float Sim's coefficients and with Capytaine's (heading 0°, no extra damping):
 
 | Quantity | Float Sim | With Capytaine's A, B, X | Difference |
