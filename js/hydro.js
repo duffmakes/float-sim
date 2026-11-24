@@ -424,12 +424,13 @@ export function spectralFromSweep(points, S, dof, duration = 3 * 3600, m0Wave = 
 
 // Linear spectral response: S_R(ω) = |RAO(ω)|² S(ω) (long-crested, zero speed).
 // Significant single amplitude = 2√m0; most probable max in duration D (s) ≈ √(2 m0 ln N), N = D/Tz.
-export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400, duration = 3 * 3600, extra = null) {
+// post(xi, k): optional transform of the RAOs before use (e.g. to a reference point, refcsys.raoAtPoint).
+export function spectralResponse(model, S, headingDeg, dof, wMin, wMax, n = 400, duration = 3 * 3600, extra = null, post = null) {
   let m0 = 0, m2 = 0;
   const dw = (wMax - wMin) / n;
   for (let i = 0; i <= n; i++) {
     const w = wMin + i * dw;
-    const { xi } = raoAt(model, w, headingDeg, extra);
+    const ra = raoAt(model, w, headingDeg, extra), xi = post ? post(ra.xi, ra.k) : ra.xi;
     const r = C.abs(xi[dof]);
     const sr = r * r * S(w) * (i === 0 || i === n ? 0.5 : 1) * dw;
     m0 += sr; m2 += sr * w * w;

@@ -12,6 +12,7 @@ import { initDropTest } from './droptest.js';
 import { initExtras } from './extras.js';
 import { initUI } from './ui.js';
 import { initProgress, startTask, nextPaint } from './progress.js';
+import { refFrame, anglesFor, toRefTris, toRefPoint, fromRefPoint, sameFrame, inertiaAboutPoint, inertiaToG } from './refcsys.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,7 +22,10 @@ let drop = null;  // drop / rise test module
 let extras = null;  // small-body options (tracked points, drag, mooring, wind)
 let ui = null;      // workspace chrome (stages, menus, status bar)
 const S = {
-  model: null,        // { name, raw: Float64Array (file units), tris (m), geo, mp, diag, open }
+  model: null,        // { name, raw: Float64Array (file units), tris (m, ref csys), geo, mp, diag, open }
+  ref: refFrame(null),  // reference csys (origin and axes in the file's coordinates); the model works in it
+  cogAuto: true,      // the CoG is a default (centroid / demo), not typed: it stays on the body if the ref csys changes
+  inTyped: false,     // the custom inertia fields hold typed numbers (not the prefilled computed ones)
   rho: 1000,
   sim: null, simRunning: false, settling: false,
   preview: null,      // target-plane preview state
@@ -92,8 +96,8 @@ const arrW = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector
 const arrB = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 1, 0x4aa8ff);
 for (const a of [arrW, arrB]) { a.line.material.depthTest = false; a.cone.material.depthTest = false; a.renderOrder = 9; scene.add(a); }
 
-// model axes at the CoG: they turn with the body (the body group's frame is the model's own axes)
-const axesGroup = new THREE.Group(); body.add(axesGroup);
+// reference csys axes at its origin: they turn with the body (bodyLocal's frame is the ref csys)
+const axesGroup = new THREE.Group(); bodyLocal.add(axesGroup);
 const AXES = [['x', [1, 0, 0], 0xd32f2f], ['y', [0, 1, 0], 0x2e9e44], ['z', [0, 0, 1], 0x1e5fd6]];
 const axisArrows = AXES.map(([, d, c]) => {
   const a = new THREE.ArrowHelper(new THREE.Vector3(...d), new THREE.Vector3(), 1, c);
@@ -201,6 +205,8 @@ async function loadFile(file) {
 }
 
 function setModel(name, raw, nParts = 1, opts = {}) {
+  // a different model starts in the file's own csys; reloading the same file (another mesh quality) keeps the one entered
+  if (!S.model || S.model.name !== name) resetRef();
   S.model = { name, raw, nParts, rawScale: opts.rawScale ?? null };
   unitsHint();
   stopSim(); S.sim = null; S.preview = null; hideBanner();
@@ -208,10 +214,11 @@ function setModel(name, raw, nParts = 1, opts = {}) {
   if (!opts.keepAttitude) setEuler([0, 0, 0]);   // a new body starts upright
   $('inMode').value = 'auto'; $('inCustom').classList.add('hidden');   // custom inertia belonged to the old body
   IN_IDS.forEach((id, k) => { $(id).value = k < 3 ? '' : 0; });
+  S.inTyped = false;
   rescaleModel(opts.keepCog);
   if (!opts.keepCog) {
     const c = S.model.mp.centroid;
-    setCog(c);
+    setCog(c); S.cogAuto = true;
   }
   if (opts.mass) $('mass').value = opts.mass;
   else if (!opts.keepMass) {
@@ -228,7 +235,7 @@ function setModel(name, raw, nParts = 1, opts = {}) {
 function rescaleModel() {
   const M = S.model; if (!M) return;
   const k = M.rawScale ?? stlScale();
-  M.tris = M.raw.map((v) => v * k);
+  M.tris = toRefTris(M.raw.map((v) => v * k), S.ref);   // metres, in the reference csys
   M.mp = massProperties(M.tris);
   const bb = bbox(M.tris);
   M.bb = bb;
@@ -263,9 +270,9 @@ function rescaleModel() {
     <table>
       <tr><td>File</td><td>${M.name}${M.nParts > 1 ? ` (${M.nParts} bodies)` : ''}</td></tr>
       <tr><td>Triangles</td><td>${(M.tris.length / 9).toLocaleString()}</td></tr>
-      <tr><td>Size X×Y×Z</td><td>${M.size.map((s) => fmt(s, 3)).join(' × ')} m</td></tr>
+      <tr><td>Size X×Y×Z</td><td>${M.size.map((s) => fmt(s, 3)).join(' × ')} m${S.ref.identity ? '' : ' (ref axes)'}</td></tr>
       <tr><td>Enclosed volume</td><td>${vol(M.mp.volume)}</td></tr>
-      <tr><td>Centroid</td><td>${vecL(M.mp.centroid)}</td></tr>
+      <tr><td>Centroid</td><td>${vecL(M.mp.centroid)}${S.ref.identity ? '' : ' (ref csys)'}</td></tr>
       <tr><td>Watertight</td><td>${M.open === 0 ? '<span class="good">yes</span>' : `<span class="warn">${M.open.toLocaleString()} open edges</span>`}</td></tr>
     </table>
     ${M.open > 0 ? '<div class="warn">Mesh is not fully closed; volumes may be approximate.</div>' : ''}
@@ -320,7 +327,7 @@ const quarter = (axisR) => {
 $('quarterX').onclick = () => quarter(mat3.rotX(Math.PI / 2));
 $('quarterY').onclick = () => quarter(mat3.rotY(Math.PI / 2));
 
-for (const id of ['mass', 'cgx', 'cgy', 'cgz']) $(id).addEventListener('change', () => { stopSim(); S.sim = null; S.preview = null; update(); });
+for (const id of ['mass', 'cgx', 'cgy', 'cgz']) $(id).addEventListener('change', () => { if (id !== 'mass') S.cogAuto = false; stopSim(); S.sim = null; S.preview = null; update(); });
 // An STL has no units: the menu gives the file's units and rescales the model (the CoG numbers keep their place).
 function unitsHint() {
   const stl = S.model && S.model.rawScale == null;
@@ -330,14 +337,65 @@ $('stlUnits').addEventListener('change', () => {
   if (!S.model || S.model.rawScale != null) return;
   rescaleModel(); frameCamera(); update();
 });
-$('useCentroid').onclick = () => { if (S.model) { setCog(S.model.mp.centroid); onAttitude(); } };
+$('useCentroid').onclick = () => { if (S.model) { setCog(S.model.mp.centroid); S.cogAuto = true; onAttitude(); } };
 $('quality').addEventListener('change', async () => {
   const f = S.lastCad; if (!f || !S.model || S.model.name !== f.name) return;
-  const keep = { mass: $('mass').value, cog: ['cgx', 'cgy', 'cgz'].map((id) => $(id).value) };
+  const keep = { mass: $('mass').value, cog: ['cgx', 'cgy', 'cgz'].map((id) => $(id).value), cogAuto: S.cogAuto };
   await loadFile(f);
-  $('mass').value = keep.mass; ['cgx', 'cgy', 'cgz'].forEach((id, i) => { $(id).value = keep.cog[i]; });
+  $('mass').value = keep.mass; ['cgx', 'cgy', 'cgz'].forEach((id, i) => { $(id).value = keep.cog[i]; }); S.cogAuto = keep.cogAuto;
   update();
 });
+// ------------------------------------------------------------------ reference coordinate system (CAD csys)
+// Its origin and axes are entered in the file's coordinates; the model is moved into it (rescaleModel), so every
+// body coordinate (CoG, inertia, points, plates, fairlead, RAO reference point) is in this csys.
+const REF_DEFAULT = { refOx: 0, refOy: 0, refOz: 0, refRx: 0, refRy: 0, refRz: 0, refXx: 1, refXy: 0, refXz: 0, refZx: 0, refZy: 0, refZz: 1 };
+const REF_NUM = Object.keys(REF_DEFAULT);
+const refNum = (id) => parseFloat($(id).value);
+const readRefDef = () => ({
+  mode: $('refMode').value, origin: ['refOx', 'refOy', 'refOz'].map(refNum), axes: $('refAxes').value,
+  angles: ['refRx', 'refRy', 'refRz'].map(refNum), order: $('refOrder').value,
+  xDir: ['refXx', 'refXy', 'refXz'].map(refNum), zDir: ['refZx', 'refZy', 'refZz'].map(refNum),
+});
+function syncRefUi() {
+  const custom = $('refMode').value === 'custom', dirs = $('refAxes').value === 'dirs';
+  $('refCustom').classList.toggle('hidden', !custom);
+  $('refAngles').classList.toggle('hidden', dirs); $('refDirs').classList.toggle('hidden', !dirs);
+  $('refSummary').textContent = !custom ? 'file origin & axes' : S.ref.identity ? 'custom (same as the file)' : 'custom';
+}
+function renderRefInfo() {
+  const F = S.ref, v4 = (p) => `(${p.map((c) => fmt(c, 4)).join(', ')})`, ax = (j) => v4([F.R[j], F.R[3 + j], F.R[6 + j]]);
+  $('refInfo').innerHTML = $('refMode').value !== 'custom'
+    ? 'The file\'s own origin and axes. If your CAD mass properties are relative to another csys, choose Custom and enter it.'
+    : `Ref axes in the file's coordinates: x → ${ax(0)}, y → ${ax(1)}, z → ${ax(2)}.<br>
+      The ref origin is at ${v4(F.O)} m in the file; the file's origin is at ${v4(toRefPoint([0, 0, 0], F))} m in the ref csys.${F.warn ? `<br><span class="warn">${F.warn}</span>` : ''}`;
+}
+function applyRef() {
+  const old = S.ref, nf = refFrame(readRefDef());
+  S.ref = nf; syncRefUi(); renderRefInfo();
+  if (sameFrame(old, nf) || !S.model) return;
+  // a default CoG (centroid or demo) stays at the same place on the body; typed numbers are read in the new csys
+  if (S.cogAuto) setCog(toRefPoint(fromRefPoint(getCogM(), old), nf));
+  stopSim(); S.sim = null; S.preview = null;
+  rescaleModel(); update();
+}
+function resetRef() {
+  $('refMode').value = 'file'; $('refAxes').value = 'angles'; $('refOrder').value = 'fixed';
+  for (const id of REF_NUM) $(id).value = REF_DEFAULT[id];
+  S.ref = refFrame(null); syncRefUi(); renderRefInfo();
+}
+// switching between angles and directions fills the other form with the same axes, so the model does not turn
+$('refAxes').addEventListener('change', () => {
+  const R = S.ref.R, r = (v) => { const x = +v.toPrecision(10); return Math.abs(x) < 1e-9 ? 0 : x; };
+  if ($('refAxes').value === 'dirs') {
+    ['refXx', 'refXy', 'refXz'].forEach((id, i) => { $(id).value = r(R[i * 3]); });
+    ['refZx', 'refZy', 'refZz'].forEach((id, i) => { $(id).value = r(R[i * 3 + 2]); });
+  } else anglesFor(R, $('refOrder').value).forEach((v, i) => { $(['refRx', 'refRy', 'refRz'][i]).value = r(v); });
+  applyRef();
+});
+// the rotation order reinterprets the angles as typed (CAD tools differ), so the model may turn
+for (const id of ['refMode', 'refOrder', ...REF_NUM]) $(id).addEventListener('change', applyRef);
+syncRefUi(); renderRefInfo();
+
 $('file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) loadFile(f); e.target.value = ''; });
 $('demo').addEventListener('change', (e) => { if (e.target.value) loadDemo(e.target.value); e.target.value = ''; });
 
@@ -451,14 +509,37 @@ function drawMarkers(off, H) {
 // ------------------------------------------------------------------ inertia (computed or user-entered)
 const autoInertiaG = () => inertiaAbout(S.model.mp, getMass(), getCogM());
 const IN_IDS = ['inXX', 'inYY', 'inZZ', 'inXY', 'inXZ', 'inYZ'];
-// Body-frame inertia tensor about the CoG (kg·m², model axes). Custom values: tensor convention I_xy = −∫xy dm,
-// or +∫xy dm when the "products of inertia" box is ticked (then negated into the tensor).
-function customInertia() {
+// Custom values are entered in the ref csys axes, taken at the CoG or at the ref csys origin (CAD reports give both).
+const inAtOrigin = () => $('inAt').value === 'origin';
+// the computed tensor where the custom values are taken (r = G − O, and O is the ref origin, so r = G)
+const autoInertiaAt = () => (inAtOrigin() ? inertiaAboutPoint(autoInertiaG(), getMass(), getCogM()) : autoInertiaG());
+// The tensor as typed (tensor convention I_xy = −∫xy dm, or +∫xy dm when the "products of inertia" box is ticked,
+// then negated into the tensor), at the point chosen in "Taken at".
+function customInertiaTyped() {
   const v = IN_IDS.map((id) => parseFloat($(id).value));
   if (![0, 1, 2].every((i) => Number.isFinite(v[i]))) return null;
   const sg = $('inProdSign').checked ? -1 : 1;
   const [xx, yy, zz] = v, [xy, xz, yz] = v.slice(3).map((x) => sg * (Number.isFinite(x) ? x : 0));
   return [xx, xy, xz, xy, yy, yz, xz, yz, zz];
+}
+// Body-frame inertia tensor about the CoG (kg·m², ref csys axes) from the custom values: values taken at the ref
+// origin are moved to the CoG with the parallel-axis theorem.
+function customInertia() {
+  const I = customInertiaTyped();
+  return I && inAtOrigin() ? inertiaToG(I, getMass(), getCogM()) : I;
+}
+// why the custom values can't be used (null if they can)
+function customInertiaProblem() {
+  const T = customInertiaTyped();
+  if (!T) return 'enter at least Ixx, Iyy and Izz';
+  const e = inertiaCheck(T); if (e) return e;
+  const eG = inAtOrigin() ? inertiaCheck(customInertia()) : null;
+  return eG ? `${eG}, once moved from the ref csys origin to the CoG (check the mass, the CoG and "Taken at")` : null;
+}
+function prefillInertia() {
+  const I = autoInertiaAt(), sg = $('inProdSign').checked ? -1 : 1, sc = I[0] + I[4] + I[8];
+  [I[0], I[4], I[8], sg * I[1], sg * I[2], sg * I[5]].forEach((v, k) => { $(IN_IDS[k]).value = Math.abs(v) < 1e-12 * sc ? 0 : +v.toPrecision(6); });
+  S.inTyped = false;
 }
 function inertiaCheck(I) {
   const [a, b, c] = [I[0], I[4], I[8]];
@@ -471,34 +552,36 @@ function inertiaCheck(I) {
 }
 function inertiaG() {
   if (!S.model) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  if ($('inMode').value === 'custom') { const I = customInertia(); if (I && !inertiaCheck(I)) return I; }
+  if ($('inMode').value === 'custom' && !customInertiaProblem()) return customInertia();
   return autoInertiaG();
 }
 function renderInertiaInfo() {
   if (!S.model) return;
   const custom = $('inMode').value === 'custom';
   const I = inertiaG(), m = Math.max(getMass(), 1e-12);
-  const bad = custom ? (customInertia() ? inertiaCheck(customInertia()) : 'enter at least Ixx, Iyy and Izz') : null;
+  const bad = custom ? customInertiaProblem() : null;
   const kg = [0, 4, 8].map((i) => Math.sqrt(Math.max(I[i], 0) / m));
-  $('inInfo').innerHTML = `${custom ? (bad ? `<span class="bad">Custom inertia ${bad}. Using the computed values instead.</span>` : '<span class="good">Using custom inertia.</span>') : 'Computed for uniform density.'}
-    I<sub>xx</sub>, I<sub>yy</sub>, I<sub>zz</sub> = <b>${[0, 4, 8].map((i) => fmt(I[i], 4)).join(', ')}</b> kg·m² ·
-    radii of gyration ${kg.map((k) => L(k)).join(', ')}`;
+  const IO = inertiaAboutPoint(I, m, getCogM());
+  $('inInfo').innerHTML = `${custom ? (bad ? `<span class="bad">Custom inertia ${bad}. Using the computed values instead.</span>` : `<span class="good">Using custom inertia${inAtOrigin() ? ' (entered at the ref csys origin, moved to the CoG)' : ''}.</span>`) : 'Computed for uniform density.'}
+    About G: I<sub>xx</sub>, I<sub>yy</sub>, I<sub>zz</sub> = <b>${[0, 4, 8].map((i) => fmt(I[i], 4)).join(', ')}</b> kg·m² ·
+    radii of gyration ${kg.map((k) => L(k)).join(', ')}<br>
+    About the ref csys origin: I<sub>xx</sub>, I<sub>yy</sub>, I<sub>zz</sub> = ${[0, 4, 8].map((i) => fmt(IO[i], 4)).join(', ')} kg·m²`;
+  const auto = autoInertiaAt(), sg = $('inProdSign').checked ? -1 : 1;
   for (const [k, id] of IN_IDS.entries()) {
-    const auto = autoInertiaG(), idx = [0, 4, 8, 1, 2, 5][k];
-    $(id).placeholder = (k < 3 ? auto[idx] : ($('inProdSign').checked ? -1 : 1) * auto[idx]).toPrecision(4);
+    const idx = [0, 4, 8, 1, 2, 5][k];
+    $(id).placeholder = (k < 3 ? auto[idx] : sg * auto[idx]).toPrecision(4);
   }
 }
 $('inMode').addEventListener('change', () => {
   const custom = $('inMode').value === 'custom';
   $('inCustom').classList.toggle('hidden', !custom);
-  if (custom && S.model && !customInertia()) {
-    // prefill with the computed tensor so the user only edits what they know
-    const I = autoInertiaG(), sg = $('inProdSign').checked ? -1 : 1;
-    [I[0], I[4], I[8], sg * I[1], sg * I[2], sg * I[5]].forEach((v, k) => { $(IN_IDS[k]).value = +v.toPrecision(6); });
-  }
+  // prefill with the computed tensor so the user only edits what they know
+  if (custom && S.model && !customInertiaTyped()) prefillInertia();
   onAttitude();
 });
-for (const id of [...IN_IDS, 'inProdSign']) $(id).addEventListener('change', () => onAttitude());
+// "Taken at" or the sign box changed: prefilled (computed) values are filled in again for the new choice; typed numbers stay
+for (const id of ['inAt', 'inProdSign']) $(id).addEventListener('change', () => { if (S.model && !S.inTyped && $('inMode').value === 'custom') prefillInertia(); onAttitude(); });
+for (const id of IN_IDS) $(id).addEventListener('change', () => { S.inTyped = true; onAttitude(); });
 
 function renderStats(H, mode) {
   const { R, m, rho } = S.last;
@@ -534,7 +617,7 @@ function renderStats(H, mode) {
     row('Waterplane area', `${fmt(H.wp.area, 4)} m²`),
     row('Immersion rate', `${fmt(H.tpc / 100, 3)} kg / cm`),
     row('Reserve buoyancy', kg(rho * (H.total - H.V))),
-    grp('Centres (model frame)'),
+    grp('Centres (ref csys)'),
     row('G — CoG', vecL(toModel([0, 0, 0]))),
     row('B — centre of buoyancy', vecL(toModel(H.B))),
     row('M<sub>T</sub> — roll metacentre', vecL(toModel(H.Mt))),
@@ -619,7 +702,7 @@ function drawGZ() {
 // ------------------------------------------------------------------ target float plane → mass
 $('tMode').addEventListener('change', () => {
   const m = $('tMode').value;
-  $('tLabel').textContent = { draft: `Draft (${unitName()})`, modelZ: `Model Z (${unitName()})`, frac: 'Submerged %' }[m];
+  $('tLabel').textContent = { draft: `Draft (${unitName()})`, modelZ: `Ref z (${unitName()})`, frac: 'Submerged %' }[m];
 });
 $('tCalc').onclick = () => computeTarget(false);
 $('tPreview').onclick = () => computeTarget(true);
@@ -662,7 +745,7 @@ function computeTarget(preview) {
       <tr><td>Displaced volume</td><td>${vol(Hm.V)}</td></tr>
       <tr><td>Draft</td><td>${L(Hm.draft)}</td></tr>
       <tr><td>Submerged</td><td>${fmt(100 * Hm.V / Hm.total, 2)} %</td></tr>
-      <tr><td>B (model frame)</td><td>${vecL(mat3.apply(RT, Hm.B).map((c, i) => c + G[i]))}</td></tr>
+      <tr><td>B (ref csys)</td><td>${vecL(mat3.apply(RT, Hm.B).map((c, i) => c + G[i]))}</td></tr>
       <tr><td>GM<sub>T</sub> / GM<sub>L</sub> (current CoG)</td><td>${L(Hm.GMt)} / ${L(Hm.GMl)}</td></tr>
     </table>
     ${offMag < S.model.diag * 1e-4
@@ -809,7 +892,7 @@ function frame(t) {
   AXES.forEach(([, d], i) => {
     const el = axisLabels[i];
     if (!S.model || !axesGroup.visible || !showLabels) { el.style.display = 'none'; return; }
-    place(el, body.localToWorld(tmpW.set(...d).multiplyScalar(axisLen * 1.12)));
+    place(el, bodyLocal.localToWorld(tmpW.set(...d).multiplyScalar(axisLen * 1.12)));
   });
   drawTriad();
   requestAnimationFrame(frame);
@@ -853,6 +936,8 @@ sea = initSeakeeping({
   THREE, scene, renderer, water, waterDepth, mG, extras,
   getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
   getEuler, setBodyPose, getInertiaBody: () => inertiaG(), inertiaKey: () => JSON.stringify(inertiaG()),
+  // the reference csys: the model's coordinates are in it, so its origin is the body point (0, 0, 0)
+  refKey: () => JSON.stringify([S.ref.O, S.ref.R]), refCustom: () => $('refMode').value === 'custom' && !S.ref.identity,
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
   setStaticOverlays: (on) => { for (const o of staticOverlays) o.visible = on; },
   refresh: () => update(),

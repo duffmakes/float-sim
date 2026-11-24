@@ -114,18 +114,42 @@
           <div id="modelInfo" class="info grid">No model loaded.</div>
         </details>
         <details open>
-          <summary><span class="bx"></span>Mass &amp; centre of gravity</summary>
+          <summary><span class="bx"></span>Reference coordinate system<span class="sv" id="refSummary">file origin &amp; axes</span></summary>
+          <label class="r"><span class="k">Reference csys</span><span class="v"><select id="refMode"><option value="file" selected>File origin &amp; axes</option><option value="custom">Custom (from CAD)</option></select></span></label>
+          <div id="refCustom" class="hidden">
+            <label class="r"><span class="k">Origin x</span><span class="v"><input id="refOx" type="number" step="any" value="0"><span class="u">m</span></span></label>
+            <label class="r"><span class="k">Origin y</span><span class="v"><input id="refOy" type="number" step="any" value="0"><span class="u">m</span></span></label>
+            <label class="r"><span class="k">Origin z</span><span class="v"><input id="refOz" type="number" step="any" value="0"><span class="u">m</span></span></label>
+            <label class="r"><span class="k">Axes given by</span><span class="v"><select id="refAxes"><option value="angles" selected>Rotation angles</option><option value="dirs">Axis directions</option></select></span></label>
+            <div id="refAngles">
+              <label class="r"><span class="k">Rotation about X</span><span class="v"><input id="refRx" type="number" step="any" value="0"><span class="u">°</span></span></label>
+              <label class="r"><span class="k">Rotation about Y</span><span class="v"><input id="refRy" type="number" step="any" value="0"><span class="u">°</span></span></label>
+              <label class="r"><span class="k">Rotation about Z</span><span class="v"><input id="refRz" type="number" step="any" value="0"><span class="u">°</span></span></label>
+              <label class="r"><span class="k">Rotation order</span><span class="v"><select id="refOrder"><option value="fixed" selected>Fixed axes: X, Y, Z</option><option value="moving">Turning axes: X, Y′, Z″</option></select></span></label>
+            </div>
+            <div id="refDirs" class="hidden">
+              <div class="r"><span class="k">x axis direction</span><span class="v"><input id="refXx" type="number" step="any" value="1" aria-label="x axis direction, file X component"><input id="refXy" type="number" step="any" value="0" aria-label="x axis direction, file Y component"><input id="refXz" type="number" step="any" value="0" aria-label="x axis direction, file Z component"></span></div>
+              <div class="r"><span class="k">z axis direction</span><span class="v"><input id="refZx" type="number" step="any" value="0" aria-label="z axis direction, file X component"><input id="refZy" type="number" step="any" value="0" aria-label="z axis direction, file Y component"><input id="refZz" type="number" step="any" value="1" aria-label="z axis direction, file Z component"></span></div>
+            </div>
+            <p class="note">The origin and axes of the reference csys from your CAD model, given in the file's coordinates (metres). Fixed axes: each rotation is about the file's X, Y or Z axis. Turning axes: each is about the axes as already turned. Axis directions need not be unit length; y completes a right-handed set. Check the axes listed below against your CAD.</p>
+          </div>
+          <div id="refInfo" class="info"></div>
+          <details class="more"><summary>About the reference csys</summary><p class="note">Everything Float Sim asks for or reports in body coordinates is in this csys: the CoG, the moments of inertia, tracked points, heave plates, the fairlead, the target waterline and the RAOs (motions at its origin, wave headings from its +x). Its +z should point up and +x forward when the body floats upright; otherwise turn the body with Start attitude. Numbers you have typed stay as typed when you change the csys, so they are read in the new one. The CoG you have not typed (the centroid default) stays where it is on the body.</p></details>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Mass &amp; centre of gravity<span class="sv">ref csys</span></summary>
           <label class="r"><span class="k">Mass</span><span class="v"><input id="mass" type="number" step="any" min="0" value="1000"><span class="u">kg</span></span></label>
           <label class="r"><span class="k">CoG x</span><span class="v"><input id="cgx" type="number" step="any" value="0"><span class="u">m</span></span></label>
           <label class="r"><span class="k">CoG y</span><span class="v"><input id="cgy" type="number" step="any" value="0"><span class="u">m</span></span></label>
           <label class="r"><span class="k">CoG z</span><span class="v"><input id="cgz" type="number" step="any" value="0"><span class="u">m</span></span></label>
-          <div class="bb"><button id="useCentroid" class="b">Use geometric centroid</button><span class="u">model axes</span></div>
+          <div class="bb"><button id="useCentroid" class="b">Use geometric centroid</button><span class="u">ref csys</span></div>
           <div id="massInfo" class="info"></div>
         </details>
         <details open>
-          <summary><span class="bx"></span>Moments of inertia<span class="sv">about G</span></summary>
+          <summary><span class="bx"></span>Moments of inertia<span class="sv">ref csys axes</span></summary>
           <label class="r"><span class="k">Source</span><span class="v"><select id="inMode"><option value="auto" selected>From geometry (uniform)</option><option value="custom">Enter values</option></select></span></label>
           <div id="inCustom" class="hidden">
+            <label class="r"><span class="k">Taken at</span><span class="v"><select id="inAt"><option value="G" selected>CoG (ref axes)</option><option value="origin">Ref csys origin</option></select></span></label>
             <label class="r"><span class="k">I<sub>xx</sub></span><span class="v"><input id="inXX" type="number" step="any"><span class="u">kg·m²</span></span></label>
             <label class="r"><span class="k">I<sub>yy</sub></span><span class="v"><input id="inYY" type="number" step="any"><span class="u">kg·m²</span></span></label>
             <label class="r"><span class="k">I<sub>zz</sub></span><span class="v"><input id="inZZ" type="number" step="any"><span class="u">kg·m²</span></span></label>
@@ -133,7 +157,7 @@
             <label class="r"><span class="k">I<sub>xz</sub></span><span class="v"><input id="inXZ" type="number" step="any" value="0"><span class="u">kg·m²</span></span></label>
             <label class="r"><span class="k">I<sub>yz</sub></span><span class="v"><input id="inYZ" type="number" step="any" value="0"><span class="u">kg·m²</span></span></label>
             <label class="r"><span class="k">Products as +∫xy dm</span><span class="v"><input id="inProdSign" type="checkbox"><span class="u">negate into the tensor</span></span></label>
-            <p class="note">About the CoG in the model's axes. Tensor convention I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm: tick the box for those.</p>
+            <p class="note">In the ref csys axes, taken at the CoG or at the ref csys origin. CAD mass-property reports usually give both: "taken at the center of mass, aligned with the output coordinate system" and "taken at the output coordinate system". Values taken at the origin are moved to the CoG with the parallel-axis theorem, so they need the right mass and CoG. Tensor convention I<sub>xy</sub> = −∫xy dm. Some CAD tools (e.g. SolidWorks "products of inertia") report +∫xy dm: tick the box for those.</p>
           </div>
           <div id="inInfo" class="info"></div>
         </details>
@@ -163,7 +187,7 @@
         </details>
         <details>
           <summary><span class="bx"></span>Mass for a target float plane</summary>
-          <label class="r"><span class="k">Specify by</span><span class="v"><select id="tMode"><option value="draft">Draft (depth of lowest point)</option><option value="modelZ">Waterline at model z</option><option value="frac">Submerged volume %</option></select></span></label>
+          <label class="r"><span class="k">Specify by</span><span class="v"><select id="tMode"><option value="draft">Draft (depth of lowest point)</option><option value="modelZ">Waterline at ref z</option><option value="frac">Submerged volume %</option></select></span></label>
           <label class="r"><span class="k" id="tLabel">Draft</span><span class="v"><input id="tVal" type="number" step="any" value="0"></span></label>
           <div class="bb"><button id="tCalc" class="b def">Compute</button><button id="tPreview" class="b">Preview plane</button><button id="tApply" class="b" disabled>Apply mass</button></div>
           <div id="tOut" class="info grid"></div>
@@ -249,7 +273,7 @@
             <button id="ptPick" class="b">⌖ Pick on model</button>
             <button id="ptAdd" class="b">Add at CoG</button>
           </div>
-          <details class="more"><summary>About tracked points</summary><p class="note">Points on the body to follow during the wave runs: an antenna, GPS or solar panel (time above water, underwater stretches) or an IMU (accelerations). Model axes, metres. A clearance counts the point as underwater until it is that far above the surface (e.g. an antenna that needs to stand clear).</p></details>
+          <details class="more"><summary>About tracked points</summary><p class="note">Points on the body to follow during the wave runs: an antenna, GPS or solar panel (time above water, underwater stretches) or an IMU (accelerations). Ref csys, metres. A clearance counts the point as underwater until it is that far above the surface (e.g. an antenna that needs to stand clear).</p></details>
           <div id="ptInfo" class="info"></div>
         </details>
         <details open>
@@ -279,21 +303,29 @@
           <p class="note" id="raoRange"></p>
         </details>
         <details open>
-          <summary><span class="bx"></span>Headings β<span class="sv">from model +x</span></summary>
+          <summary><span class="bx"></span>Headings β<span class="sv">from ref +x</span></summary>
           <label class="r"><span class="k">List or start:step:end</span><span class="v"><input id="raoHead" type="text" value="0:45:180"><span class="u">°</span></span></label>
-          <p class="note warnnote"><b>Note:</b> RAO headings are measured from the model's +x axis, not the global axes used for wave runs.</p>
+          <p class="note warnnote"><b>Note:</b> RAO headings are measured from the ref csys +x axis, not the global axes used for wave runs.</p>
+        </details>
+        <details open>
+          <summary><span class="bx"></span>Reference point<span class="sv" id="raoRefSum">ref csys origin</span></summary>
+          <label class="r"><span class="k">Motions at</span><span class="v"><select id="raoRef"><option value="ref" selected>Ref csys origin</option><option value="G">CoG (G)</option></select></span></label>
+          <p class="note" id="raoRefInfo">Translations are the motions of this point, and phases are measured from the wave at this point. Rotations are the same everywhere on the body. Axes: the ref csys as the body floats (z up, x along the ref +x).</p>
         </details>
         <details open>
           <summary><span class="bx"></span>Solver</summary>
           <label class="r"><span class="k">Hydrodynamics</span><span class="v"><select id="raoMethod"><option value="bem" selected>Panel method (BEM)</option><option value="fk">Froude–Krylov + estimates (fast)</option></select></span></label>
           <label class="r"><span class="k">Panels</span><span class="v"><select id="bemFid"><option value="coarse">Coarse (~400)</option><option value="standard" selected>Standard (~1,000)</option><option value="fine">Fine (~2,500)</option><option value="vfine">Very fine (~6,000)</option></select></span></label>
           <label class="r" id="bemIrrWrap"><span class="k">Irregular frequencies</span><span class="v"><input id="bemIrr" type="checkbox" checked><span class="u">remove (interior waterplane lid)</span></span></label>
-          <details class="more" id="bemHint"><summary>About the panel method</summary><p class="note">Solves the linear diffraction–radiation problem on the wetted hull (deep water, zero speed, as WAMIT's low-order method) for frequency-dependent added mass, radiation damping and wave exciting forces with all couplings, then the 6-DOF RAOs. Checked against WAMIT, Capytaine and the Kramer sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations on buoys (docs/bem-validation.md). Panel counts are for flat-sided hulls; curved hulls get up to about 3× more. Runs in background workers; Standard takes from a few seconds to a few minutes. Extra viscous damping: Waves › Hydrodynamics.</p></details>
+          <details class="more" id="bemHint"><summary>About the panel method</summary><p class="note">Solves the linear diffraction–radiation problem on the wetted hull (deep water, zero speed, as WAMIT's low-order method) for frequency-dependent added mass, radiation damping and wave exciting forces with all couplings, then the 6-DOF RAOs. Checked against WAMIT, Capytaine and the Kramer sphere decay test: within 2 % for surge, sway and heave and 5 % for rotations on buoys. RAOs of the 12 test models match Capytaine within 4.3 % away from resonances: see the <a href="docs/rao-solver-review.html" target="_blank" rel="noopener">RAO solver review and Capytaine comparison</a>. Panel counts are for flat-sided hulls; curved hulls get up to about 3× more. Runs in background workers; Standard takes from a few seconds to a few minutes. Extra viscous damping: Waves › Hydrodynamics.</p></details>
+          <p class="note" id="capyStatus">Checking for Capytaine on this computer…</p>
+          <details class="more"><summary>About Solve with Capytaine</summary><p class="note">Solves the same wetted-surface panels, lid and symmetry with <a href="https://github.com/capytaine/capytaine" target="_blank" rel="noopener">Capytaine</a> (Ancellin &amp; Dias 2019, direct formulation, deep water) on this computer, instead of Float Sim's own solver. Everything after the solve (RAOs, reference point, sea states, exports, simulators) is the same. It needs Python with Capytaine (<code>pip install capytaine</code>) and Float Sim started with <code>./serve.sh</code> from that Python (or <code>FLOATSIM_PYTHON=/path/to/python ./serve.sh</code>). Capytaine runs one frequency per process, as many processes as the cores and free memory allow. Uses the Panels and Irregular-frequency settings of the panel method. How the two solvers compare: <a href="docs/rao-solver-review.html" target="_blank" rel="noopener">RAO solver review and Capytaine comparison</a>.</p></details>
         </details>
       </div>
       <div class="solvebox">
         <div class="bb plain">
           <button id="raoRun" class="b def solve"><span class="bolt" aria-hidden="true"></span>Solve RAOs</button>
+          <button id="raoCapy" class="b solve" disabled title="Checking for Capytaine on this computer…">Solve with Capytaine</button>
           <button id="raoCancel" class="b hidden">Cancel</button>
         </div>
         <div class="lock-note hidden">Locked while the body is placed for a drop / rise test. Exit the drop test to compute RAOs.</div>
@@ -316,7 +348,7 @@
           <summary><span class="bx"></span>Lines</summary>
           <label class="r"><span class="k">Line</span><span class="v"><select id="moorPreset"></select></span></label>
           <label class="r"><span class="k">Number of lines</span><span class="v"><select id="moorN"><option value="1">1 (single point)</option><option value="2">2</option><option value="3">3 (spread, 120°)</option><option value="4">4</option></select></span></label>
-          <label class="r"><span class="k">Direction of line 1</span><span class="v"><input id="moorDir" type="number" step="any" value="0"><span class="u">° from model +x</span></span></label>
+          <label class="r"><span class="k">Direction of line 1</span><span class="v"><input id="moorDir" type="number" step="any" value="0"><span class="u">° from ref +x</span></span></label>
         </details>
         <details open>
           <summary><span class="bx"></span>Geometry</summary>
@@ -326,7 +358,7 @@
           <details class="more"><summary>About the layout</summary><p class="note">Anchors on the seabed at the anchor radius from the fairlead's position above them at the start, spread evenly in direction. The body then settles where the lines (and the steady wind) balance: a single line pulls it toward its anchor until the line goes slack, so the wave runs start there.</p></details>
         </details>
         <details open>
-          <summary><span class="bx"></span>Fairlead on the body<span class="sv">model axes</span></summary>
+          <summary><span class="bx"></span>Fairlead on the body<span class="sv">ref csys</span></summary>
           <label class="r"><span class="k">x</span><span class="v"><input id="mfX" type="number" step="any" value="0"><span class="u">m</span></span></label>
           <label class="r"><span class="k">y</span><span class="v"><input id="mfY" type="number" step="any" value="0"><span class="u">m</span></span></label>
           <label class="r"><span class="k">z</span><span class="v"><input id="mfZ" type="number" step="any" value="0"><span class="u">m</span></span></label>
@@ -395,7 +427,7 @@
           <summary><span class="bx"></span>Heave plates</summary>
           <div id="plList"></div>
           <div class="bb"><button id="plAdd" class="b">Add heave plate</button></div>
-          <details class="more"><summary>About heave plates</summary><p class="note">Thin discs fixed to the body, horizontal when floating; centre in model coordinates. Each adds added mass ρD³/3 normal to the plate, an inertia force from the wave acceleration and drag ½ρC<sub>d</sub>(πD²/4)|u|u. C<sub>d</sub> ≈ 1.2 in steady flow (Hoerner); oscillating plates at small motion amplitudes often show higher values. Leave the plate out of the CAD model, but include its mass in Float.</p></details>
+          <details class="more"><summary>About heave plates</summary><p class="note">Thin discs fixed to the body, horizontal when floating; centre in the ref csys. Each adds added mass ρD³/3 normal to the plate, an inertia force from the wave acceleration and drag ½ρC<sub>d</sub>(πD²/4)|u|u. C<sub>d</sub> ≈ 1.2 in steady flow (Hoerner); oscillating plates at small motion amplitudes often show higher values. Leave the plate out of the CAD model, but include its mass in Float.</p></details>
         </details>
       </div>
       <div id="dragInfo" class="info pad"></div>
@@ -456,7 +488,7 @@
     <label class="tb tog"><input id="showEdges" type="checkbox" checked>Edges</label>
     <label class="tb tog"><input id="showLabels" type="checkbox" checked>Labels</label>
     <label class="tb tog"><input id="showMl" type="checkbox" checked><span>M<sub>L</sub></span></label>
-    <label class="tb tog"><input id="showAxes" type="checkbox" checked>Model axes</label>
+    <label class="tb tog"><input id="showAxes" type="checkbox" checked>Ref csys</label>
   </div>
   <main id="view">
     <canvas id="gl"></canvas>
@@ -469,7 +501,7 @@
         <span class="lg"><i style="background:#47e08a"></i><span>M<sub>T</sub> · roll metacentre</span></span>
         <span class="lg"><i style="background:#e0c547"></i><span>M<sub>L</sub> · pitch metacentre</span></span>
         <span class="lg"><i class="wl"></i>Waterline</span>
-        <span class="lg"><i class="ax"></i><span><em>xyz</em> model axes at G · XYZ global</span></span>
+        <span class="lg"><i class="ax"></i><span><em>xyz</em> ref csys at its origin · XYZ global</span></span>
       </div>
     </div>
     <svg id="triad" width="96" height="88" viewBox="0 0 96 88" role="img" aria-label="Global axes"></svg>
@@ -569,7 +601,7 @@
           <option value="slope">deg / deg slope</option><option value="m">deg / m</option>
         </select>
       </div>
-      <p class="note warnnote pad">Note: β is the wave heading measured from the model's +x axis.</p>
+      <p class="note warnnote pad" id="raoRefNote">Note: β is the wave heading measured from the ref csys +x axis.</p>
       <div class="chartwrap"><canvas id="raoCv" class="chart"></canvas></div>
       <div class="gh">Phase</div>
       <div class="chartwrap"><canvas id="raoPh" class="chart"></canvas></div>
@@ -618,7 +650,8 @@
   <div class="dlgbody">
     <p>Hydrostatics: rigid body, uniform density for the computed inertia. Units are metric throughout (m, kg, s, N).</p>
     <p>Waves: linear incident waves with Froude–Krylov pressure (Wheeler-stretched), added mass and damping from the panel method or estimates, zero forward speed, deep water (also for the wave kinematics on mooring lines; the mooring water depth only places the anchors).</p>
-    <p>Wave direction in the Waves stage is measured from the global +X axis. RAO headings and the mooring line direction are measured from the model's +x axis.</p>
+    <p>Wave direction in the Waves stage is measured from the global +X axis. RAO headings and the mooring line direction are measured from the reference csys +x axis.</p>
+    <p>Validation of the RAO solver: the <a href="docs/rao-solver-review.html" target="_blank" rel="noopener">RAO solver review and Capytaine comparison</a> (literature review, coefficient checks against WAMIT and Capytaine, and RAOs of the 12 test models from Float Sim and from Capytaine run on its own).</p>
   </div>
 </dialog>
 <script type="module" src="js/app.js"></script>

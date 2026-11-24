@@ -129,6 +129,7 @@ details[open] > summary .bx::before { content: "−"; }
 .r .v input[type=number]:hover, .r .v input[type=text]:hover, .r .v select:hover { border-color: #c2c2c2; }
 .r .v input:focus, .r .v select:focus { border-color: #4a90d9; background: #fff; box-shadow: none; }
 .r .v input[type=checkbox] { margin: 0 5px; flex: none; }
+.r .v input[type=number] + input[type=number] { margin-left: 2px; }
 .r .v input[type=range] { flex: 1; min-width: 0; }
 .r .v output { min-width: 34px; text-align: right; }
 .r .v .sg { margin: 1px 0; flex-wrap: nowrap; }

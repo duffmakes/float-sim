@@ -183,7 +183,7 @@ export function initExtras(api) {
   for (const id of ['windU', 'windDir', 'windCd', 'windGust', 'windSame']) $(id).addEventListener('change', () => { $('windDir').disabled = $('windSame').checked; api.onChange(); });
   $('windDir').disabled = $('windSame').checked;
 
-  // ------------------------------------------------------------ config for the seakeeping module (metres, model axes)
+  // ------------------------------------------------------------ config for the seakeeping module (metres, ref csys = model coordinates)
   function config(waveHeading = 90) {
     const k = us();
     const cfg = {

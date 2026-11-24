@@ -1,0 +1,21 @@
+{
+  "note": "RAO comparison, Float Sim panel method vs Capytaine run on its own: one floating condition per test STEP model (test/models), fresh water. mass kg, cog m in the file's coordinates, euler deg (roll, pitch, yaw) of the floating attitude. Inertia is the uniform-density tensor about the CoG that Float Sim computes by default; both solvers use the same mass, CoG and inertia. No extra damping, deep water.",
+  "rho": 1000.0,
+  "g": 9.80665,
+  "fMin": 0.01, "fMax": 1.0, "nFreq": 100,
+  "headings": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180],
+  "cases": [
+    { "id": "box_4x2x1", "file": "box_4x2x1.step", "title": "Box barge 4 × 2 × 1 m, draft 0.4 m, KG 0.5 m", "mass": 3200.0, "cog": [2.0, 0, 0.5], "euler": [0, 0, 0] },
+    { "id": "box_moved", "file": "box_moved.step", "title": "Same box, yawed 30° and moved off the origin in the CAD file", "mass": 3200.0, "cog": [3.2320508075688776, 0.3, 0.75], "euler": [0, 0, 0] },
+    { "id": "buoy_cyl", "file": "buoy_cyl.step", "title": "Cylinder buoy a 0.35 m, draft 0.63 m, CoG 0.4 m below the waterline", "mass": 242.4501, "cog": [0, 0, 0.23], "euler": [0, 0, 0] },
+    { "id": "cube_1m", "file": "cube_1m.step", "title": "1 m cube, s.g. 0.85 (draft 0.85 m), CoG at the centre", "mass": 850.0, "cog": [0, 0, 0.5], "euler": [0, 0, 0] },
+    { "id": "hcyl_log", "file": "hcyl_log.step", "title": "Log Ø0.4 × 3 m, half immersed, CoG 50 mm below the axis", "mass": 188.4955592153876, "cog": [1.5, 0, 0.15], "euler": [0, 0, 0] },
+    { "id": "kramer_sphere", "file": "kramer_sphere.step", "title": "Kramer et al. sphere D 0.3 m, CoG 34.8 mm below the centre", "mass": 7.056, "cog": [0, 0, 0.1152], "euler": [0, 0, 0] },
+    { "id": "spar", "file": "spar.step", "title": "Spar a 0.5 m, draft 6 m, CoG 1 m above the keel", "mass": 4712.38898038469, "cog": [0, 0, 1.0], "euler": [0, 0, 0] },
+    { "id": "sphere_r1", "file": "sphere_r1.step", "title": "Sphere r 1 m, half immersed, CoG 0.3 m below the centre", "mass": 2094.3951023931954, "cog": [0, 0, 0.7], "euler": [0, 0, 0] },
+    { "id": "square_log_3x1x1", "file": "square_log_3x1x1.step", "title": "Square log 3 × 1 × 1 m, s.g. ½, floating corner-down (rolled 45°)", "mass": 1500.0, "cog": [1.5, 0, 0.5], "euler": [45, 0, 0] },
+    { "id": "v_prism", "file": "v_prism.step", "title": "V-section prism, 30° half-angle, 3 m long, draft 0.6 m", "mass": 623.5382907247957, "cog": [1.5, 0, 0.35], "euler": [0, 0, 0] },
+    { "id": "vcyl_squat", "file": "vcyl_squat.step", "title": "Discus cylinder r 0.5 m, H 0.4 m, draft 0.2 m, CoG at the waterline", "mass": 157.07963267948966, "cog": [0, 0, 0.2], "euler": [0, 0, 0] },
+    { "id": "vcyl_tall", "file": "vcyl_tall.step", "title": "Tall cylinder r 0.25 m, H 1 m, draft 0.5 m, ballasted to KG 0.2 m", "mass": 98.17477042468103, "cog": [0, 0, 0.2], "euler": [0, 0, 0] }
+  ]
+}
