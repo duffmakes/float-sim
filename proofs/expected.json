@@ -1,0 +1,13 @@
+{
+  "note": "Written by `lake exe expected` (proofs/Proofs/Expected.lean): closed forms proved in proofs/Proofs, evaluated exactly. Values are fractions num/den in metres.",
+  "cases": {
+    "box_fresh": {"draft": {"num": 2, "den": 5}, "KB": {"num": 1, "den": 5}, "BMt": {"num": 5, "den": 6}, "BMl": {"num": 10, "den": 3}, "GMt": {"num": 8, "den": 15}, "GMl": {"num": 91, "den": 30}},
+    "box_salt": {"draft": {"num": 16, "den": 41}, "KB": {"num": 8, "den": 41}, "BMt": {"num": 41, "den": 48}, "BMl": {"num": 41, "den": 12}, "GMt": {"num": 1081, "den": 1968}, "GMl": {"num": 1531, "den": 492}},
+    "cube_s015": {"draft": {"num": 3, "den": 20}, "KB": {"num": 3, "den": 40}, "BMt": {"num": 5, "den": 9}, "BMl": {"num": 5, "den": 9}, "GMt": {"num": 47, "den": 360}, "GMl": {"num": 47, "den": 360}, "stable": true},
+    "cube_s050": {"draft": {"num": 1, "den": 2}, "KB": {"num": 1, "den": 4}, "BMt": {"num": 1, "den": 6}, "BMl": {"num": 1, "den": 6}, "GMt": {"num": -1, "den": 12}, "GMl": {"num": -1, "den": 12}, "stable": false},
+    "cube_s085": {"draft": {"num": 17, "den": 20}, "KB": {"num": 17, "den": 40}, "BMt": {"num": 5, "den": 51}, "BMl": {"num": 5, "den": 51}, "GMt": {"num": 47, "den": 2040}, "GMl": {"num": 47, "den": 2040}, "stable": true},
+    "vcyl_tall": {"draft": {"num": 1, "den": 2}, "KB": {"num": 1, "den": 4}, "BMt": {"num": 1, "den": 32}, "BMl": {"num": 1, "den": 32}, "GMt": {"num": -7, "den": 32}, "GMl": {"num": -7, "den": 32}, "stable": false},
+    "vcyl_squat": {"draft": {"num": 1, "den": 5}, "KB": {"num": 1, "den": 10}, "BMt": {"num": 5, "den": 16}, "BMl": {"num": 5, "den": 16}, "GMt": {"num": 17, "den": 80}, "GMl": {"num": 17, "den": 80}, "stable": true},
+    "v_prism": {"draft": {"num": 3, "den": 5}, "KB": {"num": 2, "den": 5}, "BMt": {"num": 2, "den": 15}, "BMl": {"num": 5, "den": 2}, "GMt": {"num": 11, "den": 60}, "GMl": {"num": 51, "den": 20}}
+  }
+}

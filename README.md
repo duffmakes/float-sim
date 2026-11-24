@@ -146,10 +146,14 @@ The body is triangulated and each triangle is clipped to the part below the wate
 
 ## Validation suite
 
+[docs/validation-map.md](docs/validation-map.md) (also as `docs/validation-map.html`, linked from Help › Method notes) maps every core part of Float Sim to its evidence: machine-checked proofs of the formulas it implements (Lean 4 + Mathlib, `proofs/`), tests of the code against those formulas, and independent references. The tables below give the details.
+
 `test/models/` holds 8 exact B-rep STEP bodies (boxes, a cube, a square log, a V-prism, true cylinders upright and on their side, and a box moved and rotated off the origin). They are written by `test/make_models.py`, a standard-library STEP writer that also checks each shell is closed and consistently oriented. `expected.json` has 14 cases with closed-form answers and citations: Rawson & Tupper, Barrass & Derrett, Biran, and Erdős et al., Am. J. Phys. 60 (1992).
 
 | Run | What it exercises | Result (2026-11-21) |
 |---|---|---|
+| `cd proofs && lake build` | Lean 4 + Mathlib proofs: hydrostatic closed forms (Archimedes, KB and waterplane integrals, box and V-section BM), upright stability limits of the cube and the cylinder, Huygens–Steiner, rotations and the reference csys, reading roll, pitch and yaw back from a rotation (`toEulerDeg`, including gimbal lock), motions and loads at a point, the wave phase shift ([docs/validation-map.md](docs/validation-map.md)). Needs elan; `lake exe cache get` fetches Mathlib (about 7 GB) | builds, no `sorry` |
+| `node test/validate-proofs.mjs` | Float Sim's hydrostatics on 8 STEP models, and the hand-derived references in `expected.json`, against the proved closed forms evaluated exactly (`proofs/expected.json`, written by `lake exe expected`); `mat3.toEulerDeg` against its proofs (angles read back over 20,000 rotations, rebuilt at gimbal lock) | 18/18 |
 | `python3 test/validate.py` | Python port of the hydrostatic solver on the same geometry | 126/126 |
 | `python3 test/simcheck.py` | Python port of the calm-water free-float simulator | 2/2 |
 | `node test/validate-node.mjs [fine\|normal\|coarse]` | **Real pipeline** under Node: OpenCascade STEP import, the JS solvers and simulators, hydrostatics + waves + literature benchmarks + drop test; at fine also the small-body checks (mooring, drag, wind, tracked points) and the reference csys checks | 361/361 fine, 264/264 normal and coarse |

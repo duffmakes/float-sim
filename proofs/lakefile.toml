@@ -1,0 +1,17 @@
+name = "proofs"
+version = "0.1.0"
+defaultTargets = ["Proofs", "expected"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.36.0"
+
+[[lean_lib]]
+name = "Proofs"
+
+# `lake exe expected` writes expected.json: the proved closed forms evaluated exactly (over ℚ) for the test
+# models, read by test/validate-proofs.mjs
+[[lean_exe]]
+name = "expected"
+root = "Proofs.Expected"
