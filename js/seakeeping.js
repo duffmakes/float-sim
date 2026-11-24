@@ -8,6 +8,7 @@ import {
 import { runBem } from './bemrun.js';
 import { WaveSim, seriesStats } from './sim.js';
 import { lineChart, heatmap, SERIES, rampColor } from './charts.js';
+import { startTask } from './progress.js';
 import { meanWettedTris } from './hydro.js';
 import { dragGeometry, plateAddedMass, dragElements, dragLinear, linearizeDrag } from './drag.js';
 import { anchorLayout, mooringLoads, mooringStiffness, mooringOffset, submergedWeight, quasiStaticForce, catenaryShape } from './mooring.js';
@@ -344,11 +345,23 @@ export function initSeakeeping(api) {
     const lo = 0.5 * Math.min(...(wn.length ? wn : [1])), hi = 1.8 * Math.max(...(wn.length ? wn : [1]));
     const omegas = Array.from({ length: 12 }, (_, i) => lo * Math.pow(hi / lo, i / 11));
     onText('Computing panel-method added mass and damping (coarse mesh, 12 frequencies)…');
-    const run = runBem({ rel: P.rel, zw: P.zw, rho: st.rho, omegas, fidelity: 'coarse', waveRefine: false, onProgress: (q) => onText(q.text) });
-    const bem = await run.promise;
-    K.simBem = { key, bem, source: 'a quick coarse panel-method sweep' };
-    return K.simBem;
+    let run = null;
+    const task = startTask({
+      title: 'Preparing the simulation', frac: 0,
+      detail: 'Panel-method added mass and damping for this body (coarse mesh, 12 frequencies). Needed once per body.',
+      cancelLabel: 'Skip: use the estimates', onCancel: () => { if (run) run.cancel(); },
+    });
+    try {
+      run = runBem({ rel: P.rel, zw: P.zw, rho: st.rho, omegas, fidelity: 'coarse', waveRefine: false, onProgress: (q) => { onText(q.text); task.update({ frac: q.frac, detail: q.text }); } });
+      const bem = await run.promise;
+      K.simBem = { key, bem, source: 'a quick coarse panel-method sweep' };
+      return K.simBem;
+    } finally { task.done(); }
   }
+  // message when the quick panel-method sweep fails or the user skips it: the run carries on with the estimates
+  const simBemNote = (err) => (err && err.cancelled
+    ? '<span class="warn">Panel method skipped: using the added-mass and damping estimates.</span>'
+    : `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`);
   // a sweep can stand in for the quick one only if it spans the heave, roll and pitch natural frequencies
   const coversNatural = (P, bem) => bemNatural(P.model, bem).every((n, j) => j < 2 || j > 4 || !(n.w > 0) || n.inRange);
   // The linear model the simulators use (and the linear predictions they are compared with): the estimate model,
@@ -467,20 +480,25 @@ export function initSeakeeping(api) {
     if (K.starting) return;
     K.starting = true;
     try { await ensureSimBem((t) => { $('waveInfo').innerHTML = t; }); }
-    catch (err) { $('waveInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+    catch (err) { $('waveInfo').innerHTML = simBemNote(err); }
     finally { K.starting = false; }
-    const P = prepare(); if (!P) return;
+    const startTaskBox = startTask({ title: 'Starting the wave run', detail: 'Preparing the wetted hull panels and the wave field…' });
+    try { await nextPaint(); } catch { /* no paint available */ }
+    const P = prepare(); if (!P) { startTaskBox.done(); return; }
     api.stopCalmSim();
     const s = sea();
     const field = fieldFor();
-    const hull = hullFor(P, field);
-    const sm = simModel(P, s);
-    const X = extrasFor(P, s);
-    K.sim = new WaveSim({
-      hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
-      A: sm.A, Bd: sm.Bd, dt: dtFor(P, field, sm), ramp: rampFor(s, X), vanishDeg: P.vanish || 180,
-      volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s), ...simExtras(X), p0: X.moor ? X.moor.offset : null,
-    });
+    let hull, sm, X;
+    try {
+      hull = hullFor(P, field);
+      sm = simModel(P, s);
+      X = extrasFor(P, s);
+      K.sim = new WaveSim({
+        hull, mass: P.st.m, inertiaG: P.IGb, rho: P.st.rho, R0: P.Rsk, z0: -P.zw, field,
+        A: sm.A, Bd: sm.Bd, dt: dtFor(P, field, sm), ramp: rampFor(s, X), vanishDeg: P.vanish || 180,
+        volQ: hull.volQ, diffModes: P.diffModes, drift: driftParams(s), ...simExtras(X), p0: X.moor ? X.moor.offset : null,
+      });
+    } finally { startTaskBox.done(); }
     K.runX = X;
     // show the run in the global frame: the run frame is the model's frame with its yaw removed
     K.yawDeg = Math.atan2(P.st.R[3], P.st.R[0]) * 180 / Math.PI;
@@ -678,7 +696,7 @@ export function initSeakeeping(api) {
     if (!sea().active && !windOn) { $('waveInfo').textContent = 'Calm water: nothing to simulate.'; return; }
     $('waveStats').disabled = true;
     try { await ensureSimBem((t) => { $('waveInfo').innerHTML = t; }); }
-    catch (err) { $('waveInfo').innerHTML = `<span class="warn">Panel-method coefficients failed (${err.message}); using the estimates.</span>`; }
+    catch (err) { $('waveInfo').innerHTML = simBemNote(err); }
     $('waveStats').disabled = false;
     const P = prepare(); if (!P) return;
     const s = sea();
@@ -692,8 +710,28 @@ export function initSeakeeping(api) {
     K.worker = new Worker(new URL('./seaworker.js', import.meta.url), { type: 'module' });
     $('waveStats').disabled = true;
     const t0 = performance.now();
+    const worker = K.worker;
+    const statsTask = startTask({
+      title: `Running statistics: ${duration / 60} min of ${s.label}`, frac: 0, eta: true,
+      detail: `Time-domain simulation in a background worker (${(hull.idx.length / 3).toLocaleString()} panels, dt ${f(dt * 1000)} ms).`,
+      onCancel: () => {
+        worker.terminate(); if (K.worker === worker) K.worker = null;
+        statsTask.done(); $('waveStats').disabled = false;
+        $('waveInfo').innerHTML = '<span class="warn">Statistics run cancelled.</span>';
+      },
+    });
+    K.worker.onerror = (e) => {
+      statsTask.done(); $('waveStats').disabled = false;
+      $('waveInfo').innerHTML = `<span class="bad">Statistics run failed: ${e.message || 'worker error'}</span>`;
+    };
     K.worker.onmessage = (e) => {
-      if (e.data.progress !== undefined) { $('waveInfo').innerHTML = `Simulating ${duration / 60} min of ${s.label}… <b>${Math.round(e.data.progress * 100)}%</b>`; return; }
+      if (e.data.progress !== undefined) {
+        const p = e.data.progress;
+        $('waveInfo').innerHTML = `Running statistics: simulating ${duration / 60} min of ${s.label}… <b>${Math.round(p * 100)}%</b>`;
+        statsTask.update({ frac: p, detail: `Simulated ${f(p * duration / 60, 3)} of ${duration / 60} min of ${s.label} in a background worker.` });
+        return;
+      }
+      statsTask.done();
       $('waveStats').disabled = false;
       const { stats, series } = e.data;
       K.stats = { stats, series, sea: s, X, ptLin };
@@ -803,7 +841,7 @@ export function initSeakeeping(api) {
   }
 
   // ------------------------------------------------------------ sea-state sweep (spectral)
-  $('ssSweep').onclick = () => {
+  function ssSweepNow() {
     if (K.locked) return;
     const P = prepare(); if (!P) return;
     const s = sea();
@@ -836,6 +874,11 @@ export function initSeakeeping(api) {
     });
     $('ssTable').innerHTML = `<table class="ss-table"><tr><th>SS</th><th>Hs m</th><th>Tp s</th><th>heave sig m</th><th>roll sig °</th><th>roll max 3 h °</th><th>pitch sig °</th><th>verdict</th></tr>${rows.join('')}</table>
       <span class="hint">Linear spectral estimate at direction ${s.dir}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (RAO stage)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemBase ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}).${X.drag ? ' Viscous drag: linearised for each row\'s sea state.' : ''}${X.moor ? ' Mooring: linear catenary stiffness at the mean position.' : ''} Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
+  }
+  $('ssSweep').onclick = async () => {
+    if (K.locked) return;
+    const task = startTask({ title: 'Computing the sea-state table', detail: 'Linear spectral estimates for sea states 1–5 at the chosen wave direction…' });
+    try { await nextPaint(); ssSweepNow(); } finally { task.done(); }
   };
 
   // ------------------------------------------------------------ RAO sweep
@@ -853,12 +896,23 @@ export function initSeakeeping(api) {
   };
   for (const id of ['raoFmin', 'raoFmax']) $(id).addEventListener('input', raoRange);
   raoRange();
+  // RAO progress: the bar in the RAO setup pane, the overlay on the plots and the progress window over the view
+  let raoTask = null;
   const progress = (frac, text) => {
     $('raoProgWrap').classList.toggle('hidden', frac === null);
-    if (frac === null) return;
-    $('raoProgBar').style.width = `${Math.round(frac * 100)}%`;
-    $('raoProgText').textContent = text;
+    if (frac === null) { if (raoTask) { raoTask.done(); raoTask = null; } return; }
+    const pct = Math.round(frac * 100);
+    $('raoProgBar').style.width = `${pct}%`;
+    $('raoProgText').textContent = `${pct} %`;
+    $('raoProgDetail').textContent = text;
     $('raoLoadingText').textContent = text;
+    if (!raoTask) {
+      raoTask = startTask({
+        title: bemOn() ? 'Solving RAOs: panel method' : 'Computing RAOs: Froude–Krylov', frac,
+        detail: text, onCancel: () => { if (K.bemRun) K.bemRun.cancel(); },
+      });
+    }
+    raoTask.update({ frac, detail: text, onCancel: K.bemRun ? () => { if (K.bemRun) K.bemRun.cancel(); } : null });
   };
   const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   let raoBusy = false;

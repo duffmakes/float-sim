@@ -216,7 +216,30 @@ label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: #fff4ce; border: 1px solid #d8b64a; color: #3d3000;
   box-shadow: 1px 2px 6px rgba(0, 0, 0, .2);
 }
-#busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(230, 230, 230, .75); font-size: 13px; color: var(--ink); }
+/* progress window for anything the user waits on (js/progress.js) */
+#viewScrim { position: absolute; inset: 0; background: rgba(235, 237, 240, .72); z-index: 7; }
+#taskbox {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 8;
+  width: min(460px, calc(100% - 24px)); background: var(--pane); border: 1px solid #5f6b7a;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35), 0 0 0 4px rgba(11, 92, 173, .18);
+}
+.tb-head { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 3px 6px 3px 10px; background: linear-gradient(#e3eaf3, #ccd7e5); border-bottom: 1px solid #9dafc4; color: #1c2a3a; font-size: 13px; }
+.tb-head .sp { flex: 1; }
+.tb-spin { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid #9fb4cc; border-top-color: var(--acc); animation: spin .8s linear infinite; flex: none; }
+.tb-body { padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+.tb-bar { position: relative; height: 26px; border: 1px solid #8a8a8a; background: #e2e2e2; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0, 0, 0, .15); }
+.tb-bar > div { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(#4fd06c, #06b025 55%, #05a222); transition: width .25s; }
+.tb-bar > span { position: relative; display: block; text-align: center; line-height: 24px; font-weight: 700; font-size: 13px; color: #111; text-shadow: 0 0 3px #fff, 0 0 2px #fff; }
+.tb-bar.indet > div { width: 28% !important; transition: none; animation: indet 1.3s ease-in-out infinite; }
+@keyframes indet { from { transform: translateX(-110%); } to { transform: translateX(370%); } }
+.tb-detail { font-size: 12px; color: var(--ink2); min-height: 16px; }
+.tb-foot { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--ink3); }
+.tb-foot .sp { flex: 1; }
+#sbTask { height: 20px; margin: 0 4px; padding: 0 8px; gap: 6px; border-color: #3c7fc4; background: #e8f1fb; font-size: 11.5px; }
+.sbbar { position: relative; width: 120px; height: 12px; border: 1px solid #8a8a8a; background: #e2e2e2; overflow: hidden; }
+.sbbar > i { position: absolute; inset: 0 auto 0 0; width: 0; background: #06b025; transition: width .25s; }
+.sbbar.indet > i { width: 30% !important; transition: none; animation: indet 1.3s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .tb-bar.indet > div, .sbbar.indet > i { animation-duration: 4s; } .tb-spin { animation-duration: 3s; } }
 #anim { display: flex; align-items: center; gap: 6px; min-height: 32px; flex: none; padding: 3px 6px; background: linear-gradient(#efefef, #dedede); border-top: 1px solid var(--edge); flex-wrap: wrap; }
 #anim .grp { display: none; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
 #anim .grp.on { display: flex; }
@@ -265,10 +288,13 @@ label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .badge.good { color: var(--good); border-color: #8bc48f; background: #eef7ee; }
 .badge.warn { color: var(--warn); border-color: #d8b64a; background: #fff8dc; }
 .badge.bad { color: var(--bad); border-color: #e0a0a0; background: #fdeeee; }
-.progress { position: relative; height: 16px; border: 1px solid #bcbcbc; background: #e6e6e6; overflow: hidden; }
-.progress > div { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(#3cc35a, #06b025); transition: width .15s; }
-.progress > span { position: relative; display: block; text-align: center; font-size: 11px; line-height: 14px; color: #1e1e1e; }
-.tab-loading { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 60px; background: rgba(242, 242, 242, .9); font-size: 12px; }
+.progwrap { display: flex; flex-direction: column; gap: 4px; }
+.progress { position: relative; height: 22px; border: 1px solid #8a8a8a; background: #e2e2e2; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0, 0, 0, .15); }
+.progress > div { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(#4fd06c, #06b025 55%, #05a222); transition: width .25s; }
+.progress > span { position: relative; display: block; text-align: center; font-size: 12px; font-weight: 700; line-height: 20px; color: #111; text-shadow: 0 0 3px #fff; }
+.progdetail { font-size: 11.5px; color: var(--ink2); }
+.tab-loading { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 60px 16px 0; background: rgba(242, 242, 242, .92); font-size: 13px; font-weight: 600; text-align: center; }
+.tab-loading .spinner { width: 34px; height: 34px; border-width: 4px; }
 .spinner { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #d0d0d0; border-top-color: var(--acc); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }

@@ -297,7 +297,10 @@
           <button id="raoCancel" class="b hidden">Cancel</button>
         </div>
         <div class="lock-note hidden">Locked while the body is placed for a drop / rise test. Exit the drop test to compute RAOs.</div>
-        <div id="raoProgWrap" class="progress hidden"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
+        <div id="raoProgWrap" class="progwrap hidden">
+          <div class="progress" role="progressbar" aria-label="RAO solve progress"><div id="raoProgBar"></div><span id="raoProgText"></span></div>
+          <div id="raoProgDetail" class="progdetail"></div>
+        </div>
         <div id="raoInfo" class="info"></div>
       </div>
     </div>
@@ -471,7 +474,16 @@
     </div>
     <svg id="triad" width="96" height="88" viewBox="0 0 96 88" role="img" aria-label="Global axes"></svg>
     <div id="banner" class="hidden"></div>
-    <div id="busy" class="hidden">Loading…</div>
+    <div id="viewScrim" class="hidden"></div>
+    <section id="taskbox" class="hidden" role="status" aria-live="polite" aria-label="Progress">
+      <div class="tb-head"><span class="tb-spin" aria-hidden="true"></span><b id="taskTitle">Working…</b><span class="sp"></span>
+        <button id="taskHide" class="b sm" title="Keep it running and show the progress in the status bar">Hide</button></div>
+      <div class="tb-body">
+        <div id="taskBar" class="tb-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="taskTitle"><div id="taskFill"></div><span id="taskPct"></span></div>
+        <div id="taskDetail" class="tb-detail"></div>
+        <div class="tb-foot"><span id="taskTime"></span><span id="taskMore"></span><span class="sp"></span><button id="taskCancel" class="b hidden">Cancel</button></div>
+      </div>
+    </section>
   </main>
   <div id="anim" role="toolbar" aria-label="Animation">
     <span class="grp" data-for="float">
@@ -596,6 +608,7 @@
   <span>Units: m · kg · s · N</span>
   <span id="sbWater">ρ 1000 kg/m³</span>
   <span id="sbAddons">Add-ons: none</span>
+  <button id="sbTask" class="hidden" title="Show the progress window"><span id="sbBar" class="sbbar"><i id="sbFill"></i></span><span id="sbTaskText"></span></button>
   <span class="right" id="sbView">Isometric</span>
 </footer>
 </div>

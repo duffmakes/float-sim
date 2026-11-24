@@ -11,6 +11,7 @@ import { initSeakeeping } from './seakeeping.js';
 import { initDropTest } from './droptest.js';
 import { initExtras } from './extras.js';
 import { initUI } from './ui.js';
+import { initProgress, startTask, nextPaint } from './progress.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -171,28 +172,33 @@ const vol = (m3) => m3 < 1 ? `${fmt(m3 * 1000, 3)} L` : `${fmt(m3, 4)} m³`;
 
 // ------------------------------------------------------------------ model loading
 async function loadFile(file) {
-  busy(`Loading ${file.name}…`);
+  const mb = file.size / 1048576;
+  const task = startTask({ title: `Loading ${file.name}`, detail: `Reading the file (${mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} kB`})…`, scrim: true });
   try {
+    await nextPaint();
     const buf = new Uint8Array(await file.arrayBuffer());
     const ext = file.name.split('.').pop().toLowerCase();
     let parts;
     if (ext === 'stl') {
+      task.update({ detail: 'Reading the STL triangles…' }); await nextPaint();
       const geo = new STLLoader().parse(buf.buffer);
       parts = [soupFromIndexed(geo.attributes.position.array, null)];
     } else {
+      task.update({ detail: `OpenCascade is importing the ${ext.toUpperCase()} file and meshing its surfaces (${$('quality').value} mesh). Large assemblies can take a while…` });
+      await nextPaint();
       parts = await readCad(buf, ext, $('quality').value);
       S.lastCad = file;
     }
+    task.update({ detail: `Building the model: volume, centroid, inertia and the watertight check (${parts.length} bod${parts.length > 1 ? 'ies' : 'y'})…` });
+    await nextPaint();
     // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known.
     // STL has no units: the "STL drawn in" menu gives the file's units.
     setModel(file.name, concat(parts), parts.length, { rawScale: ext === 'stl' ? null : 0.001 });
   } catch (e) {
     console.error(e);
     alert(e.message || String(e));
-  } finally { busy(null); }
+  } finally { task.done(); }
 }
-
-function busy(msg) { $('busy').textContent = msg || ''; $('busy').classList.toggle('hidden', !msg); }
 
 function setModel(name, raw, nParts = 1, opts = {}) {
   S.model = { name, raw, nParts, rawScale: opts.rawScale ?? null };
@@ -828,6 +834,7 @@ canvas.addEventListener('pointerup', (e) => {
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && pickCb) endPick(null); });
 
 // ------------------------------------------------------------------ workspace chrome
+initProgress();
 ui = initUI({
   setView,
   onStage: () => {},
