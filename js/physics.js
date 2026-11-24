@@ -27,14 +27,17 @@ export const mat3 = {
     const d = Math.PI / 180;
     return mat3.mul(mat3.rotZ(yaw * d), mat3.mul(mat3.rotY(pitch * d), mat3.rotX(roll * d)));
   },
+  // Inverse of fromEulerDeg: roll and yaw in (−180°, 180°], pitch in [−90°, 90°]. Pitch comes from
+  // atan2(−m6, |cos pitch|), exact at every angle (asin(−m6) loses accuracy near ±90°). At gimbal lock
+  // (|cos pitch| ≤ 1e-9, pitch within 6e-8° of ±90°) only roll ∓ yaw is defined: it is returned as roll with
+  // yaw 0, which rebuilds the same rotation. Proved in proofs/Proofs/Euler.lean.
   toEulerDeg(m) {
     const d = 180 / Math.PI;
-    const sp = -m[6];
-    if (Math.abs(sp) < 0.999999) {
-      return [Math.atan2(m[7], m[8]) * d, Math.asin(sp) * d, Math.atan2(m[3], m[0]) * d];
+    const cp = Math.hypot(m[7], m[8]);
+    if (cp > 1e-9) {
+      return [Math.atan2(m[7], m[8]) * d, Math.atan2(-m[6], cp) * d, Math.atan2(m[3], m[0]) * d];
     }
-    // gimbal lock
-    return [Math.atan2(-m[5], m[4]) * d, (sp > 0 ? 90 : -90), 0];
+    return [Math.atan2(-m[5], m[4]) * d, (-m[6] > 0 ? 90 : -90), 0];
   },
   inverse(m) {
     const [a, b, c, d, e, f, g, h, i] = m;
