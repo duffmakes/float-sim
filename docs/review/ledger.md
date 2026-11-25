@@ -300,3 +300,42 @@ b4541ad.
 Results with these fixes: `validate-node` 591/591 fine and 494/494 normal and coarse (`validate-stability` 228
 checks); `validate-proofs` 20/20; `e2e-browser` 144/144, the validation page included. No Lean or Python-ported code
 changed.
+
+### Third check of the fixes (reviewer, on Claude Opus 5.5)
+
+Report: [round-1-check3.md](round-1-check3.md), on b4541ad. Closed: R1-32, R1-33, R1-34, R1-35, Q4 and Q5. On R1-28
+the reviewer finds that the code applies the owner's criterion correctly on every body tried, and that its R1-32 and
+R1-34 positions are met. Of 66 Node mutants, 47 were caught, and 8 of 11 e2e mutants. Three new findings, all minor,
+fixed in this round's PR.
+
+| ID | Severity | Finding | Defender's answer | Status |
+| --- | --- | --- | --- | --- |
+| R1-36 | minor | Where every direction takes the same arm (the off-centre sphere: \|CG\| every way), the tie is broken by faceting noise: 177.5° is reported, and the note says the 170.5° direction "takes a larger heeling moment" though the arms differ by 0.09 % | Concede | fixed, for the reviewer's check |
+| R1-37 | minor | The free-trim zero band moves vanishing angles where GZ is tangent to zero: the cube's free-trim edge-down attitude reads 19.4651° for asin(1/3) = 19.4712°; no test needs the band (Q6) | Concede | fixed, for the reviewer's check |
+| R1-38 | minor | Surviving mutants on the new code with no test (H08–H13, H15, G03); H15 is not equivalent (a block fitted into the hull's corner is not reported) | Concede, except H09 and H11 (see below) | fixed, for the reviewer's check |
+
+#### Fixes made (for the reviewer's check)
+
+| ID | What changed | Where to check |
+| --- | --- | --- |
+| R1-36 | Arms within 0.1 % of the least count as the same moment (the faceting of the fine sphere is 0.09 %; a CoG given to the millimetre on a metre-sized body moves the arm more), and of those directions the one whose range ends soonest is taken. So the reported range is the more conservative of equal-moment ends, and the note's "larger heeling moment" is then true by more than 0.1 % | `js/physics.js` `worstHeelRange`; `validate-stability` stability_verdict: the sphere's verdict range is 170.54° (G 0.05 m off) and 179.43° (3 mm off), the closed forms, with no "larger heeling moment" note; your `spheretie.mjs`: 170.537° about x at normal and coarse quality. The cost is that clean bodies with a flat arm near their least may report a direction slightly off it: the barge now ends at 48.14° about −0.06° (48.26° before), the box with KG 0.3 m at 112.323° about −0.56° (roll 112.325°), the 20 m hull with free trim at 78.545° about −1.7° (roll 78.549°), all sooner, none by more than 0.23° |
+| R1-37, Q6 | The band is for a free-trim body that has turned 90° in trim, where a heel is a yaw and GZ is zero up to what the trim solve leaves: the 10 × 2 × 1 m pontoon and the closed 40 × 8 × 6 m barge heeled in pitch with free roll roll onto their sides, and the barge's GZ then sits at 1.4×10⁻⁴ m (3×10⁻⁶ of its size). The band now applies only over a stretch (a sample and the next both within it), so a tangency, one small value, is not moved; it is 1×10⁻⁵ of the size, above that residue. The fold test now asks for GZ about the same 1×10⁻⁷° and 1×10⁻⁵° before the end and ten times the band: where the trim runs smoothly to 90°, GZ falls as the square root of the distance, which is not a fold | `js/physics.js` `gzSummary`, `gzAnalysis`; `validate-stability` stability_verdict: the cube heeled about 90° with free trim vanishes at asin(1/3) to 1×10⁻⁴° (19.47124°); the pontoon heeled about y with free trim ends where it lies on its side, 12.987°, against a continuation in 0.002° steps (12.986–12.988°), not a fold. The barge heeled about y: 10.2302° (its continuation: 10.2302°), not a fold |
+| R1-38 | New tests: the corner block (H15); the 20 m hull heeled about y with free trim, whose 15° sample has rolled over (trim past 90°, GZ < 0, stable; H10) and whose range ends at a fold short of the 15° sample (H08 pins it there); the verdict's fold wording (H13); the pontoon and the cube above (H12, and the band applied to single samples); e2e: the GZ panel of a 4 × 1 × 0.5 m box heeled in pitch with free trim says GZ jumps at the end of the range (G03) | `test/validate-stability.js`, `test/e2e-browser.mjs` 2d. Planted again by the defender: H08, H10, H12, H13, H15 and the band on single samples each fail |
+
+Answers to the question and to the mutants not given a test:
+
+- **Q6:** see R1-37 above: the band is for a body turned 90° in trim; the pontoon is its test.
+- **H09** (steps that change the sign of GZ kept as start points): near-equivalent on every case found. With the
+  corrected band, the 20 m hull (at 87.78° and 90°), the pontoon and the barge give the same ends with and without it.
+  The rule only matters if a step falls off the branch at a point the branch still reaches in a shorter step, which
+  then pins the end below the fold; no case shows it.
+- **H11** (no re-search, Q4): equivalent unless a stable trim comes back after a stretch with none, as for F20. No
+  body found does that (the sphere and the buoy never get one back; the slender hulls never lose one for long).
+- **H03, E02, G01:** as the reviewer finds, equivalent or near-equivalent.
+
+Cost: unchanged from b4541ad except for the tie scan over the directions already evaluated, which costs nothing
+measurable.
+
+Results with these fixes: `validate-node` 599/599 fine and 502/502 normal and coarse (`validate-stability` 236
+checks); `validate-proofs` 20/20; `e2e-browser` 145/145, the validation page included. No Lean or Python-ported code
+changed.

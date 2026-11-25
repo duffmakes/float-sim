@@ -462,7 +462,10 @@ export function gzSummary(curve, opts = {}) {
   const n = curve.length;
   const neutral = GM !== null && Math.abs(GM) <= 1e-9 * scale;
   const unstable = GM !== null && !neutral ? GM < 0 : n > 1 && curve[1].gz <= 0;
-  const band = zero;   // GZ up to this counts as zero (opts.zero; with free trim, a body trimmed 90° turns a heel into a yaw, GZ ≡ 0)
+  // opts.zero: GZ within this of zero counts as zero, but only over a stretch (this sample and the next both within it):
+  // with free trim, a body trimmed 90° turns a heel into a yaw, GZ ≡ 0. A single small value is a tangency (the cube's
+  // edge-down attitude), whose crossing such a band would move (review R1-37)
+  const band = zero;
   const root = (a, b, off = 0) => {     // a.gz − off and b.gz − off have opposite signs (or one is 0)
     if (!at) return a.deg + (b.deg - a.deg) * (a.gz - off) / (a.gz - b.gz);
     let x0 = a.deg, f0 = a.gz - off, x1 = b.deg, f1 = b.gz - off, side = 0, c = x0;
@@ -499,7 +502,10 @@ export function gzSummary(curve, opts = {}) {
     if (pos) vanish = root(pos, curve[1]);
   }
   if (vanish === null) {
-    for (let i = Math.max(2, from + 1); i < n; i++) if (curve[i - 1].gz > band && curve[i].gz <= band) { vanish = root(curve[i - 1], curve[i], band); break; }
+    for (let i = Math.max(2, from + 1); i < n; i++) {
+      const off = band > 0 && Math.abs(curve[i].gz) <= band && i + 1 < n && Math.abs(curve[i + 1].gz) <= band ? band : 0;
+      if (curve[i - 1].gz > off && curve[i].gz <= off) { vanish = root(curve[i - 1], curve[i], off); break; }
+    }
   }
   if (vanish !== null && n > 1 && curve[n - 1].deg >= 180 && vanish > 179.9) vanish = null;
   const end = flood !== null && flood < (vanish ?? Infinity) ? flood : vanish;
@@ -605,13 +611,19 @@ export function gzAnalysis(relTris, targetV, axis = 'x', opts = {}) {
       flood = x1;
     }
   }
-  // with free trim, GZ within 1e-9 of the size counts as zero: a body trimmed 90° (rolled on its side when heeled in
-  // pitch) has GZ ≡ 0 up to round-off. Not with fixed trim, where a zero can be a tangency (the corner-down cube's
-  // edge-down attitude) that such a band would move
-  const summary = gzSummary(curve, { GM: opts.GM ?? null, at, pt: ev, scale, flood, refineMax: opts.refineMax !== false, zero: o.freeTrim ? 1e-9 * scale : 0 });
-  // a free-trim vanishing angle where GZ jumps to zero or below from well above it (1e-6 of the size, 1e-7° before) is a
-  // fold; at a crossing GZ is within 1e-9 of the size there
-  summary.fold = !!(o.freeTrim && summary.vanish !== null && at(summary.vanish - 1e-7) > 1e-6 * scale);
+  // with free trim, GZ within 1e-5 of the size over a stretch counts as zero: a body trimmed 90° (rolled on its side
+  // when heeled in pitch) has GZ ≡ 0 up to what the trim solve leaves, 1.4e-4 m (3e-6 of the size) on the closed barge
+  // (review R1-37, Q6)
+  const zero = o.freeTrim ? 1e-5 * scale : 0;
+  const summary = gzSummary(curve, { GM: opts.GM ?? null, at, pt: ev, scale, flood, refineMax: opts.refineMax !== false, zero });
+  // a free-trim vanishing angle where GZ jumps to zero or below is a fold: GZ just before it is well above zero (ten
+  // times the band) and about the same 1e-7° and 1e-5° before it. At a crossing GZ shrinks with the distance, and where
+  // the trim runs smoothly to 90° (a hull pitched until it lies on its side) it falls as the square root of the distance
+  summary.fold = false;
+  if (o.freeTrim && summary.vanish !== null) {
+    const g2 = at(summary.vanish - 1e-7);
+    summary.fold = g2 > 10 * zero && g2 > 0.5 * at(summary.vanish - 1e-5);
+  }
   return { curve, summary, freeTrim: o.freeTrim };
 }
 
@@ -627,14 +639,16 @@ export function gzAnalysis(relTris, targetV, axis = 'x', opts = {}) {
 // evalDirs(list of heel-axis angles in degrees from x) → Promise of gzSummary results, in order. The directions are the
 // weakest axis az0 and every `step` degrees round from it (both heel senses); the best is then refined `rounds` times
 // on a grid a third as wide each time. Ties (within 1e-9 of opts.scale) go to the direction found first, so the weakest
-// axis wins a tie. Returns the summary of the chosen direction with { az (degrees from x, in (−180°, 180°]), weakest (az
+// axis wins a tie. Arms within opts.same (0.1 %) of the least count as the same moment, and of those directions the one
+// whose range ends soonest is taken (review R1-36: a faceted sphere's arm is the same every way, to the faceting). Returns the summary of the chosen direction with { az (degrees from x, in (−180°, 180°]), weakest (az
 // is the weakest axis or its reverse), dirs (directions tried), earliest ({ az, end, flood }: the earliest end of the
 // range over every direction tried, flood true for a downflooding angle; null when no range ends) }.
-export async function worstHeelRange(evalDirs, az0, { step = 15, rounds = 7, scale = 1 } = {}) {
+export async function worstHeelRange(evalDirs, az0, { step = 15, rounds = 7, scale = 1, same = 1e-3 } = {}) {
   const key = (s) => (s.end != null && s.arm != null ? s.arm : Infinity);
   const tie = 1e-9 * scale;
   let earliest = null, tried = 0;
-  const seen = (az, s) => { if (s.end != null && (!earliest || s.end < earliest.end - 1e-9)) earliest = { az, end: s.end, flood: s.flood != null && s.end === s.flood }; };
+  const all = [];
+  const seen = (az, s) => { all.push({ az, s }); if (s.end != null && (!earliest || s.end < earliest.end - 1e-9)) earliest = { az, end: s.end, flood: s.flood != null && s.end === s.flood, arm: s.arm }; };
   const dirs = Array.from({ length: Math.round(360 / step) }, (_, k) => az0 + k * step);
   const sums = await evalDirs(dirs);
   tried += dirs.length;
@@ -653,6 +667,10 @@ export async function worstHeelRange(evalDirs, az0, { step = 15, rounds = 7, sca
     tried += list.length;
     for (let k = 0; k < list.length; k++) { seen(list[k], ss[k]); const kk = key(ss[k]); if (kk < b.k - tie) b = { az: list[k], s: ss[k], k: kk }; }
   }
+  // arms within opts.same (relative) of the least are the same moment for any purpose (a faceted sphere's arm is |CG|
+  // every way, to the faceting): of those directions, the range is the one that ends soonest (review R1-36)
+  const least = b.k;
+  if (isFinite(least)) for (const x of all) if (x.s.end != null && key(x.s) <= least * (1 + same) + tie && x.s.end < b.s.end - 1e-9) b = { az: x.az, s: x.s, k: key(x.s) };
   const norm = (a) => { const x = ((a % 360) + 540) % 360 - 180 || 0; return x === -180 ? 180 : x; };
   const rel = (((b.az - az0) % 180) + 180) % 180;
   return {

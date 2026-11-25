@@ -286,16 +286,18 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       chk('…in roll the largest arm before it is GZ at the downflooding angle vs [2D] (m)', fx.arm, gz2d([rect(-4, 4, 0, 6)], [0, 3], 16, Math.atan(1.125) / DEG).gz, 0, 1e-7);
       const r = await range(rel, H, { open: op }), v = stabilityVerdict(H.GMmin, { range: r, scale: 41 });
       chk('…the verdict\'s range ends at a downflooding angle past 30°, not later than roll\'s (°)', r.flood !== null && r.end === r.flood && r.end > 30 && r.end <= fx.flood + 1e-9, true);
-      chk('…it takes no larger arm to get there than in roll', r.arm <= fx.arm + 1e-9, true);
+      chk('…it takes no larger arm to get there than in roll (to the 0.1 % that counts as the same)', r.arm <= fx.arm * (1 + 1e-3), true);
       chk('…level Stable, and the earlier flooding nearer pitch (under 13°) is a note', v.level === 'good' && r.earliest !== null && r.earliest.flood && r.earliest.end < 13 && /larger heeling moment/.test(v.text), true);
       // R1-32: with fixed trim the arm counts the trimming moment the fixed trim holds. 1.09° off roll (where the arm
       // about the heel axis alone was least) the deck corner floods at 44.7°, but holding that attitude takes a trimming
       // arm of about 0.85 m; counting it, the least moment is within 0.1° of roll (the trimming arm adds to the arm only
-      // at second order, while the downflooding angle falls at first order), and the range ends within 0.15° of roll's
+      // at second order, while the downflooding angle falls at first order). Directions whose arm is within 0.1 % of the
+      // least count as the same moment, and the soonest end of those is taken (R1-36), so the range ends within 0.25° of
+      // roll's, and not later
       const sk = gzAnalysis(rel, H.V, 1.09, { GM: gmAbout(H, 1.09), open: op }).summary;
       chk('…1.09° off roll the arm counting the trimming moment is over 1.1 m (the arm about the heel axis alone, 0.72 m)', sk.arm > 1.1 && sk.max < 0.73, true);
       chk('…the verdict\'s direction is within 0.1° of roll (°)', Math.abs(r.az) < 0.1, true);
-      chk('…and its range ends within 0.15° of atan(1.125) (°)', r.end, Math.atan(1.125) / DEG, 0, 0.15);
+      chk('…and its range ends within 0.25° of atan(1.125), not later (°)', r.end > Math.atan(1.125) / DEG - 0.25 && r.end <= Math.atan(1.125) / DEG + 1e-9, true);
     }
     {
       // R1-29: the open box at T 0.95 m floods in roll at atan(0.05) = 2.862°, before the first 5° sample: its maximum is
@@ -355,7 +357,9 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 0.3], 3200);
       const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
       const f = (deg) => gz2d([rect(-2, 2, 0, 1)], [0, 0.3], 1.6, deg).gz;
-      chk('box, KG 0.3 m: the verdict\'s range = the roll vanishing angle 112.32° vs [2D] (°)', r.end, root2d((d) => gz2d([rect(-1, 1, 0, 1)], [0, 0.3], 0.8, d).gz, 100, 130), 0, 1e-6);
+      const roll2d = root2d((d) => gz2d([rect(-1, 1, 0, 1)], [0, 0.3], 0.8, d).gz, 100, 130);
+      chk('box, KG 0.3 m: roll vanishes at 112.32° vs [2D] (°)', gzAnalysis(rel, H.V, 'x', { GM: H.GMt }).summary.vanish, roll2d, 0, 1e-6);
+      chk('…the verdict\'s range is roll\'s, to 0.01° (directions within 0.1 % of roll\'s arm end up to 0.002° sooner) (°)', r.end, roll2d, 0, 0.01);
       chk('…pitch vanishes sooner, 99.89° vs [2D] (°)', gzAnalysis(rel, H.V, 'y', { GM: H.GML }).summary.vanish, root2d(f, 95, 110), 0, 1e-6);
       chk('…verdict: Stable, vanishes at 112.3°, not self-righting, with pitch\'s 99.9° as a note', v.level === 'good' && /vanishes at 112\.3°/.test(v.text) && !/self-righting/.test(v.text) && /range ends sooner, at 99\.9°/.test(v.text), true);
     }
@@ -368,24 +372,49 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const { rel, H } = floating(boxTris(20, 5, 2.5), [10, 0, 1.5], 100000);
       const want = root2d((d) => gz2d([rect(-2.5, 2.5, 0, 2.5)], [0, 1.5], 5, d).gz, 60, 90);
       const r = await range(rel, H, { freeTrim: true }), v = stabilityVerdict(H.GMmin, { range: r, scale: 21, freeTrim: true });
-      chk('hull 20×5×2.5 m, T 1 m, KG 1.5 m, free trim: the verdict\'s range = roll\'s 78.55° vs [2D] (°)', r.end, want, 0, 1e-6);
-      chk('…about the weakest axis, level good', r.weakest && v.level === 'good', true);
+      chk('hull 20×5×2.5 m, T 1 m, KG 1.5 m, free trim: the verdict\'s range = roll\'s 78.55° vs [2D], to 0.01° (°)', r.end, want, 0, 0.01);
+      // with free trim nothing holds the trim, so the arm is flat near roll (0.03 % more at 1.7° off): the tie of R1-36
+      // takes a direction up to about 2° off roll whose range ends 0.005° sooner
+      chk('…within 2° of roll, level good', Math.abs(((r.az + 90) % 180 + 180) % 180 - 90) < 2 && v.level === 'good', true);
+      chk('…roll\'s own range, free trim, vs [2D] (°)', gzAnalysis(rel, H.V, 'x', { GM: H.GMt, freeTrim: true }).summary.vanish, want, 0, 1e-6);
       const p = gzAnalysis(rel, H.V, 87.78, { GM: gmAbout(H, 87.78), freeTrim: true }).summary;
       chk('…about the axis at 87.78° (free trim): the range ends at a fold between 13° and 15.5°, not at 12.5°', p.fold && p.vanish > 13 && p.vanish < 15.5, true);
+      chk('…the verdict on that range says the free trim stops being an equilibrium there, not that GZ vanishes', /stops being an equilibrium/.test(stabilityVerdict(gmAbout(H, 87.78), { range: p, scale: 21, freeTrim: true }).text) && !/vanishes at/.test(stabilityVerdict(gmAbout(H, 87.78), { range: p, scale: 21, freeTrim: true }).text), true);
       const pf = await range(rel, H);
       chk('…fixed trim: the same range, 78.55° (°)', pf.end, want, 0, 1e-6);
+      // R1-38: heeled about y (pitch) with free roll it rolls over within the 10°–15° step: the 15° sample follows the
+      // body there (the trim found in 0.5° sub-steps, past 90° of roll, GZ negative), and the range ends at the fold,
+      // below 15° (continuations in 0.25°, 0.05° and 0.01° steps lose the trim at 14.1°, 14.9° and 13.1°), not at a sample
+      const y = gzAnalysis(rel, H.V, 90, { GM: gmAbout(H, 90), freeTrim: true }), y15 = y.curve.find((q) => q.deg === 15);
+      chk('…heeled about y with free trim, the 15° sample has rolled over (trim past 90°, GZ < 0, a stable trim)', Math.abs(y15.trim) > Math.PI / 2 && y15.gz < 0 && !y15.trimUnstable, true);
+      chk('…and the range ends at a fold between 13° and 15°, short of the 15° sample', y.summary.fold && y.summary.vanish > 13 && y.summary.vanish < 15 - 1e-6, true);
+    }
+    {
+      // R1-37, Q6: the free-trim zero band. A 10 × 2 × 1 m pontoon (T 0.5 m, KG 0.5 m) heeled about y with free roll
+      // rolls onto its side; at 90° of roll a heel about y is a yaw, and GZ is zero up to what the trim solve leaves. The
+      // range ends where the trim reaches 90°, against a continuation in 0.002° steps
+      const { rel, H } = floating(boxTris(10, 2, 1), [5, 0, 0.5], 10000);
+      const s = gzAnalysis(rel, H.V, 90, { GM: gmAbout(H, 90), freeTrim: true }).summary;
+      let t = gzAt(rel, H.V, 90, 10, { freeTrim: true }).trim, d = 12, prev = null;
+      for (; d <= 13.5; d += 0.002) { const q = gzAt(rel, H.V, 90, d, { freeTrim: true, trim0: t }); if (prev && prev.gz > 1e-3 && q.gz < 1e-4) break; t = q.trim; prev = q; }
+      chk('pontoon 10×2×1 m heeled about y, free trim: the range ends where it lies on its side, vs a 0.002° continuation (°)', s.vanish, d - 0.001, 0, 0.003);
+      chk('…GZ runs down to zero there (not a fold)', s.fold, false);
+      // a tangency is not a stretch: the corner-down cube heeled about the axis at 90° with free trim reaches the
+      // edge-down equilibrium at asin(1/3), where GZ only touches zero
+      const cube = transformTris(boxTris(1, 1, 1, -0.5, -0.5, -0.5), mat3.fromEulerDeg(45, Math.atan(1 / Math.SQRT2) / DEG, 0));
+      const Hc = hydrostatics(cube, solveWaterline(cube, 0.5).zw, 500, 1000);
+      chk('corner-down cube heeled about 90° with free trim: vanishes at the edge-down attitude, asin(1/3) = 19.4712° (°)', gzAnalysis(cube, Hc.V, 90, { GM: gmAbout(Hc, 90), freeTrim: true }).summary.vanish, Math.asin(1 / 3) / DEG, 0, 1e-4);
     }
     if (getTris) {
       // R1-25: the STEP sphere with G 0.3 m below and 0.05 m beside its centre: GZ = 0.3 sin φ + 0.05 cos φ in the worse
       // sense, which vanishes at 180° − atan(0.05/0.3) = 170.5377°. It is not self-righting
       const t = await getTris('sphere_r1.step'), mp = massProperties(t);
       const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.05, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
-      // every heel direction whose range ends takes the same largest arm, |CG| (B is under the centre), so the verdict's
-      // direction is any of them; the range is checked about x, where it ends soonest
+      // every heel direction whose range ends takes the same largest arm, |CG| (B is under the centre), to the faceting
+      // (0.09 %): arms within 0.1 % count as the same moment, and of those the range that ends soonest is taken (R1-36)
       const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 3.5 });
-      chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: range about x = 180° − atan(0.05/0.3) (°)', gzAnalysis(rel, H.V, 0, { GM: gmAbout(H, 0) }).summary.vanish, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
-      chk('…the verdict\'s range ends between that and 180°', r.end > 180 - Math.atan(0.05 / 0.3) / DEG - 0.01 && r.end < 180, true);
-      chk('…verdict: not self-righting', /self-righting/.test(v.text), false);
+      chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: the verdict\'s range = 180° − atan(0.05/0.3) (°)', r.end, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
+      chk('…verdict: not self-righting, and no "larger heeling moment" note', !/self-righting/.test(v.text) && !/larger heeling moment/.test(v.text), true);
     }
     if (getTris) {
       // R1-31: the 0.1° tolerance at 180°: G 3 mm off the centre gives 180° − atan(0.003/0.3) = 179.427°, not
@@ -393,7 +422,7 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const t = await getTris('sphere_r1.step'), mp = massProperties(t);
       const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.003, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
       const r = await range(rel, H);
-      chk('STEP sphere, G 0.3 m low and 3 mm off the centre: range about x = 180° − atan(0.01) = 179.43° (°)', gzAnalysis(rel, H.V, 0, { GM: gmAbout(H, 0) }).summary.vanish, 180 - Math.atan(0.01) / DEG, 0, 0.01);
+      chk('STEP sphere, G 0.3 m low and 3 mm off the centre: the verdict\'s range = 180° − atan(0.01) = 179.43° (°)', r.end, 180 - Math.atan(0.01) / DEG, 0, 0.01);
       chk('…the verdict: not self-righting', /self-righting/.test(stabilityVerdict(H.GMmin, { range: r, scale: 3.5 }).text), false);
     }
     if (getTris) {
@@ -563,6 +592,9 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
         if (!(r.report.shells === 2 && r.report.closedShells === 2 && r.report.overlaps === 2 && Math.abs(massProperties(r.tris).volume - 10) < 1e-12)) ok = false;
       }
       chk('end slab inside the hull sharing its end face, both file orders × 12 rotations: 2 closed shells, overlap reported', ok, true);
+      // R1-38: a block fitted into a corner of the hull (x 3..4, y 0..1, full height): four of its faces on the hull's planes
+      const blk = boxTris(1, 1, 1, 3, 0, 0);
+      chk('block fitted into a corner of the hull, both file orders: overlap reported', [[...hull, ...blk], [...blk, ...hull]].every((t) => repairMesh(new Float64Array(t), tol).report.overlaps === 2), true);
     }
     {
       // R1-27: blocks that only touch the hull (on its deck, under its bottom) are not overlaps; a coplanar overlap is

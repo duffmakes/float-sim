@@ -172,6 +172,17 @@ await waitGz("t.includes('fixed trim') && t.includes('roll (about x)')");
   }
   await loadStl(stlOf('cross.stl', [...boxQ(-2, -0.5, 0, 2, 0.5, 1), ...boxQ(-0.5, -2, 0, 0.5, 2, 1)]));
   expect('two crossing boxes in one STL: the overlap is reported', /overlaps? another shell/.test(await page.locator('#modelInfo').innerText()), (await page.locator('#modelInfo').innerText()).split('\n').slice(-2).join(' | '));
+  // review R1-38: a 4 × 1 × 0.5 m box (T 0.2 m, KG 0.3 m) heeled in pitch with free roll rolls over at a fold, and the
+  // GZ panel says that GZ jumps there
+  await loadStl(stlOf('slender.stl', boxQ(0, -0.5, 0, 4, 0.5, 0.5)));
+  for (const [id, v] of [['mass', '800'], ['cgz', '0.3']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+  await click('#gzAxis button[data-axis="y"]'); await check('#gzFree');
+  await waitGz("t.includes('GZ jumps')").catch(() => {});
+  {
+    const g = await gzText();
+    expect('slender box heeled in pitch with free trim: the GZ panel says GZ jumps at the end of the range (a fold)', /GZ jumps from positive to negative there/.test(g), g.split('\n').slice(-2).join(' | '));
+  }
+  await uncheck('#gzFree'); await click('#gzAxis button[data-axis="x"]');
   await page.setInputFiles('#file', MODEL);
   await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
   for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
