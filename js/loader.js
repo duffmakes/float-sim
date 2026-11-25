@@ -1,5 +1,6 @@
 // CAD → triangle-soup loading, shared by the app and the validation harness.
-import { massProperties } from './physics.js';
+import { massProperties, bbox } from './physics.js';
+import { repairMesh } from './meshcheck.js';
 
 // Chord tolerance (fraction of bounding-box size) and angular tolerance (rad) for OpenCascade meshing.
 // An inscribed polygon under-reads volume by about (1 − sin(2π/n)/(2π/n)), so curved bodies need fine angles:
@@ -17,7 +18,8 @@ export function soupFromIndexed(pos, idx) {
     const v = idx ? idx[i] : i;
     out[i * 3] = pos[v * 3]; out[i * 3 + 1] = pos[v * 3 + 1]; out[i * 3 + 2] = pos[v * 3 + 2];
   }
-  // fix inverted parts so every solid has positive volume
+  // fix inverted parts so every solid has positive volume (massProperties takes the tetrahedra from the top centre of
+  // the bounding box, so the sign does not depend on where the file's origin is, even for a hull open at the deck)
   if (massProperties(out).volume < 0) {
     for (let i = 0; i < out.length; i += 9) for (let k = 0; k < 3; k++) {
       const t = out[i + 3 + k]; out[i + 3 + k] = out[i + 6 + k]; out[i + 6 + k] = t;
@@ -31,6 +33,16 @@ export function concat(parts) {
   const out = new Float64Array(n); let o = 0;
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
+}
+
+// Join the imported parts and repair their winding (js/meshcheck.js): faces wound against their neighbours are
+// re-oriented, a shell that is inside out is turned (a negative shell inside another is kept as a void), and the
+// report counts open edges, shells, voids and overlapping shells. The weld tolerance is a fraction of the size.
+export function prepareMesh(parts, tolFrac = 1e-7) {
+  const raw = Array.isArray(parts) ? concat(parts) : parts;
+  const b = bbox(raw);
+  const diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) || 1;
+  return repairMesh(raw, diag * tolFrac);
 }
 
 const occtCache = new Map();

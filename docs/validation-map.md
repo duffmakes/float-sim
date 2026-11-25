@@ -1,10 +1,14 @@
 # Float Sim validation map
 
-24 November 2026
+25 November 2026 (review round 1 fixes)
 
 Every core part of Float Sim, and the evidence that it is right. Each part is checked at up to three levels:
 
-- **Proven:** the formula or identity the code implements is a machine-checked theorem (Lean 4 + Mathlib, in `proofs/`). No step is taken on trust, but a proof covers the mathematics, not the JavaScript.
+- **Proven:** a machine-checked theorem (Lean 4 + Mathlib, in `proofs/`). There are two kinds, and the tables say which:
+  - *the code's formula*: the algorithm is written down in Lean as the JavaScript has it (the same sums, clipping rules and divisions, transcribed by hand) and proved correct;
+  - *the reference values*: the exact answers the tests check the code against are derived from their definitions, so they are not taken on trust; the code itself is then backed by those tests, not by the proof.
+
+  A proof covers exact real arithmetic, not floating point, and a hand transcription is checked by reading it against the code and by tests that run the JavaScript on the proof's own cases.
 - **Implemented:** a test runs Float Sim's own code and checks it against that formula, identity or exact answer.
 - **Confirmed:** Float Sim's results agree with an independent reference: a published exact solution, another code (WAMIT, Capytaine), a measurement, or a conservation law.
 
@@ -14,12 +18,12 @@ A dash marks a level that is not covered. The gaps are listed after the tables.
 
 | Core part | Proven | Implemented | Confirmed |
 | --- | --- | --- | --- |
-| Geometry import (STEP, STL, units) | — | 8 exact B-rep STEP bodies through OpenCascade, as the app imports them (`validate-node`); shells checked closed and oriented (`make_models.py`) | Closed-form volumes; faceting error by mesh quality: Fine 0.026 %, Normal 0.22 %, Coarse 1.8 % |
-| Mass properties and inertia | Huygens–Steiner for any set of masses; the shifts to and from G undo each other; a symmetric tensor stays symmetric when moved; a shift never lowers a moment (`Inertia`) | Solid box about its corner (`validate-refcsys`); Python port of the mass-property routine (`verify_physics.py`) | I = m(b² + c²)/3, I<sub>xy</sub> = −mab/4 |
-| Hydrostatics (waterline, displacement, KB, BM, GM) | Draft from Archimedes; KB and the waterplane second moment from their integrals; box and V-section BM; the test boxes' GM (`Hydrostatics`) | Float Sim on 8 STEP models against the proved values, 16 checks (`validate-proofs`); 14 cases against closed forms (`validate-node`); Python port, 126 checks (`validate.py`) | Rawson & Tupper, Barrass & Derrett, Biran |
-| Upright stability | Cube stable only for s.g. < ½ − √3/6 or > ½ + √3/6; cylinder only for r/H > √(2s(1 − s)) (`Stability`) | Verdicts for 5 bodies against the proved criteria (`validate-proofs`) | Erdős et al., Am. J. Phys. 60 (1992) |
-| Righting arm (GZ) curves | — | Wall-sided formula and circular sections (`validate-node`) | Rawson & Tupper (wall-sided GZ) |
-| Free-float equilibrium (calm water) | — | List from an off-centre CoG, cube and square log settling corner-down (`validate-node`); Python port of the simulator (`simcheck.py`) | Wall-sided list angle; Erdős et al. |
+| Geometry import (STEP, STL, units) | Code's formula: the directed-edge balance `meshCheck` tests implies the closedness the volume theorems assume (`Mesh.closed_of_balanced`) | 8 exact B-rep STEP bodies through OpenCascade, as the app imports them (`validate-node`); shells checked closed and oriented (`make_models.py`); repair of flipped faces and inside-out shells, open hulls at any height above the file origin, an edge used three times, degenerate pole triangles on the STEP spheres, overlapping shells and voids (`validate-stability`, mesh checks); an STL with a flipped face imported in the app (`e2e-browser` 2d) | Closed-form volumes; faceting error by mesh quality: Fine 0.026 %, Normal 0.22 %, Coarse 1.8 % |
+| Mass properties and inertia | Code's formula: `massProperties`' volume, centroid and inertia do not depend on its reference point, for any closed mesh (`Mesh.massProperties_*_indep`); one tetrahedron's determinant is its Lebesgue volume (`Tetra.volume_tetra`). Huygens–Steiner for any set of masses; the shifts to and from G undo each other; a symmetric tensor stays symmetric when moved; a shift never lowers a moment (`Inertia`) | Solid box about its corner (`validate-refcsys`); the same volume, centroid and inertia from reference points up to 20 body sizes away on 6 STEP models (`validate-proofs`); Python port of the mass-property routine (`verify_physics.py`) | I = m(b² + c²)/3, I<sub>xy</sub> = −mab/4 |
+| Hydrostatics (waterline, displacement, KB, BM, GM) | Code's formula: `submerged`'s clipped triangles plus a lid over its cut segments form a closed surface again, the lid adds nothing from the apex on the water plane, so its volume and centre of buoyancy are those of the closed wet surface from any apex; its waterplane sums do not depend on where the waterplane is fanned from (`Mesh`); run on a box of any size, position and draft it returns exactly V, B, the waterplane area and centroid, and I<sub>xx</sub>, I<sub>yy</sub>, I<sub>xy</sub> about the centroid (`MeshBox`). Reference values: draft from Archimedes; KB and the waterplane second moment from their integrals; box and V-section BM; the test boxes' GM (`Hydrostatics`) | `submerged` on the Lean box, 2,000 random sizes, positions and drafts (`validate-proofs`); Float Sim on 8 STEP models against the proved values (`validate-proofs`); 14 cases against closed forms (`validate-node`); an off-centre waterplane (`validate-stability`); Python port, 126 checks (`validate.py`) | Rawson & Tupper, Barrass & Derrett, Biran |
+| Upright stability | Reference values: cube stable only for s.g. < ½ − √3/6 or > ½ + √3/6; cylinder only for r/H > √(2s(1 − s)) (`Stability`) | Verdicts for 5 bodies against the proved criteria, with GM about the weakest waterplane axis as the test (`validate-proofs`); the weakest axis and GM_min on yawed boxes, a box with GM_T and GM_L positive but GM_min negative, and the verdict's wording on the box, a catamaran and a tender box (`validate-stability`) | Erdős et al., Am. J. Phys. 60 (1992); IMO 2008 IS Code A 2.2.3 (maximum GZ at ≥ 25°) |
+| Righting arm (GZ) curves | — | Box, catamaran, tender box and V-section at 0–180° against an exact cross-section code written in the test, to 10⁻⁹ m; the loll angle, the vanishing angle and the maximum, refined on the curve; pitch GZ; free trim leaves no trimming moment, is the trim of least energy and satisfies dE/dφ = W·GZ·cos(trim) (`validate-stability`); wall-sided formula and circular sections (`validate-node`) | Rawson & Tupper (wall-sided GZ and loll angle); the reviewer's own free-trim search (scow: 0.2902 m at −4.24°, 0.2994 m at −7.27°) |
+| Free-float equilibrium (calm water) | — | Released from upright, the cube at s.g. ½ settles with a body diagonal vertical, within 10⁻³°; the list from an off-centre CoG and the square log at 45°, within 10⁻³° (`validate-node`); the static rest-attitude solve that ends Settle, to 10⁻⁶° (`validate-stability`); the cube's lowest-energy attitude found by global minimisation over all orientations at s.g. ½, 0.3 and 0.25 (`validate-stability`); Settle in the app on the cube (`e2e-browser` 5); Python port of the simulator (`simcheck.py`) | Wall-sided list angle; the corner-down cube in closed form (Irwin–Hall: z<sub>G</sub> − z<sub>B</sub> = 0.234549 at s.g. ½, against 0.235702 edge-down and 0.25 face-down); Erdős et al. |
 | Reference csys and frames | The elementary rotations, as entered in `js/physics.js`, are rotations; both angle orders are rotations; the turning-axes transpose identity that `anglesFor` uses; points survive the round trip into the csys and back; distances are kept (`Frames`); `toEulerDeg` reads back exactly the angles a rotation was built from while pitch is inside ±90°, and at ±90° returns angles that rebuild the same rotation (`Euler`) | Axes, orthonormality, det 1, round trips, angles recovered, a Y-up export, a general CAD csys (`validate-refcsys`, 39 checks); angle read-back over 20,000 rotations and at gimbal lock (`validate-proofs`); browser test section 10 | A box in a general csys gives the same RAOs as the box given directly (≤ 1.3×10⁻⁹) |
 | Motions and loads at a point | Power is the same at O and G for ξ<sub>O</sub> = ξ<sub>G</sub> + θ × d, M<sub>O</sub> = M<sub>G</sub> − d × F, also for complex amplitudes; the `transferToG` matrix is exactly that transfer; energy is unchanged by A ↦ TᵀAT (`PointTransfer`); the phase factor e<sup>ik·d</sup> (`WavePhase`) | Power invariance, transferToG, point motion (`validate-refcsys`) | Time-domain motion of a point: 1.5 % and 1.3° |
 | Waves and spectra | — | PM and JONSWAP moments, synthesis variance, regular waves from inputs, wave drift (`validate-waves`) | DNV-RP-C205; Hasselmann 1973; Stokes 1847; Longuet-Higgins 1977 |
@@ -33,62 +37,79 @@ A dash marks a level that is not covered. The gaps are listed after the tables.
 | Wind | — | Frøya spectrum variance, windage force and moment, steady heel (`validate-smallbody`) | DNV-RP-C205 §2.3 |
 | Tracked points and wave following | — | Point acceleration, time above water, ideal follower (`validate-smallbody`) | RAO kinematics; Rice 1944 |
 | Solve with Capytaine (local helper) | — | Same mesh as the built-in solver: within 0.5 % translational, 2.1 % rotational; API guards; cancel (`validate-capytaine`); browser test section 11 | Capytaine itself |
-| User interface and workflow | — | 128 browser checks, every stage and tool (`e2e-browser`) | — |
+| User interface and workflow | — | 134 browser checks, every stage and tool (`e2e-browser`) | — |
 
 ## Proven: the theorems
 
 All proofs build with `lake build` in `proofs/` and use only Lean's three standard axioms (propext, Classical.choice, Quot.sound). There is no `sorry`. `lake exe expected` evaluates the proved formulas exactly for the test models and writes `proofs/expected.json`, which `test/validate-proofs.mjs` compares Float Sim with.
 
-| File | Theorem | What it proves | Code it backs | Test that checks the code |
-| --- | --- | --- | --- | --- |
-| Hydrostatics | `boxDraft_floats` | At draft m/(ρLB) the displaced mass equals the body's mass | `solveWaterline` | `validate-proofs` |
-| Hydrostatics | `rect_second_moment` | ∫ L y² dy over the beam = L·B³/12 | `submerged` (waterplane moments) | `validate-proofs` |
-| Hydrostatics | `box_KB`, `box_BM` | KB = T/2 from the centroid integral; BM = B²/(12T) | `hydrostatics` | `validate-proofs` |
-| Hydrostatics | `vsection_KB`, `vsection_BM` | V-section: KB = 2T/3; BM = (2/3)·T·tan²α | `hydrostatics` | `validate-proofs` (v_prism) |
-| Hydrostatics | `box_fresh_draft`, `box_fresh_GM` | The 4 × 2 m test box: T = 2/5 m, GM<sub>T</sub> = 8/15 m, GM<sub>L</sub> = 91/30 m | `hydrostatics` | `validate-proofs` |
-| Stability | `cube_stable_iff` | Upright cube stable ⇔ s < ½ − √3/6 or s > ½ + √3/6 | `hydrostatics` (GM sign) | `validate-proofs` (3 cubes) |
-| Stability | `cyl_stable_iff` | Upright cylinder stable ⇔ r/H > √(2s(1 − s)) | `hydrostatics` (GM sign) | `validate-proofs` (2 cylinders) |
-| Inertia | `steiner` | I<sub>O</sub> = I<sub>G</sub> + m(\|r\|²E − r rᵀ), r = G − O, for any set of masses with centre G | `inertiaAboutPoint`, `inertiaToG` (js/refcsys.js) | `validate-refcsys` |
-| Inertia | `shift_round_trip`, `shift_symm`, `shift_diag_nonneg` | The two shifts undo each other; the shift is symmetric; it never lowers a moment | same | `validate-refcsys` |
-| Inertia | `shifted_symm` | A symmetric tensor stays symmetric when moved to the point or back to G | same | `validate-refcsys` |
-| Frames | `Rx_orth` … `Rz_det` | `rotX`, `rotY`, `rotZ` (entered as in js/physics.js) are rotations | `mat3.rotX/rotY/rotZ` | `validate-refcsys` |
-| Frames | `fixedXYZ_orth`, `movingXYZ_orth`, `…_det` | Both angle orders of `refFrame` give rotations | `refFrame` | `validate-refcsys` |
-| Frames | `movingXYZ_transpose` | (Rx(a)Ry(b)Rz(c))ᵀ = Rz(−c)Ry(−b)Rx(−a), the identity `anglesFor` uses | `anglesFor` | `validate-refcsys` |
-| Frames | `ref_round_trip`, `ref_round_trip'`, `ref_preserves_dot` | Into the csys and back changes nothing; lengths and angles are kept | `toRefTris`, `toRefPoint`, `fromRefPoint` | `validate-refcsys` |
-| Euler | `hypot78_eq` | The branch test hypot(m₇, m₈) equals \|cos pitch\| | `mat3.toEulerDeg` (branch test) | `validate-proofs` |
-| Euler | `toEuler_main` | For roll and yaw in (−180°, 180°] and pitch strictly inside ±90°, [atan2(m₇, m₈), atan2(−m₆, hypot(m₇, m₈)), atan2(m₃, m₀)] returns exactly the angles of Rz(yaw)·Ry(pitch)·Rx(roll) | `mat3.toEulerDeg` (main branch) | `validate-proofs` (20,000 rotations, 4×10⁻¹⁴°); `validate-refcsys` |
-| Euler | `lock_branch_taken`, `toEuler_lock_up`, `toEuler_lock_down` | At pitch ±90° the branch test is 0; only roll ∓ yaw is defined, and the gimbal-lock branch [atan2(−m₅, m₄), ±90°, 0] rebuilds exactly the same rotation | `mat3.toEulerDeg` (gimbal-lock branch) | `validate-proofs`; `validate-refcsys` (Y = ±90°) |
-| PointTransfer | `power_invariant`, `complex_power_invariant` | F·ξ̄ + M·θ̄ is the same at O and G | `raoAtPoint`, `forcesAtPoint` | `validate-refcsys` (≤ 10⁻¹²) |
-| PointTransfer | `T_mulVec` | `transferToG`'s matrix, entry by entry from js/bem.js, maps (ξ, θ) to (ξ + θ × r, θ) | `transferToG` | `validate-refcsys` |
-| PointTransfer | `quadratic_transfer` | (Tv)ᵀA(Tv) = vᵀ(TᵀAT)v | `transferToG` | `validate-refcsys` |
-| WavePhase | `wave_shift`, `rao_at_point` | The wave at G + d is the wave at G times e<sup>−ik·d</sup>, so an RAO re-referenced to O gains e<sup>+ik·d</sup> | `raoAtPoint` | `validate-refcsys` |
+The "Kind" column says whether a theorem is about the code's own formula (transcribed into Lean) or about the reference values the tests use.
+
+| File | Theorem | Kind | What it proves | Code | Test that checks the code |
+| --- | --- | --- | --- | --- | --- |
+| Mesh | `closed_of_balanced` | code | Every directed edge used as often as its reverse (the test `meshCheck` applies, after welding) ⇒ every antisymmetric edge function sums to zero over the mesh, the form of "closed" the other theorems use | `meshCheck` (js/meshcheck.js) | `validate-stability` (mesh checks) |
+| Mesh | `vol_apex_indep`, `mom_apex_indep`, `cov_apex_indep` | code | Σ det(a − p, b − p, c − p), its first moments and its second moments do not depend on p, for any closed mesh | `massProperties`, `signedVolume` | `validate-proofs` (reference points up to 20 body sizes away) |
+| Mesh | `massProperties_volume_indep`, `_centroid_indep`, `_inertia_indep` | code | `massProperties` as written (relative coordinates, c/V + p, C − V·cen'·cen'ᵀ) gives the same volume, centroid and inertia from every reference point | `massProperties` | `validate-proofs`; `validate-stability` (open hulls at any height) |
+| Mesh | `clipPoly_all_wet`, `fan_clip_bnd` | code | The clipped polygon (wet corner, then crossing point, per edge) and its fan: a fully wet triangle is kept as it is; the fan's boundary is the wet part of the three edges plus the cut segment exit → entry | `submerged` (clipping, fan) | `validate-proofs` (box) |
+| Mesh | `cut_symm`, `entries_exits` | code | Both triangles on an edge cut it at the same point, and every exit point is another triangle's entry point | `submerged` (crossing points) | — |
+| Mesh | `clip_closed` | code | The clipped triangles plus a lid over the cut segments form a closed, consistently oriented surface: the boundary of the wet part | `submerged` | — |
+| Mesh | `lid_vol_zero`, `submerged_vol`, `submerged_mom`, `mom_code` | code | From the apex (0, 0, 0) on the water plane the lid adds nothing, so `submerged`'s Σ det and Σ det·(a + b + c) are the volume and first moments of the closed wet surface, from any apex | `submerged` (V, B) | `validate-proofs` (box); `validate-node` |
+| Mesh | `green`, `green_indep`, `wpSeg_eq` | code | The six per-segment Green's-theorem terms (area, x, y, x², y², xy) summed over the cut segments equal the same terms summed round the lid triangles fanned from any point: the waterplane's area and moments, for any number of separate or holed waterplane regions | `submerged` (waterplane) | `validate-proofs` (box) |
+| MeshBox | `box_vol`, `box_mom_x/y/z`, `box_wp`, `box_submerged` | code | The transcribed `submerged` on a 12-triangle box [x₀, x₁] × [y₀, y₁] × [z<sub>b</sub>, z<sub>t</sub>], any draft: V = L·B·T, B at mid-length and mid-breadth and T/2 below the waterline, A = L·B, the centroid in the middle, I<sub>xx</sub> = L·B³/12, I<sub>yy</sub> = B·L³/12, I<sub>xy</sub> = 0, after the code's own divisions and shifts | `submerged` | `validate-proofs` (2,000 random boxes, ≤ 7×10⁻¹² of the sums' size) |
+| Tetra | `volume_tetra` | code | The Lebesgue measure of the solid tetrahedron p, a, b, c is \|det(a − p, b − p, c − p)\|/6, with the determinant written as js/physics.js writes it | `massProperties`, `submerged` (per-triangle term) | — |
+| Hydrostatics | `boxDraft_floats` | reference | At draft m/(ρLB) the displaced mass equals the body's mass | the test models' expected values | `validate-proofs` |
+| Hydrostatics | `rect_second_moment` | reference | ∫ L y² dy over the beam = L·B³/12 | the test models' expected values | `validate-proofs` |
+| Hydrostatics | `box_KB`, `box_BM` | reference | KB = T/2 from the centroid integral; BM = B²/(12T) | the test models' expected values | `validate-proofs` |
+| Hydrostatics | `vsection_KB`, `vsection_BM` | reference | V-section: KB = 2T/3; BM = (2/3)·T·tan²α | the test models' expected values | `validate-proofs` (v_prism) |
+| Hydrostatics | `box_fresh_draft`, `box_fresh_GM` | reference | The 4 × 2 m test box: T = 2/5 m, GM<sub>T</sub> = 8/15 m, GM<sub>L</sub> = 91/30 m | the test models' expected values | `validate-proofs` |
+| Stability | `cube_stable_iff` | reference | Upright cube stable ⇔ s < ½ − √3/6 or s > ½ + √3/6 | the test models' expected values | `validate-proofs` (3 cubes, GM_min) |
+| Stability | `cyl_stable_iff` | reference | Upright cylinder stable ⇔ r/H > √(2s(1 − s)) | the test models' expected values | `validate-proofs` (2 cylinders, GM_min) |
+| Inertia | `steiner` | code | I<sub>O</sub> = I<sub>G</sub> + m(\|r\|²E − r rᵀ), r = G − O, for any set of masses with centre G | `inertiaAboutPoint`, `inertiaToG` (js/refcsys.js) | `validate-refcsys` |
+| Inertia | `shift_round_trip`, `shift_symm`, `shift_diag_nonneg` | code | The two shifts undo each other; the shift is symmetric; it never lowers a moment | same | `validate-refcsys` |
+| Inertia | `shifted_symm` | code | A symmetric tensor stays symmetric when moved to the point or back to G | same | `validate-refcsys` |
+| Frames | `Rx_orth` … `Rz_det` | code | `rotX`, `rotY`, `rotZ` (entered as in js/physics.js) are rotations | `mat3.rotX/rotY/rotZ` | `validate-refcsys` |
+| Frames | `fixedXYZ_orth`, `movingXYZ_orth`, `…_det` | code | Both angle orders of `refFrame` give rotations | `refFrame` | `validate-refcsys` |
+| Frames | `movingXYZ_transpose` | code | (Rx(a)Ry(b)Rz(c))ᵀ = Rz(−c)Ry(−b)Rx(−a), the identity `anglesFor` uses | `anglesFor` | `validate-refcsys` |
+| Frames | `ref_round_trip`, `ref_round_trip'`, `ref_preserves_dot` | code | Into the csys and back changes nothing; lengths and angles are kept | `toRefTris`, `toRefPoint`, `fromRefPoint` | `validate-refcsys` |
+| Euler | `hypot78_eq` | code | The branch test hypot(m₇, m₈) equals \|cos pitch\| | `mat3.toEulerDeg` (branch test) | `validate-proofs` |
+| Euler | `toEuler_main` | code | For roll and yaw in (−180°, 180°] and pitch strictly inside ±90°, [atan2(m₇, m₈), atan2(−m₆, hypot(m₇, m₈)), atan2(m₃, m₀)] returns exactly the angles of Rz(yaw)·Ry(pitch)·Rx(roll) | `mat3.toEulerDeg` (main branch) | `validate-proofs` (20,000 rotations, 4×10⁻¹⁴°); `validate-refcsys` |
+| Euler | `lock_branch_taken`, `toEuler_lock_up`, `toEuler_lock_down` | code | At pitch ±90° the branch test is 0; only roll ∓ yaw is defined, and the gimbal-lock branch [atan2(−m₅, m₄), ±90°, 0] rebuilds exactly the same rotation | `mat3.toEulerDeg` (gimbal-lock branch) | `validate-proofs`; `validate-refcsys` (Y = ±90°) |
+| PointTransfer | `power_invariant`, `complex_power_invariant` | code | F·ξ̄ + M·θ̄ is the same at O and G | `raoAtPoint`, `forcesAtPoint` | `validate-refcsys` (≤ 10⁻¹²) |
+| PointTransfer | `T_mulVec` | code | `transferToG`'s matrix, entry by entry from js/bem.js, maps (ξ, θ) to (ξ + θ × r, θ) | `transferToG` | `validate-refcsys` |
+| PointTransfer | `quadratic_transfer` | code | (Tv)ᵀA(Tv) = vᵀ(TᵀAT)v | `transferToG` | `validate-refcsys` |
+| WavePhase | `wave_shift`, `rao_at_point` | code | The wave at G + d is the wave at G times e<sup>−ik·d</sup>, so an RAO re-referenced to O gains e<sup>+ik·d</sup> | `raoAtPoint` | `validate-refcsys` |
+
+(The Inertia, Frames, Euler, PointTransfer and WavePhase rows were written before the review rounds; the reviewer judges them in the rounds that cover them.)
 
 **Taken as given or not covered:**
 
+- The divergence theorem for polyhedra: a closed, consistently oriented triangulated surface bounds a solid whose volume is (1/6)·Σ det, and whose first moments are the Σ det·(sum of corners)/24. `Tetra.volume_tetra` proves it for one tetrahedron, and `Mesh` proves everything the code adds on top of it (the reference point does not matter, the clipped surface plus lid is closed again, the lid adds nothing, the waterplane sums do not depend on the fan point). A general closed mesh is a union of tetrahedra (a tetrahedralisation of the solid), which is not proved here.
+- The waterplane terms are the integrals over each lid triangle (origin, entry, exit) by the standard triangle formulas; `green_indep` proves the code's sums equal those over any fan of the lid, not the triangle integrals themselves.
+- The transcriptions in `Mesh` and `MeshBox` are by hand. `validate-proofs` runs the JavaScript on `MeshBox`'s own box (same triangles, same order) and gets what the theorem proves to 7×10⁻¹² of the sums' size.
 - The second moment of a circle, πr⁴/4, is a standard result that is not proved here. π cancels in the cylinder's BM.
 - `Math.atan2(y, x)` is modelled as the argument of x + iy in (−π, π], which is its value whenever (x, y) ≠ (0, 0).
-- Proofs are about exact real numbers. Floating-point round-off in the JavaScript is checked by the tests, not by the proofs.
+- Proofs are about exact real numbers. Floating-point round-off in the JavaScript is checked by the tests, not by the proofs. One example the tests found: `submerged` sums the waterplane's second moments about G and then shifts them to the waterplane centroid, so a waterplane that is small compared with its distance from G loses digits in that shift (the error stays below 10⁻¹¹ of the sums' size).
 - Within 6×10⁻⁸° of ±90° (0 < cos pitch ≤ 10⁻⁹), `toEulerDeg` takes the gimbal-lock branch and reports pitch as exactly ±90°. The proof does not cover that band. There the rebuilt rotation differs by at most cos pitch ≤ 10⁻⁹ in its entries (measured 1.7×10⁻¹⁰).
 - The proof found an inaccuracy that is now fixed. `toEulerDeg` used asin(−m₆) and switched to the gimbal-lock formula 0.081° from ±90°, where angles were off by up to 0.08°. It now reads pitch with atan2(−m₆, hypot(m₇, m₈)), and away from that tiny band every rotation rebuilds to rounding error (10⁻¹⁵).
 
 ## Gaps and next proofs
 
-- **Good next proofs:** the wall-sided GZ formula, GZ = sin φ (GM + ½ BM tan²φ); the catenary equations of the mooring model; the exact Pierson–Moskowitz spectrum moments (Γ-function integrals); the circle's second moment.
+- **Good next proofs:** the divergence theorem for a tetrahedralised solid (the sum of `volume_tetra` over the pieces); the triangle integrals behind the Green's-theorem terms; the wall-sided GZ formula, GZ = sin φ (GM + ½ BM tan²φ); the catenary equations of the mooring model; the exact Pierson–Moskowitz spectrum moments (Γ-function integrals); the circle's second moment.
 - **Not practical to prove:** the panel method (free-surface Green function, Haskind relation, convergence), the time-domain integrators, drag linearisation and floating-point round-off. These rest on comparisons with exact solutions, other codes and measurements, and on conservation laws.
-- **Not covered at all:** STL import and mesh repair have no test of their own, and the user interface has no independent reference.
+- **Not covered at all:** the user interface has no independent reference.
 
 ## How to run
 
-| Command | What it runs | Result (2026-11-24) |
+| Command | What it runs | Result (2026-11-25) |
 | --- | --- | --- |
-| `cd proofs && lake build` | Checks every proof | 8 files, no errors |
+| `cd proofs && lake build` | Checks every proof | 11 files, no errors |
 | `cd proofs && lake exe expected` | Writes `proofs/expected.json` | 8 test models |
-| `node test/validate-proofs.mjs` | Float Sim's hydrostatics, `test/models/expected.json` and `mat3.toEulerDeg` against the proved values and theorems | 18/18 |
-| `node test/validate-node.mjs [fine\|normal\|coarse]` | Hydrostatics, stability, GZ, waves, simulators, drop test; at fine also small-body and reference-csys checks | 361/361 fine, 264/264 normal and coarse |
+| `node test/validate-proofs.mjs` | Float Sim's hydrostatics, `test/models/expected.json` and `mat3.toEulerDeg` against the proved values and theorems; `submerged` on the Lean box; `massProperties` from any reference point | 20/20 |
+| `node test/validate-node.mjs [fine\|normal\|coarse]` | Hydrostatics, stability read-outs, verdicts, GZ (fixed and free trim), mesh checks, rest attitudes, waves, simulators, drop test; at fine also small-body and reference-csys checks | 501/501 fine, 404/404 normal and coarse |
 | `node test/validate-bem.mjs` | Panel method | 35/35 |
 | `FLOATSIM_PYTHON=… node test/validate-capytaine.mjs` | Solve with Capytaine helper | 7/7 |
-| `node test/e2e-browser.mjs` | The app in Chromium | 128/128 |
-| `python3 test/validate.py`, `python3 test/simcheck.py`, `python3 test/verify_physics.py` | Python ports of the hydrostatic solver, the simulator and the mass-property routine | 126/126, 2/2, all pass |
+| `node test/e2e-browser.mjs` | The app in Chromium | 134/134 |
+| `python3 test/validate.py`, `python3 test/simcheck.py`, `python3 test/verify_physics.py` | Python ports of the hydrostatic solver, the simulator and the mass-property routine | 126/126, 3/3, all pass |
 | `test/rao-compare/` scripts | RAOs against Capytaine run on its own | [rao-solver-review.md](rao-solver-review.md) |
 
 Lean needs elan (`curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh`). `lake exe cache get` in `proofs/` then downloads Mathlib's prebuilt files, about 7 GB.

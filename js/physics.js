@@ -2,6 +2,8 @@
 // Geometry is a "triangle soup": Float64Array, 9 numbers (3 xyz vertices) per triangle,
 // outward-facing counter-clockwise winding, SI metres. Z is up, the water surface is the plane z = zw.
 
+import { meshCheck } from './meshcheck.js';
+
 export const G0 = 9.80665;
 
 // ---------- small vector / matrix helpers (3x3 row-major arrays) ----------
@@ -105,14 +107,26 @@ export function bbox(tris) {
 }
 
 // ---------- whole-body mass properties (uniform density = 1) ----------
-// Returns volume, centroid and inertia tensor about the centroid (per unit density).
-export function massProperties(tris) {
+// Returns volume, centroid and inertia tensor about the centroid (per unit density), from tetrahedra with apex at the
+// reference point `ref`. For a closed, consistently oriented mesh the result does not depend on `ref`
+// (proofs/Proofs/Mesh.lean). The default, the top centre of the bounding box, also gives the right answer for a hull
+// that is open only at a flat deck level: the missing deck lies in the apex plane and contributes nothing.
+export function massProperties(tris, ref = null) {
+  let p = ref;
+  if (!p) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let i = 0; i < tris.length; i += 3) {
+      const x = tris[i], y = tris[i + 1], z = tris[i + 2];
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z > z1) z1 = z;
+    }
+    p = tris.length ? [(x0 + x1) / 2, (y0 + y1) / 2, z1] : [0, 0, 0];
+  }
   let V = 0, cx = 0, cy = 0, cz = 0;
-  const C = [0, 0, 0, 0, 0, 0, 0, 0, 0]; // covariance ∫ x xᵀ dV about origin
+  const C = [0, 0, 0, 0, 0, 0, 0, 0, 0]; // covariance ∫ x xᵀ dV about the reference point
   for (let i = 0; i < tris.length; i += 9) {
-    const ax = tris[i], ay = tris[i + 1], az = tris[i + 2];
-    const bx = tris[i + 3], by = tris[i + 4], bz = tris[i + 5];
-    const qx = tris[i + 6], qy = tris[i + 7], qz = tris[i + 8];
+    const ax = tris[i] - p[0], ay = tris[i + 1] - p[1], az = tris[i + 2] - p[2];
+    const bx = tris[i + 3] - p[0], by = tris[i + 4] - p[1], bz = tris[i + 5] - p[2];
+    const qx = tris[i + 6] - p[0], qy = tris[i + 7] - p[1], qz = tris[i + 8] - p[2];
     const det = ax * (by * qz - bz * qy) - ay * (bx * qz - bz * qx) + az * (bx * qy - by * qx);
     V += det / 6;
     const sx = ax + bx + qx, sy = ay + by + qy, sz = az + bz + qz;
@@ -122,12 +136,12 @@ export function massProperties(tris) {
     for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++)
       C[r * 3 + c] += k * (v[0][r] * v[0][c] + v[1][r] * v[1][c] + v[2][r] * v[2][c] + s[r] * s[c]);
   }
-  const cen = V !== 0 ? [cx / V, cy / V, cz / V] : [0, 0, 0];
+  const cen = V !== 0 ? [cx / V, cy / V, cz / V] : [0, 0, 0];   // relative to the reference point
   // shift covariance to centroid, then I = tr(C)·Id − C
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r * 3 + c] -= V * cen[r] * cen[c];
   const tr = C[0] + C[4] + C[8];
   const I = C.map((x, idx) => (idx % 4 === 0 ? tr : 0) - x);
-  return { volume: V, centroid: cen, inertia: I };
+  return { volume: V, centroid: V !== 0 ? [cen[0] + p[0], cen[1] + p[1], cen[2] + p[2]] : [0, 0, 0], inertia: I };
 }
 
 // Inertia tensor of a body of given mass about point p (uniform density assumed).
@@ -225,7 +239,9 @@ export function solveWaterline(tris, targetV, range = null) {
   let lo = lo0, hi = hi0;
   const total = submerged(tris, hi + 1e-9 * (hi - lo + 1)).V;
   if (targetV <= 0) return { zw: lo, sub: submerged(tris, lo), status: 'empty' };
-  if (targetV >= total) return { zw: hi, sub: submerged(tris, hi + 1e-9), status: 'sinks', total };
+  // neutral: the weight equals the buoyancy of the whole body (to round-off), so it hangs fully submerged
+  const neutral = Math.abs(targetV - total) <= 1e-9 * total;
+  if (targetV >= total || neutral) return { zw: hi, sub: submerged(tris, hi + 1e-9), status: 'sinks', neutral, total };
   let z = lo + (hi - lo) * (targetV / total);
   let sub;
   for (let it = 0; it < 80; it++) {
@@ -255,7 +271,10 @@ export function hydrostatics(relTris, zw, mass, rho, g = G0) {
   const avg = (wp.Ixx + wp.Iyy) / 2, dif = (wp.Ixx - wp.Iyy) / 2;
   const rad = Math.sqrt(dif * dif + wp.Ixy * wp.Ixy);
   const Imin = avg - rad, Imax = avg + rad;
-  const axisMinDeg = 0.5 * Math.atan2(-2 * wp.Ixy, wp.Ixx - wp.Iyy) * 180 / Math.PI;
+  // The second moment about the waterplane axis at angle θ from world x is I(θ) = avg + dif·cos 2θ − Ixy·sin 2θ,
+  // smallest where (cos 2θ, sin 2θ) points along (−dif, Ixy). axisMinDeg is that axis, in (−90°, 90°]: the body
+  // heels about it most easily.
+  const axisMinDeg = 0.5 * Math.atan2(wp.Ixy, -dif) * 180 / Math.PI;
   const GMt = B[2] + BMt;  // G at z = 0  ⇒  GM = KB + BM − KG = zB + BM − zG
   const GMl = B[2] + BMl;
   const GMmin = B[2] + (V > 0 ? Imin / V : 0);
@@ -272,69 +291,248 @@ export function hydrostatics(relTris, zw, mass, rho, g = G0) {
     rightingPerDegT: rho * g * V * GMt * Math.sin(Math.PI / 180),
     rightingPerDegL: rho * g * V * GMl * Math.sin(Math.PI / 180),
     tpc: rho * Math.abs(wp.area), // kg per metre of immersion
+    // a real body has a positive waterplane area and positive second moments; anything else is a mesh fault
+    // (faces wound the wrong way that the import could not repair)
+    wpBad: V > 0 && wp.area !== 0 && (wp.area < 0 || wp.Ixx < 0 || wp.Iyy < 0 || Imin < -1e-12 * Math.abs(Imax)),
   };
 }
 
-// Righting-arm (GZ) curve at fixed trim: heel the body about a horizontal world axis through G.
-// axis: 'x' (roll) or 'y' (pitch). Positive GZ = righting.
-export function gzCurve(relTris, targetV, axis = 'x', angles = null) {
-  angles = angles || Array.from({ length: 37 }, (_, i) => i * 5);
-  const buf = new Float64Array(relTris.length);
-  const out = [];
-  for (const deg of angles) {
-    const R = axis === 'x' ? mat3.rotX(deg * Math.PI / 180) : mat3.rotY(deg * Math.PI / 180);
+// ---------- righting arm (GZ) ----------
+// Heel axis: 'x' (roll), 'y' (pitch) or a horizontal direction given in degrees from world x (e.g. the weakest
+// waterplane axis, H.axisMinDeg). Returns its unit vector (ux, uy); multiples of 90° are exact.
+export function heelAxis(axis) {
+  if (axis === 'x') return [1, 0];
+  if (axis === 'y') return [0, 1];
+  const d = ((+axis % 360) + 360) % 360;
+  if (d % 90 === 0) return [[1, 0], [0, 1], [-1, 0], [0, -1]][d / 90];
+  return [Math.cos(d * Math.PI / 180), Math.sin(d * Math.PI / 180)];
+}
+// Rotation by angle a (rad) about the horizontal unit axis (ux, uy, 0), Rodrigues' formula. For (1, 0) and (0, 1)
+// it is exactly mat3.rotX and mat3.rotY.
+export function rotAboutHorizontal(ux, uy, a) {
+  const c = Math.cos(a), s = Math.sin(a), k = 1 - c;
+  return [c + k * ux * ux, k * ux * uy, s * uy,
+    k * ux * uy, c + k * uy * uy, -s * ux,
+    -s * uy, s * ux, c];
+}
+// GM about the horizontal axis through the waterplane centroid parallel to `axis`: KB + I(axis)/V − KG.
+export function gmAbout(H, axis) {
+  const [ux, uy] = heelAxis(axis);
+  const I = H.wp.Ixx * ux * ux + H.wp.Iyy * uy * uy - 2 * H.wp.Ixy * ux * uy;
+  return H.B[2] + (H.V > 0 ? I / H.V : 0);
+}
+const sizeOf = (tris) => { const b = bbox(tris); return Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) || 1; };
+
+// Righting arm at one heel angle. The body (relTris: rotated, relative to G) is heeled by `deg` about the horizontal
+// axis u through G. Fixed trim: nothing else turns. Free trim: the heeled body is then turned about the horizontal
+// world axis w = z × u (trim, applied after the heel) until B is level with G along u, so there is no trimming
+// moment; the waterline is solved for the displacement at every trial. GZ = B_x·u_y − B_y·u_x, the arm of the
+// buoyancy–weight couple about u (positive = righting). opts: { freeTrim, trim0 (rad, start guess), scale, buf }.
+export function gzAt(relTris, targetV, axis, deg, opts = {}) {
+  const [ux, uy] = heelAxis(axis);
+  const buf = opts.buf || new Float64Array(relTris.length);
+  const Rh = rotAboutHorizontal(ux, uy, deg * Math.PI / 180);
+  const ev = (trim) => {
+    const R = trim ? mat3.mul(rotAboutHorizontal(-uy, ux, trim), Rh) : Rh;
     transformTris(relTris, R, [0, 0, 0], [0, 0, 0], buf);
     const s = solveWaterline(buf, targetV);
     const B = s.sub.B;
-    const gz = axis === 'x' ? -B[1] : B[0];
-    out.push({ deg, gz, status: s.status });
+    return { trim, status: s.status, along: B[0] * ux + B[1] * uy, gz: B[0] * uy - B[1] * ux };
+  };
+  if (!opts.freeTrim) { const r = ev(0); return { deg, gz: r.gz, status: r.status, trim: 0 }; }
+  const tol = 1e-11 * (opts.scale || sizeOf(relTris));
+  let a = ev(opts.trim0 || 0);
+  if (Math.abs(a.along) <= tol || a.status !== 'floats') return { deg, gz: a.gz, status: a.status, trim: a.trim, along: a.along };
+  // secant from the start guess; once the root is bracketed, Illinois regula falsi (never leaves the bracket)
+  let b = ev(a.trim + (a.along > 0 ? -1 : 1) * 2e-3), lo = null, hi = null, side = 0, best = Math.abs(b.along) < Math.abs(a.along) ? b : a;
+  const bracket = (p, q) => { if (p.along * q.along < 0) { lo = p.along < 0 ? p : q; hi = p.along < 0 ? q : p; } };
+  bracket(a, b);
+  for (let it = 0; it < 60 && Math.abs(best.along) > tol; it++) {
+    let t;
+    if (lo && hi) t = (lo.trim * hi.along - hi.trim * lo.along) / (hi.along - lo.along);
+    else {
+      const d = b.along - a.along;
+      t = d !== 0 ? b.trim - b.along * (b.trim - a.trim) / d : b.trim + 0.05;
+      t = b.trim + Math.max(-0.25, Math.min(0.25, t - b.trim));   // at most ~14° per secant step
+    }
+    if (!(Math.abs(t) < Math.PI)) break;
+    const c = ev(t);
+    if (c.status !== 'floats') break;
+    if (Math.abs(c.along) < Math.abs(best.along)) best = c;
+    if (lo && hi) {
+      if (c.along < 0) { lo = c; if (side === -1) hi = { ...hi, along: hi.along / 2 }; side = -1; }
+      else { hi = c; if (side === 1) lo = { ...lo, along: lo.along / 2 }; side = 1; }
+      if (Math.abs(hi.trim - lo.trim) < 1e-15) break;
+    } else { a = b; b = c; bracket(a, b); }
+  }
+  return { deg, gz: best.gz, status: best.status, trim: best.trim, along: best.along };
+}
+
+// GZ curve: heel the body about a horizontal axis through G (see gzAt). Default angles 0–180° every 5°.
+// opts: { freeTrim } (free-trim heels continue from the previous angle's trim).
+export function gzCurve(relTris, targetV, axis = 'x', angles = null, opts = {}) {
+  angles = angles || Array.from({ length: 37 }, (_, i) => i * 5);
+  const o = { ...opts, buf: opts.buf || new Float64Array(relTris.length), scale: opts.scale || sizeOf(relTris) };
+  const out = [];
+  let trim = opts.trim0 || 0;
+  for (const deg of angles) {
+    const r = gzAt(relTris, targetV, axis, deg, { ...o, trim0: trim });
+    trim = r.trim;
+    out.push(r);
   }
   return out;
 }
 
-// curve[0] is the start attitude (GZ ≈ 0, sign is round-off), so crossings are searched from curve[1] on.
-// unstable: GZ negative right away. loll: first − → + crossing, i.e. where an unstable body comes to rest.
-export function gzSummary(curve) {
-  let max = -Infinity, maxDeg = 0, vanish = null, loll = null;
-  const cross = (a, b) => a.deg + (b.deg - a.deg) * a.gz / (a.gz - b.gz);
-  for (let i = 1; i < curve.length; i++) {
-    const p = curve[i];
-    if (p.gz > max) { max = p.gz; maxDeg = p.deg; }
-    if (i < 2) continue;
-    const a = curve[i - 1];
-    if (vanish === null && a.gz > 0 && p.gz <= 0) vanish = cross(a, p);
-    if (loll === null && a.gz < 0 && p.gz >= 0) loll = cross(a, p);
-  }
-  return { max, maxDeg, vanish, loll, unstable: curve.length > 1 && curve[1].gz <= 0 };
-}
-
-// Open-edge check (is the mesh watertight?). Quantizes vertex positions and counts edges
-// not shared by exactly two triangles.
-export function openEdgeCount(tris, tol) {
-  const key = (i) => `${Math.round(tris[i] / tol)},${Math.round(tris[i + 1] / tol)},${Math.round(tris[i + 2] / tol)}`;
-  const ids = new Map(); let next = 0;
-  const vid = (i) => { const k = key(i); let v = ids.get(k); if (v === undefined) { v = next++; ids.set(k, v); } return v; };
-  const edges = new Map();
-  for (let i = 0; i < tris.length; i += 9) {
-    const a = vid(i), b = vid(i + 3), c = vid(i + 6);
-    for (const [p, q] of [[a, b], [b, c], [c, a]]) {
-      if (p === q) continue;
-      const k = p < q ? p * 4294967296 + q : q * 4294967296 + p;
-      edges.set(k, (edges.get(k) || 0) + 1);
+// Summary of a GZ curve. curve[0] is the start attitude (GZ ≈ 0, its sign is round-off).
+//   unstable: GM about the heel axis is negative (opts.GM), or without it GZ ≤ 0 at the first angle.
+//   loll:     for an unstable start, where GZ turns positive again (fixed or free trim, about this axis).
+//   vanish:   where GZ turns from positive to negative (angle of vanishing stability); null: positive to the end.
+//   max, maxDeg: largest GZ within the range of positive stability, and its angle.
+// With opts.at(deg) → GZ, crossings are found by regula falsi to 1e-9° and the maximum by golden section; without
+// it they are interpolated between the samples.
+export function gzSummary(curve, opts = {}) {
+  const { GM = null, at = null } = opts;
+  const n = curve.length;
+  const unstable = GM !== null ? GM < 0 : n > 1 && curve[1].gz <= 0;
+  const root = (a, b) => {     // a.gz and b.gz have opposite signs (or one is 0)
+    if (!at) return a.deg + (b.deg - a.deg) * a.gz / (a.gz - b.gz);
+    let x0 = a.deg, f0 = a.gz, x1 = b.deg, f1 = b.gz, side = 0, c = x0;
+    if (f0 === 0) return x0;
+    if (f1 === 0) return x1;
+    for (let it = 0; it < 80; it++) {
+      const cn = (x0 * f1 - x1 * f0) / (f1 - f0);
+      if (Math.abs(cn - c) < 1e-9 && it > 0) return cn;
+      c = cn;
+      const fc = at(c);
+      if (fc === 0) return c;
+      if (fc * f1 > 0) { x1 = c; f1 = fc; if (side === -1) f0 /= 2; side = -1; }
+      else { x0 = c; f0 = fc; if (side === 1) f1 /= 2; side = 1; }
+      if (Math.abs(x1 - x0) < 1e-9) return c;
     }
+    return c;
+  };
+  // a point just off the start with the given sign of GZ (for a crossing below the first sampled angle)
+  const nearStart = (sign) => {
+    if (!at || n < 2) return null;
+    for (let d = curve[1].deg / 2; d > curve[1].deg * 1e-7; d /= 2) { const g = at(d); if (g * sign > 0) return { deg: d, gz: g }; }
+    return null;
+  };
+  let loll = null, vanish = null, from = 1;
+  if (unstable && n > 1) {
+    let i = 1; while (i < n && curve[i].gz <= 0) i++;
+    if (i < n) {
+      const neg = i > 1 ? curve[i - 1] : nearStart(-1);
+      if (neg) loll = root(neg, curve[i]);
+      from = i;
+    } else from = n;
+  } else if (n > 1 && curve[1].gz <= 0) {
+    const pos = nearStart(1);
+    if (pos) vanish = root(pos, curve[1]);
   }
-  let open = 0;
-  for (const n of edges.values()) if (n !== 2) open++;
-  return open;
+  if (vanish === null) {
+    for (let i = Math.max(2, from + 1); i < n; i++) if (curve[i - 1].gz > 0 && curve[i].gz <= 0) { vanish = root(curve[i - 1], curve[i]); break; }
+  }
+  // the maximum within the range of positive stability (from the start, or from the loll angle, to the vanishing angle)
+  const lo = unstable ? (loll ?? Infinity) : 0, hi = vanish ?? Infinity;
+  let max = -Infinity, maxDeg = 0, mi = -1;
+  for (let i = 1; i < n; i++) if (curve[i].deg >= lo && curve[i].deg <= hi && curve[i].gz > max) { max = curve[i].gz; maxDeg = curve[i].deg; mi = i; }
+  if (mi < 0) for (let i = 1; i < n; i++) if (curve[i].gz > max) { max = curve[i].gz; maxDeg = curve[i].deg; mi = i; }   // no sample in the range
+  if (at && mi > 0 && mi < n - 1 && max > 0) {
+    // golden-section search between the neighbouring samples (kept inside the range)
+    let a = Math.max(curve[mi - 1].deg, Math.min(lo, curve[mi].deg)), b = Math.min(curve[mi + 1].deg, Math.max(hi, curve[mi].deg));
+    const r = (Math.sqrt(5) - 1) / 2;
+    let c = b - r * (b - a), d = a + r * (b - a), fc = at(c), fd = at(d);
+    while (b - a > 1e-5) {
+      if (fc > fd) { b = d; d = c; fd = fc; c = b - r * (b - a); fc = at(c); }
+      else { a = c; c = d; fc = fd; d = a + r * (b - a); fd = at(d); }
+    }
+    const x = (a + b) / 2, fx = at(x);
+    if (fx > max) { max = fx; maxDeg = x; }
+  }
+  return { max, maxDeg, vanish, loll, unstable };
 }
 
-// Plain-language stability verdict.
-export function stabilityVerdict(GM, beam) {
+// GZ curve and its summary in one call, with the summary's crossings and maximum refined on the curve itself.
+// opts: { freeTrim, GM (about this axis, for the unstable test), angles }.
+export function gzAnalysis(relTris, targetV, axis = 'x', opts = {}) {
+  const angles = opts.angles || Array.from({ length: 37 }, (_, i) => i * 5);
+  const o = { freeTrim: !!opts.freeTrim, buf: new Float64Array(relTris.length), scale: sizeOf(relTris) };
+  const curve = gzCurve(relTris, targetV, axis, angles, o);
+  const near = (deg) => curve.reduce((m, p) => (Math.abs(p.deg - deg) < Math.abs(m.deg - deg) ? p : m));
+  const at = (deg) => gzAt(relTris, targetV, axis, deg, { ...o, trim0: near(deg).trim }).gz;
+  return { curve, summary: gzSummary(curve, { GM: opts.GM ?? null, at }), freeTrim: o.freeTrim };
+}
+
+// ---------- static equilibrium (rest attitude) ----------
+// Turn the body about horizontal world axes through G until B is directly under G at the displacement targetV:
+// Newton on the two tilt angles with a finite-difference Jacobian and a backtracking step. Yaw is left alone (it does
+// not change the hydrostatics). bodyTris: relative to G in the body frame; R0: start attitude (world ← body).
+// Returns { R, offset (B–G horizontal distance, m), converged, iterations }.
+export function restAttitude(bodyTris, targetV, R0, { tol = 1e-9, maxIter = 40, maxTurn = 0.1 } = {}) {
+  const buf = new Float64Array(bodyTris.length);
+  const size = sizeOf(bodyTris);
+  const res = (R) => {
+    transformTris(bodyTris, R, [0, 0, 0], [0, 0, 0], buf);
+    const s = solveWaterline(buf, targetV);
+    return s.status === 'floats' ? [s.sub.B[0], s.sub.B[1]] : null;
+  };
+  let R = R0, r = res(R0), it = 0;
+  if (!r) return { R: R0, offset: NaN, converged: false, iterations: 0 };
+  const h = 1e-5;
+  for (; it < maxIter; it++) {
+    const nr = Math.hypot(r[0], r[1]);
+    if (nr <= tol * size) return { R, offset: nr, converged: true, iterations: it };
+    const rx = res(mat3.mul(mat3.rotX(h), R)), ry = res(mat3.mul(mat3.rotY(h), R));
+    if (!rx || !ry) break;
+    const J = [(rx[0] - r[0]) / h, (ry[0] - r[0]) / h, (rx[1] - r[1]) / h, (ry[1] - r[1]) / h];
+    const det = J[0] * J[3] - J[1] * J[2];
+    if (!(Math.abs(det) > 0)) break;
+    let a = -(J[3] * r[0] - J[1] * r[1]) / det, b = -(-J[2] * r[0] + J[0] * r[1]) / det;
+    const m = Math.hypot(a, b);
+    if (m > maxTurn) { a *= maxTurn / m; b *= maxTurn / m; }
+    let step = 1, Rn = null, rn = null;
+    for (let k = 0; k < 12; k++, step /= 2) {
+      const Rt = mat3.mul(mat3.rotY(b * step), mat3.mul(mat3.rotX(a * step), R));
+      const rt = res(Rt);
+      if (rt && Math.hypot(rt[0], rt[1]) < nr) { Rn = Rt; rn = rt; break; }
+    }
+    if (!rn) break;
+    R = Rn; r = rn;
+  }
+  const off = Math.hypot(r[0], r[1]);
+  return { R, offset: off, converged: off <= tol * size, iterations: it };
+}
+
+// Edges that are open or wound against their neighbour (0 = closed and consistently oriented); see js/meshcheck.js.
+export function openEdgeCount(tris, tol) { const c = meshCheck(tris, tol); return c.open + c.misoriented; }
+
+// ---------- plain-language stability verdict ----------
+// GM: metacentric height about the weakest waterplane axis (GM_min). opts.range: gzSummary of the GZ curve about
+// that axis (the worse of the two heel directions), or null while it is being computed. opts.scale: body size (m),
+// sets the round-off band in which GM counts as zero. opts.freeTrim: which GZ the range came from.
+// Small-angle words come from GM alone. Large-angle words come from the GZ curve: "self-righting" only when GZ stays
+// positive to 180°, and a warning when the maximum GZ comes before 25° of heel, the smallest angle the IMO intact
+// stability code accepts for it (2008 IS Code, MSC.267(85), Part A 2.2.3; an angle, so it does not depend on size).
+export function stabilityVerdict(GM, opts = {}) {
+  const { range = null, scale = 1, freeTrim = false } = opts;
+  const trim = freeTrim ? 'free trim' : 'fixed trim';
+  const f1 = (x) => (Math.round(x * 10) / 10).toFixed(1).replace(/\.0$/, '');
   if (!isFinite(GM)) return { level: 'na', text: 'No waterplane — body is fully submerged or out of the water.' };
-  const r = beam > 0 ? GM / beam : 0;
-  if (GM < 0) return { level: 'bad', text: 'Unstable: the metacentre is below the CoG. Any small disturbance grows and the body will roll/flip to a different floating attitude.' };
-  if (r < 0.02) return { level: 'warn', text: 'Marginal / neutral: GM is very small. The body has almost no initial righting stiffness and will loll or drift in attitude.' };
-  if (r < 0.06) return { level: 'ok', text: 'Stable but tender: positive GM with a slow, gentle roll. Sensitive to off-centre loads.' };
-  if (r < 0.2) return { level: 'good', text: 'Stable: healthy positive GM. Comfortable righting response.' };
-  return { level: 'good', text: 'Very stiff: large GM. Strongly self-righting, with a quick, snappy roll period.' };
+  if (GM < -1e-9 * scale) {
+    return {
+      level: 'bad',
+      text: `Unstable: the metacentre is below the CoG about the weakest waterplane axis, so any small disturbance grows and the body turns to a different floating attitude.${range && range.loll !== null
+        ? ` About that axis the righting arm (${trim}) turns positive again at about ${f1(range.loll)}°; the 3D resting attitude can differ, so use Settle to find it.` : ' Use Settle to find where it comes to rest.'}`,
+    };
+  }
+  if (GM <= 1e-9 * scale) return { level: 'warn', text: 'Neutral: GM about the weakest waterplane axis is zero (to round-off), so there is no righting stiffness about it at small angles and the attitude can drift.' };
+  if (!range) return { level: 'good', text: 'Stable at small angles: the metacentre is above the CoG about every horizontal axis. The range of stability is being worked out from the GZ curve.' };
+  if (range.vanish === null) return { level: 'good', text: `Stable and self-righting: the metacentre is above the CoG about every horizontal axis, and the righting arm about the weakest axis (${trim}) stays positive all the way to 180°.` };
+  if (range.maxDeg < 25) {
+    return {
+      level: 'ok',
+      text: `Stable at small angles, but the range is small: about the weakest axis (${trim}) the righting arm peaks at ${f1(range.maxDeg)}° and is gone at ${f1(range.vanish)}°, so a heel past ${f1(range.vanish)}° capsizes it. The IMO intact stability code asks for the peak at 25° or more (2008 IS Code A 2.2.3).`,
+    };
+  }
+  return { level: 'good', text: `Stable: the metacentre is above the CoG about every horizontal axis. About the weakest axis (${trim}) the righting arm peaks at ${f1(range.maxDeg)}° and vanishes at ${f1(range.vanish)}°; heeled past that, the body capsizes.` };
 }

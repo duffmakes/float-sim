@@ -5,6 +5,9 @@ import Proofs.Frames
 import Proofs.Euler
 import Proofs.PointTransfer
 import Proofs.WavePhase
+import Proofs.Mesh
+import Proofs.MeshBox
+import Proofs.Tetra
 
 /-!
 # Float Sim: proofs
