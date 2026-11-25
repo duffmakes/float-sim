@@ -293,6 +293,10 @@ back R1-17 (a hexagonal or square waterplane's "weakest axis" is set by round-of
 energy to the end of the range (the area under GZ, as in the IS Code's area criteria): it picks near-pitch flooding on
 the barge with free trim (10.6°), so it was not used.
 
+**Owner's decision on R1-28 (2026-11-25):** the least-moment criterion, as built in b4541ad (both objectives, with the
+full arm). R1-28 is settled on the criterion; whether the code applies it correctly is left to the reviewer's check of
+b4541ad.
+
 Results with these fixes: `validate-node` 591/591 fine and 494/494 normal and coarse (`validate-stability` 228
 checks); `validate-proofs` 20/20; `e2e-browser` 144/144, the validation page included. No Lean or Python-ported code
 changed.
