@@ -216,7 +216,7 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       if (yaw === 0) {
         chk('box: verdict level good (Stable)', v.level, 'good');
         chk('box (vanishes at 90°): not called self-righting', /self-righting/.test(v.text), false);
-        chk('box: the verdict gives the vanishing angle 90°, about the weakest axis (90° every way, so the weakest axis wins the tie)', /vanishes at 90°/.test(v.text) && /weakest axis, the worst of all heel directions/.test(v.text), true);
+        chk('box: the verdict gives the vanishing angle 90°, about the weakest axis (where the least heeling moment ends the range)', /vanishes at 90°/.test(v.text) && /the weakest axis, the direction in which the least heeling moment ends the range/.test(v.text), true);
       }
     }
     chk('box at yaw 0°, 20°, 45°: the same verdict', texts.every((t) => t === texts[0]), true);
@@ -248,7 +248,9 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
         const rel = transformTris(cube, mat3.mul(mat3.rotZ(yaw * DEG), Rc)), H = hydrostatics(rel, solveWaterline(rel, 0.5).zw, 500, 1000);
         const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 1.7 });
         const onlyWeakest = Math.min(...[0, 180].map((o) => gzAnalysis(rel, H.V, H.axisMinDeg + o, { GM: H.GMmin }).summary.end ?? 180));
-        chk(`corner-down cube, yaw ${yaw}°: worst range = atan(1/√2) = 35.2644° [SYM] (°)`, r.end, exact, 0, 5e-3);
+        // the arm is stationary about the edge direction, which the refinement finds to its last grid, 0.007°; the
+        // vanishing angle has a corner there (0.8° per degree of direction), so the range is within 0.01° of [SYM]
+        chk(`corner-down cube, yaw ${yaw}°: range = atan(1/√2) = 35.2644° [SYM] (°)`, r.end, exact, 0, 0.01);
         chk(`…the weakest axis alone (set by round-off) gives a longer range, ${onlyWeakest.toFixed(1)}°`, onlyWeakest > exact + 1, true);
         chk(`…the verdict gives 35.3° and names the direction`, /vanishes at 35\.3°/.test(v.text) && /axis at -?[0-9.]+° from x/.test(v.text), true);
       }
@@ -276,15 +278,24 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
     {
       // R1-28: an open-deck barge 40 × 8 × 6 m at T 2 m, KG 3 m. In roll the deck edge goes under at atan(1.125) =
       // 48.3665° (with the bilge out, the immersed section is a triangle); inclined nearer pitch it floods at 12.2°, but
-      // there the righting arm is metres. The range ends where it floods with the least heeling moment, near roll
+      // there the righting arm is metres. The range is taken where the least heeling moment ends it, near roll
       const m = prepareMesh([dropTris(boxTris(40, 8, 6, 0, -4, 0), onPlane(2, 6))]);
       const { rel, H } = floating(m.tris, [20, 0, 3], 640000), op = transformTris(m.report.openPts, mat3.identity(), [20, 0, 3]);
       const fx = gzAnalysis(rel, H.V, 'x', { GM: H.GMt, open: op }).summary;
       chk('open-deck barge 40×8×6 m: roll downflooding angle = atan(1.125) (°)', fx.flood, Math.atan(1.125) / DEG, 0, 1e-6);
+      chk('…in roll the largest arm before it is GZ at the downflooding angle vs [2D] (m)', fx.arm, gz2d([rect(-4, 4, 0, 6)], [0, 3], 16, Math.atan(1.125) / DEG).gz, 0, 1e-7);
       const r = await range(rel, H, { open: op }), v = stabilityVerdict(H.GMmin, { range: r, scale: 41 });
       chk('…the verdict\'s range ends at a downflooding angle past 30°, not later than roll\'s (°)', r.flood !== null && r.end === r.flood && r.end > 30 && r.end <= fx.flood + 1e-9, true);
-      chk('…it takes no larger righting arm to get there than in roll', Math.max(r.max, r.gzFlood) <= Math.max(fx.max, fx.gzFlood) + 1e-9, true);
-      chk('…level Stable, and the earlier flooding nearer pitch (under 13°) is a note', v.level === 'good' && r.floodAny !== null && r.floodAny.flood < 13 && /larger heeling moment/.test(v.text), true);
+      chk('…it takes no larger arm to get there than in roll', r.arm <= fx.arm + 1e-9, true);
+      chk('…level Stable, and the earlier flooding nearer pitch (under 13°) is a note', v.level === 'good' && r.earliest !== null && r.earliest.flood && r.earliest.end < 13 && /larger heeling moment/.test(v.text), true);
+      // R1-32: with fixed trim the arm counts the trimming moment the fixed trim holds. 1.09° off roll (where the arm
+      // about the heel axis alone was least) the deck corner floods at 44.7°, but holding that attitude takes a trimming
+      // arm of about 0.85 m; counting it, the least moment is within 0.1° of roll (the trimming arm adds to the arm only
+      // at second order, while the downflooding angle falls at first order), and the range ends within 0.15° of roll's
+      const sk = gzAnalysis(rel, H.V, 1.09, { GM: gmAbout(H, 1.09), open: op }).summary;
+      chk('…1.09° off roll the arm counting the trimming moment is over 1.1 m (the arm about the heel axis alone, 0.72 m)', sk.arm > 1.1 && sk.max < 0.73, true);
+      chk('…the verdict\'s direction is within 0.1° of roll (°)', Math.abs(r.az) < 0.1, true);
+      chk('…and its range ends within 0.15° of atan(1.125) (°)', r.end, Math.atan(1.125) / DEG, 0, 0.15);
     }
     {
       // R1-29: the open box at T 0.95 m floods in roll at atan(0.05) = 2.862°, before the first 5° sample: its maximum is
@@ -293,6 +304,7 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const { rel, H } = floating(m.tris, [2, 0, 0.5], 7600), op = transformTris(m.report.openPts, mat3.identity(), [2, 0, 0.5]);
       const fx = gzAnalysis(rel, H.V, 'x', { GM: H.GMt, open: op }).summary;
       chk('open box, freeboard 0.05 m: roll downflooding angle = atan(0.05) (°)', fx.flood, Math.atan(0.05) / DEG, 0, 1e-6);
+      chk('…the largest arm before it is GZ at the downflooding angle (the range ends before the first sample) vs [2D] (m)', fx.arm, gz2d([rect(-1, 1, 0, 1)], [0, 0.5], 1.9, Math.atan(0.05) / DEG).gz, 0, 1e-7);
       chk('…the maximum lies inside the range and is positive', fx.max > 0 && fx.maxDeg > 0 && fx.maxDeg <= fx.flood, true);
       chk('…the verdict does not say it peaks at 0°', /peaks at 0°/.test(stabilityVerdict(H.GMmin, { range: await range(rel, H, { open: op }), scale: 4.6 }).text), false);
     }
@@ -306,9 +318,11 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       // the 25° early-peak note, on a square box whose righting arm peaks between 20° and 25° [2D]
       const b = floating(boxTris(4, 4, 0.7, 0, -2, 0), [2, 0, 0.3], 4000), rb = await range(b.rel, b.H);
       const f = (d) => gz2d([rect(-2, 2, 0, 0.7)], [0, 0.3], 1, d).gz;
-      chk('square box 4×4×0.7 m, T 0.25 m, KG 0.3 m: the peak at 22.90° vs [2D] (°)', rb.maxDeg, max2d(f, 15, 30), 0, 0.01);
-      const vb = stabilityVerdict(b.H.GMmin, { range: rb, scale: 5.7 });
-      chk('…level good, with the early-peak note', vb.level === 'good' && /peaks early/.test(vb.text), true);
+      const rx = gzAnalysis(b.rel, b.H.V, 'x', { GM: b.H.GMt }).summary;
+      chk('square box 4×4×0.7 m, T 0.25 m, KG 0.3 m: the roll peak at 22.90° vs [2D] (°)', rx.maxDeg, max2d(f, 15, 30), 0, 0.01);
+      const vb = stabilityVerdict(b.H.GMmin, { range: rx, scale: 5.7 });
+      chk('…with that range, level good, with the early-peak note', vb.level === 'good' && /peaks early/.test(vb.text), true);
+      chk('…the verdict\'s range (the diagonal, where the least moment ends it) also peaks before 25°, and is noted', rb.maxDeg < 25 && /peaks early/.test(stabilityVerdict(b.H.GMmin, { range: rb, scale: 5.7 }).text), true);
     }
     chk('GM 0.5 m on a 32 m ship (no range yet): stable, and never "loll"', stabilityVerdict(0.5, { scale: 200 }).level === 'good' && !/loll/.test(stabilityVerdict(0.5, { scale: 200 }).text), true);
     chk('GM −0.1 m: Unstable', stabilityVerdict(-0.1, { scale: 5 }).level, 'bad');
@@ -336,21 +350,41 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
     }
     {
       // R1-25: the self-righting boundary on a body at rest whose range ends between 90° and 180°: the 4×2×1 m box with
-      // KG 0.3 m. Its worst direction is pitch, where the [2D] code on the 4 m long section gives the vanishing angle
+      // KG 0.3 m. In roll the [2D] code on the 2 m section gives the vanishing angle; pitch vanishes sooner, at 99.9° on
+      // the 4 m section, but takes over twice the arm to get there, so it is a note (review R1-34)
       const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 0.3], 3200);
       const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
       const f = (deg) => gz2d([rect(-2, 2, 0, 1)], [0, 0.3], 1.6, deg).gz;
-      chk('box, KG 0.3 m: worst range = the pitch vanishing angle vs [2D] (°)', r.end, root2d(f, 95, 110), 0, 1e-6);
-      chk('…roll vanishes later, 112.32° vs [2D]', gzAnalysis(rel, H.V, 'x', { GM: H.GMt }).summary.vanish, root2d((d) => gz2d([rect(-1, 1, 0, 1)], [0, 0.3], 0.8, d).gz, 100, 130), 0, 1e-6);
-      chk('…verdict: Stable, vanishes at 99.9°, not self-righting', v.level === 'good' && /vanishes at 99\.9°/.test(v.text) && !/self-righting/.test(v.text), true);
+      chk('box, KG 0.3 m: the verdict\'s range = the roll vanishing angle 112.32° vs [2D] (°)', r.end, root2d((d) => gz2d([rect(-1, 1, 0, 1)], [0, 0.3], 0.8, d).gz, 100, 130), 0, 1e-6);
+      chk('…pitch vanishes sooner, 99.89° vs [2D] (°)', gzAnalysis(rel, H.V, 'y', { GM: H.GML }).summary.vanish, root2d(f, 95, 110), 0, 1e-6);
+      chk('…verdict: Stable, vanishes at 112.3°, not self-righting, with pitch\'s 99.9° as a note', v.level === 'good' && /vanishes at 112\.3°/.test(v.text) && !/self-righting/.test(v.text) && /range ends sooner, at 99\.9°/.test(v.text), true);
+    }
+    {
+      // R1-34: a closed 20 × 5 × 2.5 m hull at T 1 m, KG 1.5 m vanishes at 78.55° in roll [2D]. Pitched with free trim
+      // (free roll) it loses roll stability once the stern's bilge is out and rolls over near 14°, but only after a
+      // righting arm of 3.8 m. With free trim the verdict's range is roll's, and the near-pitch roll-over is a fold: GZ
+      // jumps there from well above zero, at the angle where the trim followed from upright is lost, not halfway between
+      // two samples (12.5°)
+      const { rel, H } = floating(boxTris(20, 5, 2.5), [10, 0, 1.5], 100000);
+      const want = root2d((d) => gz2d([rect(-2.5, 2.5, 0, 2.5)], [0, 1.5], 5, d).gz, 60, 90);
+      const r = await range(rel, H, { freeTrim: true }), v = stabilityVerdict(H.GMmin, { range: r, scale: 21, freeTrim: true });
+      chk('hull 20×5×2.5 m, T 1 m, KG 1.5 m, free trim: the verdict\'s range = roll\'s 78.55° vs [2D] (°)', r.end, want, 0, 1e-6);
+      chk('…about the weakest axis, level good', r.weakest && v.level === 'good', true);
+      const p = gzAnalysis(rel, H.V, 87.78, { GM: gmAbout(H, 87.78), freeTrim: true }).summary;
+      chk('…about the axis at 87.78° (free trim): the range ends at a fold between 13° and 15.5°, not at 12.5°', p.fold && p.vanish > 13 && p.vanish < 15.5, true);
+      const pf = await range(rel, H);
+      chk('…fixed trim: the same range, 78.55° (°)', pf.end, want, 0, 1e-6);
     }
     if (getTris) {
       // R1-25: the STEP sphere with G 0.3 m below and 0.05 m beside its centre: GZ = 0.3 sin φ + 0.05 cos φ in the worse
       // sense, which vanishes at 180° − atan(0.05/0.3) = 170.5377°. It is not self-righting
       const t = await getTris('sphere_r1.step'), mp = massProperties(t);
       const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.05, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
+      // every heel direction whose range ends takes the same largest arm, |CG| (B is under the centre), so the verdict's
+      // direction is any of them; the range is checked about x, where it ends soonest
       const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 3.5 });
-      chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: worst range = 180° − atan(0.05/0.3) (°)', r.end, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
+      chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: range about x = 180° − atan(0.05/0.3) (°)', gzAnalysis(rel, H.V, 0, { GM: gmAbout(H, 0) }).summary.vanish, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
+      chk('…the verdict\'s range ends between that and 180°', r.end > 180 - Math.atan(0.05 / 0.3) / DEG - 0.01 && r.end < 180, true);
       chk('…verdict: not self-righting', /self-righting/.test(v.text), false);
     }
     if (getTris) {
@@ -359,8 +393,8 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const t = await getTris('sphere_r1.step'), mp = massProperties(t);
       const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.003, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
       const r = await range(rel, H);
-      chk('STEP sphere, G 0.3 m low and 3 mm off the centre: range = 180° − atan(0.01) = 179.43° (°)', r.end, 180 - Math.atan(0.01) / DEG, 0, 0.01);
-      chk('…not self-righting', /self-righting/.test(stabilityVerdict(H.GMmin, { range: r, scale: 3.5 }).text), false);
+      chk('STEP sphere, G 0.3 m low and 3 mm off the centre: range about x = 180° − atan(0.01) = 179.43° (°)', gzAnalysis(rel, H.V, 0, { GM: gmAbout(H, 0) }).summary.vanish, 180 - Math.atan(0.01) / DEG, 0, 0.01);
+      chk('…the verdict: not self-righting', /self-righting/.test(stabilityVerdict(H.GMmin, { range: r, scale: 3.5 }).text), false);
     }
     if (getTris) {
       // R1-18: the classic self-righting body, a sphere with G 0.3 m below its centre (GZ = 0.3 sin φ > 0 on (0°, 180°));
@@ -500,6 +534,35 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       }
       chk('…with each of the hull\'s 12 triangles first: 12 m³', rot, true);
       chk('…through the STL import path: 12 m³', massProperties(prepareMesh([soupFromIndexed(Float32Array.from([...hull, ...flipTris(house)]), null)]).tris).volume, 12, 0, 1e-6);
+      // R1-35: a conforming contact, the hull's deck split at y = 0 under the deckhouse (its end faces fanned to take the
+      // split's vertex), so the contact faces are the same triangles: at the deckhouse's base edges the two side faces
+      // are on opposite sides of the contact plane. Each part outward or inside out, both file orders, the first part's
+      // triangles rotated 12 ways
+      const Vx = (x, y, z) => [x, y, z], split = [];
+      for (const [a, b, c, d] of [[Vx(0, -1, 0), Vx(0, 1, 0), Vx(4, 1, 0), Vx(4, -1, 0)], [Vx(0, -1, 1), Vx(4, -1, 1), Vx(4, 0, 1), Vx(0, 0, 1)], [Vx(0, 0, 1), Vx(4, 0, 1), Vx(4, 1, 1), Vx(0, 1, 1)],
+        [Vx(0, -1, 0), Vx(4, -1, 0), Vx(4, -1, 1), Vx(0, -1, 1)], [Vx(0, 1, 0), Vx(0, 1, 1), Vx(4, 1, 1), Vx(4, 1, 0)]]) split.push(...a, ...b, ...c, ...a, ...c, ...d);
+      for (const [x, sg] of [[0, -1], [4, 1]]) {
+        const ring = [Vx(x, -1, 0), Vx(x, 1, 0), Vx(x, 1, 1), Vx(x, 0, 1), Vx(x, -1, 1)], r = sg > 0 ? ring : ring.slice().reverse();
+        for (let i = 1; i + 1 < r.length; i++) split.push(...r[0], ...r[i], ...r[i + 1]);
+      }
+      const sb = new Float64Array(split), rotT = (t, k) => new Float64Array([...t.slice(k * 9), ...t.slice(0, k * 9)]);
+      let bad = 0, n = 0;
+      for (const [a, b] of [[sb, house], [flipTris(sb), house], [sb, flipTris(house)]]) for (const ord of [0, 1]) for (let k = 0; k < 12; k++) {
+        const r = repairMesh(new Float64Array(ord ? [...rotT(b, k), ...a] : [...rotT(a, k), ...b]), tol); n++;
+        if (Math.abs(massProperties(r.tris).volume - 12) > 1e-12 || r.report.overlaps) bad++;
+      }
+      chk(`conforming hull (deck split under the deckhouse) + deckhouse, ${n} variants: all 12 m³, no overlap`, bad, 0, 0, 0);
+    }
+    {
+      // R1-33: an end slab 1 × 2 × 1 m inside the 4 × 2 × 1 m hull, sharing its end face (the same triangles, wound the
+      // same way). The two parts are separated at the shared face, so the overlap is found (the sum, 10 m³, is counted)
+      const hull = boxTris(4, 2, 1), slab = boxTris(1, 2, 1, 3);
+      let ok = true;
+      for (const t of [[...hull, ...slab], [...slab, ...hull]]) for (let k = 0; k < 12; k++) {
+        const h = new Float64Array([...t.slice(k * 9), ...t.slice(0, k * 9)]), r = repairMesh(h, tol);
+        if (!(r.report.shells === 2 && r.report.closedShells === 2 && r.report.overlaps === 2 && Math.abs(massProperties(r.tris).volume - 10) < 1e-12)) ok = false;
+      }
+      chk('end slab inside the hull sharing its end face, both file orders × 12 rotations: 2 closed shells, overlap reported', ok, true);
     }
     {
       // R1-27: blocks that only touch the hull (on its deck, under its bottom) are not overlaps; a coplanar overlap is
@@ -516,6 +579,15 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       // review Q1: when the work budget runs out, a negative shell that may be a void is not turned into a solid
       const r = repairMesh(new Float64Array([...boxTris(4, 2, 1), ...flipTris(boxTris(1, 0.5, 0.5, 1.5, -0.25, 0.25))]), tol, { budget: 1 });
       chk('box with an inward inner shell, overlap check stopped by a tiny budget: inner shell left as a void (volume 7.75 m³)', !r.report.nestChecked && Math.abs(massProperties(r.tris).volume - 7.75) < 1e-12, true);
+      // R1-35: a pair that was tested before the budget ran out counts. An L-section hull and an inside-out block in its
+      // notch (inside the hull's bounding box, outside the hull): with the budget one short of the whole check (found by
+      // bisection), the pair is tested, the check is still marked incomplete, and the block is turned (12 + 0.25 m³)
+      const L = prism([[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]], 0, 4), blk = flipTris(boxTris(1, 0.5, 0.5, 1.5, 1.25, 1.25));
+      const soup = new Float64Array([...L, ...blk]);
+      let lo = 0, hi = 1e7;   // smallest budget for which the check completes
+      while (hi - lo > 1) { const m = Math.floor((lo + hi) / 2); if (repairMesh(soup, tol, { budget: m }).report.nestChecked) hi = m; else lo = m; }
+      const rb = repairMesh(soup, tol, { budget: hi - 1 });
+      chk('L-section hull + inside-out block in its notch, budget one short: check incomplete, block turned (12.25 m³)', !rb.report.nestChecked && Math.abs(massProperties(rb.tris).volume - 12.25) < 1e-12, true);
     }
     {
       // R1-21: welding by distance. Copies of a vertex 2e-13 m apart on either side of a cell boundary are one vertex

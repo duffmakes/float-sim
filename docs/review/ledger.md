@@ -236,3 +236,63 @@ R1-28's criterion is the defender's choice, and the owner may prefer another:
 
 The least-moment rule needs no threshold and follows from what the downflooding angle is for. It gives near-roll
 answers on long hulls and the diagonal on square ones.
+
+### Second check of the fixes (reviewer, on Claude Opus 5.5)
+
+Report: [round-1-check2.md](round-1-check2.md), on d43902d. Closed: R1-16, R1-26, R1-27, R1-29, R1-30, R1-31, and
+Q1–Q3 answered. R1-28 is escalated to the owner (the choice of criterion). Of 56 Node mutants, 38 were caught, and 7
+of 10 e2e mutants. Four new findings, one of them major. As before, the defender fixed them in this round's PR.
+
+| ID | Severity | Finding | Defender's answer | Status |
+| --- | --- | --- | --- | --- |
+| R1-32 | minor | With fixed trim the least-moment flood objective compares only the arm about the heel axis and leaves out the moment that holds the trim, so skewed directions look cheaper (barge 44.7° 1.1° off roll, against 48.4°) | Concede | fixed, for the reviewer's check |
+| R1-33 | minor (pre-existing) | An inner solid that shares a face with its container (the same triangles, wound the same way) is merged into one shell, and the overlap goes unreported | Concede | fixed, for the reviewer's check |
+| R1-34 | major | With free trim the capsize objective, the earliest vanishing angle over every direction, is decided near pitch on slender hulls ("small range, vanishes at 12.5°" for a hull whose roll range is 78.6°), and 12.5° is where the refinement's start guess switches between two samples' trims, not a zero | Concede | fixed, for the reviewer's check |
+| R1-35 | minor | Nine surviving mutants on the new code have no test (C34, F06, F08, F10, F11, F12, F14, F18, F20, G01, G02) | Concede, except F06 and F20 (see below); F11, F12 and F14 mutated code that is gone | fixed, for the reviewer's check |
+
+#### Fixes made (for the reviewer's check)
+
+| ID | What changed | Where to check |
+| --- | --- | --- |
+| R1-28, R1-32, R1-34 | One objective for both ways a range ends. The verdict's range is taken in the direction in which the least steady heeling moment ends the range, by capsizing or by downflooding, whichever comes first in that direction: the smallest largest arm of the buoyancy–weight couple up to the end (`gzSummary`'s new `arm`: B's horizontal distance from G, hypot(GZ, trimming arm), on the samples, at the end and at the refined maximum). With fixed trim it counts the trimming moment the fixed trim holds (R1-32); with free trim the trimming arm is zero. Directions whose range does not end are not candidates. The earliest end over every direction, of either kind, is a note when it differs at the verdict's 0.1° ("…the range ends sooner, at 99.9°, but it takes a larger heeling moment to get there"). The final run always uses the openings (`byFlood`, `gzFlood` and `floodAny` are gone; the note is `earliest`) | `js/physics.js` `gzSummary`, `worstHeelRange`, `verdictRange`, `stabilityVerdict`; `validate-stability` stability_verdict: the barge's range now ends within 0.15° of atan(1.125) and within 0.1° of roll (48.26° at −0.03°: the trimming arm adds to the arm only at second order while the downflooding angle falls at first order, so the least moment is a hair off roll); 1.09° off roll the arm is 1.11 m; the box with KG 0.3 m now ends at roll's 112.32° [2D], with pitch's 99.89° [2D] as a note; the 20 × 5 × 2.5 m hull with free trim ends at roll's 78.55° [2D] |
+| R1-34 (folds) | Free-trim points between samples are followed up from the nearest point below on the curve's branch, in steps of at most 0.5°, and a step that changes the sign of GZ is not kept as a start point, so a crossing is found on one trim branch. Where that branch ends (the trim it follows stops being an equilibrium), GZ jumps; the summary flags it (`fold`), and the verdict and the GZ panel say so. `gzCurve` re-makes a step that loses the previous angle's stable trim in 0.5° sub-steps, so the samples follow the body too. With free trim, GZ within 1e-9 of the size counts as zero (a hull rolled 90° when heeled in pitch turns the heel into a yaw, GZ ≡ 0) | `js/physics.js` `gzCurve`, `gzAnalysis`; your `freebranch.mjs`: about 87.78° the range ends at a fold at 14.87° (your 0.25° continuation: between 14.75° and 15.00°), not 12.5°. The fold's angle is only as sharp as the branch: on this hull the roll minimum is very shallow from about 13° to 15° of pitch, and continuations in 0.25°, 0.05° and 0.01° steps lose it at 14.1°, 14.9° and 13.1° |
+| R1-33 | At an edge used by four triangles where both half-planes hold a face of each part (two pairs of coincident directions), each part takes one face of each half-plane: its own when a patch holds both, otherwise the faces of the lower-numbered patches together, the same at every edge. Each part then closes on its own, and the nesting test finds the overlap | `js/meshcheck.js` (contact pairing); `validate-stability` mesh_check (the end slab, both file orders × 12 rotations: 2 closed shells, overlap reported); your `slab.mjs`: 2 shells, overlaps 2; `nest2.mjs`: 2 / 2 in all three cases; `contact3.mjs` (792 variants) and `touch.mjs`, `touch2.mjs`, `shells.mjs`, `nonmanifold.mjs`, `contact2.mjs`: unchanged |
+| R1-35 | New tests: the conforming contact (the hull's deck split under the deckhouse) in 72 variants (C34); an L-section hull with an inside-out block in its notch and the budget one short of the whole check, found by bisection, so the pair is tested and the block turned (F08); the largest arm in roll equals GZ at the downflooding angle [2D] on the barge and on the low-freeboard box, whose range ends before the first sample (F10, F18); e2e: the GZ panel gives no maximum with an opening under water at the start (G01), and notes the angles with no stable trim on the buoy with free trim (G02) | `test/validate-stability.js`, `test/e2e-browser.mjs` (2d, 7b) |
+| Q4 | The search for a stable trim, after one that found none, is made again 30° further along the curve (was never again), so a stable trim that comes back is found within 30°. The panel's note says "searched again every 30°" | `js/physics.js` `gzCurve`, `js/app.js` |
+| Q5 | The verdict now names what it takes: "Heeled about the axis at X° from x, the direction in which the least heeling moment ends the range (fixed trim), …" | `js/physics.js` `stabilityVerdict`; `e2e-browser` 5 |
+
+Cost on the 51k-triangle STEP sphere at fine quality, single-threaded (your `sweepcost.mjs`): the verdict's whole range
+5.7 s fixed and 33.4 s free (G 0.05 m off centre; 5.6 s and 35.0 s at d43902d), 2.4 s and 22.7 s with G centred
+(2.35 s and 12.9 s: the 0.5° sub-steps where the curve first loses its stable trim, and the 30° re-searches).
+
+On the sphere with G off centre, every direction whose range ends takes the same largest arm, |CG|, because B is under
+the centre. The verdict's direction is then any of them (177.5° here, between 170.5° about x and 180°), so the sphere
+tests check the closed form about x and that the verdict's range lies between it and 180°, not self-righting.
+
+Answers to the questions and to the mutants not given a test:
+
+- **Q4:** a fair point; see the table. When no stable trim exists within ±90° (the sphere past 90°), the curve still
+  follows the trim of maximum energy, flagged, and the panel says so.
+- **Q5:** yes; see the table.
+- **F06** (the probe without the step past the crossing): near-equivalent. The probe runs only when an edge of one shell
+  crosses the other at a triangle edge or corner, and the step only matters when the inward offset lies in the other
+  shell's face plane. In a triangulated mesh a neighbouring face diagonal then usually crosses the face's interior and
+  finds the overlap first, or the inward offset already leaves the face plane: a square post through a
+  fan-triangulated deck, with its four corners on the fan's edges, is caught at four heights in both file orders, one
+  way or the other.
+- **F20** (the trim flag kept after a stable trim is found): equivalent on every body found. It only matters when a
+  stable trim comes back within ±90° after a stretch with none, and no such body turned up (the sphere and the buoy
+  never get one back). The 30° re-search bounds what such a body would miss.
+- **F11, F12, F14:** the code they mutated (the separate capsize and flood keys, and the final run without openings) is
+  gone.
+
+The owner's call on R1-28, with the reviewer's positions in [round-1-check2.md](round-1-check2.md): the defender now
+applies the least-moment rule to both objectives with the full arm, as the reviewer's first option. The reviewer's
+second option, both objectives only about the weakest axis, is one line in `js/app.js` (`sweep: false`), but brings
+back R1-17 (a hexagonal or square waterplane's "weakest axis" is set by round-off). The defender also tried the least
+energy to the end of the range (the area under GZ, as in the IS Code's area criteria): it picks near-pitch flooding on
+the barge with free trim (10.6°), so it was not used.
+
+Results with these fixes: `validate-node` 591/591 fine and 494/494 normal and coarse (`validate-stability` 228
+checks); `validate-proofs` 20/20; `e2e-browser` 144/144, the validation page included. No Lean or Python-ported code
+changed.

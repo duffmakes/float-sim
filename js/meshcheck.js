@@ -229,6 +229,26 @@ export function repairMesh(src, tol, opts = {}) {
       });
       const ties = [];
       for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) if (dir[i][0] * dir[j][0] + dir[i][1] * dir[j][1] + dir[i][2] * dir[j][2] > 1 - 1e-9) ties.push([i, j]);
+      if (ties.length === 2) {
+        // both half-planes hold a face of each part: a part inside another that shares a face with it (or a face and
+        // the plane of the next one), or a part fitted into a corner of another. Each part takes one face of each
+        // half-plane: its own when a patch holds both, otherwise the faces of the lower-numbered patches together, the
+        // same at every edge, so each part closes on its own and the nesting test sees the overlap (review R1-33)
+        const [[a1, b1], [a2, b2]] = ties, P = (x) => pf(e.t[x]);
+        if (P(a1) === P(b1) || P(a2) === P(b2)) continue;
+        let pairs;
+        if (P(a1) === P(a2) || P(b1) === P(b2)) pairs = [[a1, a2], [b1, b2]];
+        else if (P(a1) === P(b2) || P(b1) === P(a2)) pairs = [[a1, b2], [b1, a2]];
+        else {
+          const lo1 = P(a1) < P(b1) ? a1 : b1, lo2 = P(a2) < P(b2) ? a2 : b2;
+          pairs = [[lo1, lo2], [lo1 === a1 ? b1 : a1, lo2 === a2 ? b2 : a2]];
+        }
+        for (const [x, y] of pairs) {
+          const a = e.t[x], b = e.t[y], same = forward(vid, a, lo, hi) === forward(vid, b, lo, hi);
+          link(a, b, same); link(b, a, same);
+        }
+        continue;
+      }
       if (ties.length !== 1) continue;
       let [i, j] = ties[0];
       const others = [0, 1, 2, 3].filter((k) => k !== i && k !== j);

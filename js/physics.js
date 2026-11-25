@@ -330,7 +330,8 @@ const sizeOf = (tris) => { const b = bbox(tris); return Math.hypot(b.max[0] - b.
 // every trial. GZ = B_x·u_y − B_y·u_x, the arm of the buoyancy–weight couple about u (positive = righting).
 // opts: { freeTrim, trim0 (rad, start guess), scale, buf, open (points of the mesh's openings, relative to G like
 // relTris) }. With opts.open the result also has `open`: how far the lowest opening point is below the waterline
-// (positive: an opening is under water).
+// (positive: an opening is under water). `along` is B's horizontal offset from G along u, the trimming arm: the couple
+// W·along about w that fixed trim holds (zero at a free-trim root).
 export function gzAt(relTris, targetV, axis, deg, opts = {}) {
   const [ux, uy] = heelAxis(axis);
   const buf = opts.buf || new Float64Array(relTris.length);
@@ -346,7 +347,7 @@ export function gzAt(relTris, targetV, axis, deg, opts = {}) {
     return { trim, status: s.status, along: B[0] * ux + B[1] * uy, gz: B[0] * uy - B[1] * ux, bz: B[2], open };
   };
   const out = (r) => ({ deg, gz: r.gz, status: r.status, trim: r.trim, along: r.along, open: r.open });
-  if (!opts.freeTrim) { const r = ev(0); return { deg, gz: r.gz, status: r.status, trim: 0, open: r.open }; }
+  if (!opts.freeTrim) { const r = ev(0); return { deg, gz: r.gz, status: r.status, trim: 0, along: r.along, open: r.open }; }
   const tol = 1e-11 * (opts.scale || sizeOf(relTris));
   // Root of along(trim) from a start guess: secant, and once the root is bracketed, Illinois regula falsi (never
   // leaves the bracket). Returns the best point and the slope sign of along there (+1: the trim is stable).
@@ -410,16 +411,30 @@ export function gzAt(relTris, targetV, axis, deg, opts = {}) {
 }
 
 // GZ curve: heel the body about a horizontal axis through G (see gzAt). Default angles 0–180° every 5°.
-// opts: { freeTrim, open } (free-trim heels continue from the previous angle's trim).
+// opts: { freeTrim, open } (free-trim heels continue from the previous angle's trim). When the search for a stable trim
+// has found none, the next angles follow the unstable trim without searching, and the search is made again 30° further
+// on (review R1-30, Q4: a stable trim that comes back is found within 30°, and the cost stays a few searches a curve).
+// When a step loses the stable trim the previous angle had, the step is made again in sub-steps of at most 0.5°, each
+// started from the last one's trim: the trim followed may go on, or end in a fold, where the body turns to another trim
+// (a slender hull pitched with free roll rolls over, review R1-34); either way the curve follows the body.
 export function gzCurve(relTris, targetV, axis = 'x', angles = null, opts = {}) {
   angles = angles || Array.from({ length: 37 }, (_, i) => i * 5);
   const o = { ...opts, buf: opts.buf || new Float64Array(relTris.length), scale: opts.scale || sizeOf(relTris) };
   const out = [];
-  let trim = opts.trim0 || 0, noScan = false;
+  let trim = opts.trim0 || 0, searched = null;   // the angle of the last search that found no stable trim
   for (const deg of angles) {
-    const r = gzAt(relTris, targetV, axis, deg, { ...o, trim0: trim, noScan });
+    const noScan = searched !== null && Math.abs(deg - searched) < 30;
+    let r = gzAt(relTris, targetV, axis, deg, { ...o, trim0: trim, noScan });
+    const prev = out[out.length - 1];
+    if (o.freeTrim && r.trimUnstable && prev && !prev.trimUnstable && Math.abs(deg - prev.deg) > 0.5) {
+      const m = Math.ceil(Math.abs(deg - prev.deg) / 0.5);
+      let q = prev;
+      for (let i = 1; i <= m; i++) q = gzAt(relTris, targetV, axis, i === m ? deg : prev.deg + (deg - prev.deg) * i / m, { ...o, trim0: q.trim, noScan: !!q.trimUnstable });
+      r = q;
+    }
     trim = r.trim;
-    noScan = !!r.trimUnstable;   // the search found no stable trim: do not repeat it at the next angles
+    if (!r.trimUnstable) searched = null;
+    else if (!noScan) searched = deg;
     out.push(r);
   }
   return out;
@@ -435,23 +450,29 @@ export function gzCurve(relTris, targetV, axis = 'x', angles = null, opts = {}) 
 //   flood:    opts.flood, the angle where an opening goes under water (downflooding angle), or null.
 //   end:      where the range of stability ends: the vanishing or the downflooding angle, whichever comes first.
 //   max, maxDeg: largest GZ within the range of positive stability (up to `end`), and its angle.
+//   arm:      the largest arm of the buoyancy–weight couple up to `end` (null when the range does not end): B's
+//             horizontal distance from G, hypot(GZ, along), so with fixed trim it counts the trimming moment the fixed
+//             trim holds (review R1-32); W·arm is the least steady heeling moment that takes the body to the end of
+//             its range in this direction. Taken on the samples and at `end` (and the refined maximum of GZ).
 // With opts.at(deg) → GZ, crossings are found by regula falsi to 1e-9° and the maximum by golden section (unless
-// opts.refineMax is false); without it they are interpolated between the samples.
+// opts.refineMax is false); without it they are interpolated between the samples. opts.pt(deg) → the point
+// ({ gz, along }) gives the arm at `end`.
 export function gzSummary(curve, opts = {}) {
-  const { GM = null, at = null, scale = 0, flood = null, refineMax = true } = opts;
+  const { GM = null, at = null, pt = null, scale = 0, flood = null, refineMax = true, zero = 0 } = opts;
   const n = curve.length;
   const neutral = GM !== null && Math.abs(GM) <= 1e-9 * scale;
   const unstable = GM !== null && !neutral ? GM < 0 : n > 1 && curve[1].gz <= 0;
-  const root = (a, b) => {     // a.gz and b.gz have opposite signs (or one is 0)
-    if (!at) return a.deg + (b.deg - a.deg) * a.gz / (a.gz - b.gz);
-    let x0 = a.deg, f0 = a.gz, x1 = b.deg, f1 = b.gz, side = 0, c = x0;
+  const band = zero;   // GZ up to this counts as zero (opts.zero; with free trim, a body trimmed 90° turns a heel into a yaw, GZ ≡ 0)
+  const root = (a, b, off = 0) => {     // a.gz − off and b.gz − off have opposite signs (or one is 0)
+    if (!at) return a.deg + (b.deg - a.deg) * (a.gz - off) / (a.gz - b.gz);
+    let x0 = a.deg, f0 = a.gz - off, x1 = b.deg, f1 = b.gz - off, side = 0, c = x0;
     if (f0 === 0) return x0;
     if (f1 === 0) return x1;
     for (let it = 0; it < 80; it++) {
       const cn = (x0 * f1 - x1 * f0) / (f1 - f0);
       if (Math.abs(cn - c) < 1e-9 && it > 0) return cn;
       c = cn;
-      const fc = at(c);
+      const fc = at(c) - off;
       if (fc === 0) return c;
       if (fc * f1 > 0) { x1 = c; f1 = fc; if (side === -1) f0 /= 2; side = -1; }
       else { x0 = c; f0 = fc; if (side === 1) f1 /= 2; side = 1; }
@@ -478,7 +499,7 @@ export function gzSummary(curve, opts = {}) {
     if (pos) vanish = root(pos, curve[1]);
   }
   if (vanish === null) {
-    for (let i = Math.max(2, from + 1); i < n; i++) if (curve[i - 1].gz > 0 && curve[i].gz <= 0) { vanish = root(curve[i - 1], curve[i]); break; }
+    for (let i = Math.max(2, from + 1); i < n; i++) if (curve[i - 1].gz > band && curve[i].gz <= band) { vanish = root(curve[i - 1], curve[i], band); break; }
   }
   if (vanish !== null && n > 1 && curve[n - 1].deg >= 180 && vanish > 179.9) vanish = null;
   const end = flood !== null && flood < (vanish ?? Infinity) ? flood : vanish;
@@ -514,14 +535,18 @@ export function gzSummary(curve, opts = {}) {
     const x = (a + b) / 2, fx = at(x);
     if (fx > max) { max = fx; maxDeg = x; }
   }
-  // the righting arm at the downflooding angle (with the maximum before it, the arm a heeling moment must overcome to
-  // flood the body; worstHeelRange compares directions by it)
-  let gzFlood = null;
-  if (flood !== null && n > 1) {
-    if (at) gzFlood = flood > 0 ? at(flood) : 0;
-    else { let k = 1; while (k < n - 1 && curve[k].deg < flood) k++; const a = curve[k - 1], b = curve[k]; gzFlood = a.gz + (b.gz - a.gz) * (flood - a.deg) / ((b.deg - a.deg) || 1); }
+  // the largest arm up to the end of the range, the samples' and the end's (so it is continuous as the end moves past
+  // a sample)
+  let arm = null;
+  if (end !== null && n > 0) {
+    const armOf = (p) => Math.hypot(p.gz, p.along || 0);
+    let k = 1; while (k < n - 1 && curve[k].deg < end) k++;
+    const a = curve[Math.max(0, k - 1)], b = curve[k] || a, t = b.deg > a.deg ? (end - a.deg) / (b.deg - a.deg) : 0;
+    const atEnd = pt && end > curve[0].deg ? pt(end) : { gz: a.gz + (b.gz - a.gz) * t, along: (a.along || 0) + ((b.along || 0) - (a.along || 0)) * t };
+    arm = Math.max(armOf(atEnd), isFinite(max) && max > 0 ? max : 0);
+    for (let i = 0; i < n; i++) if (curve[i].deg >= Math.min(lo, end) && curve[i].deg <= end) arm = Math.max(arm, armOf(curve[i]));
   }
-  return { max, maxDeg, vanish, loll, unstable, neutral, flood, end, gzFlood };
+  return { max, maxDeg, vanish, loll, unstable, neutral, flood, end, arm };
 }
 
 // GZ curve and its summary in one call, with the summary's crossings and maximum refined on the curve itself.
@@ -533,8 +558,35 @@ export function gzAnalysis(relTris, targetV, axis = 'x', opts = {}) {
   const scale = sizeOf(relTris);
   const o = { freeTrim: !!opts.freeTrim, buf: new Float64Array(relTris.length), scale, open: opts.open || null };
   const curve = gzCurve(relTris, targetV, axis, angles, o);
-  const near = (deg) => curve.reduce((m, p) => (Math.abs(p.deg - deg) < Math.abs(m.deg - deg) ? p : m));
-  const ev = (deg) => { const nb = near(deg); return gzAt(relTris, targetV, axis, deg, { ...o, trim0: nb.trim, noScan: !!nb.trimUnstable }); };
+  // Points between the samples. Fixed trim: the attitude is set by the heel alone. Free trim: the trim is followed up
+  // from the nearest point below it on the curve's branch, in steps of at most 0.5°, so a crossing or a maximum between
+  // two samples is found on one trim branch and not where the start guess changes from one sample's trim to the next
+  // one's. Where the branch ends (a fold: the trim it follows stops being an equilibrium and the body turns to another
+  // trim), GZ jumps; a crossing found there is the jump, and the summary says so (fold) (review R1-34).
+  const memo = new Map(curve.map((p) => [p.deg, p]));
+  const path = curve.map((p) => p).sort((a, b) => a.deg - b.deg);
+  const ev = (deg) => {
+    if (memo.has(deg)) return memo.get(deg);
+    let r;
+    if (!o.freeTrim) r = gzAt(relTris, targetV, axis, deg, o);
+    else {
+      // a step that changes the sign of GZ has crossed zero or fallen off the branch at a fold: it is not kept as a
+      // start point, so a later point below the fold is still reached on the branch, in ever shorter steps
+      const band = 1e-9 * scale, pos = (q) => q.gz > band;
+      let k = 0; while (k + 1 < path.length && path[k + 1].deg <= deg) k++;
+      let p = path[k], keep = true;
+      for (;;) {
+        const d = p.deg < deg ? Math.min(deg, p.deg + 0.5) : deg;
+        r = gzAt(relTris, targetV, axis, d, { ...o, trim0: p.trim, noScan: !!p.trimUnstable });
+        keep = keep && pos(r) === pos(p);
+        if (keep) { let j = 0; while (j < path.length && path[j].deg <= d) j++; path.splice(j, 0, r); }
+        p = r;
+        if (d === deg) break;
+      }
+    }
+    memo.set(deg, r);
+    return r;
+  };
   const at = (deg) => ev(deg).gz;
   let flood = null;
   if (o.open && o.open.length) {
@@ -553,72 +605,69 @@ export function gzAnalysis(relTris, targetV, axis = 'x', opts = {}) {
       flood = x1;
     }
   }
-  return { curve, summary: gzSummary(curve, { GM: opts.GM ?? null, at, scale, flood, refineMax: opts.refineMax !== false }), freeTrim: o.freeTrim };
+  // with free trim, GZ within 1e-9 of the size counts as zero: a body trimmed 90° (rolled on its side when heeled in
+  // pitch) has GZ ≡ 0 up to round-off. Not with fixed trim, where a zero can be a tangency (the corner-down cube's
+  // edge-down attitude) that such a band would move
+  const summary = gzSummary(curve, { GM: opts.GM ?? null, at, pt: ev, scale, flood, refineMax: opts.refineMax !== false, zero: o.freeTrim ? 1e-9 * scale : 0 });
+  // a free-trim vanishing angle where GZ jumps to zero or below from well above it (1e-6 of the size, 1e-7° before) is a
+  // fold; at a crossing GZ is within 1e-9 of the size there
+  summary.fold = !!(o.freeTrim && summary.vanish !== null && at(summary.vanish - 1e-7) > 1e-6 * scale);
+  return { curve, summary, freeTrim: o.freeTrim };
 }
 
-// The worst heel direction. Large-angle stability depends on the direction of heel even when the waterplane's
-// principal moments are equal (a square or hexagonal waterplane has no weakest axis, yet its range of stability varies
-// with direction), so the range is taken over every direction, not only about the weakest waterplane axis.
+// The heel direction the verdict's range is taken in. Large-angle stability depends on the direction of heel even when
+// the waterplane's principal moments are equal (a square or hexagonal waterplane has no weakest axis, yet its range of
+// stability varies with direction), so every direction is looked at, not only the weakest waterplane axis. A long
+// hull, though, capsizes or floods soonest inclined nearer pitch, where it takes metres of righting arm to get there
+// (review R1-28, R1-34). So the range is taken in the direction in which the least steady heeling moment reaches the end
+// of the range, by capsizing or by downflooding, whichever comes first: the direction with the smallest largest arm up
+// to that end (gzSummary's `arm`, B's horizontal distance from G, which with fixed trim counts the trimming moment the
+// fixed trim holds, review R1-32; the weight is the same in every direction). Directions whose range does not end
+// (positive to 180°, no opening under) are not candidates.
 // evalDirs(list of heel-axis angles in degrees from x) → Promise of gzSummary results, in order. The directions are the
-// weakest axis az0 and every `step` degrees round from it (both heel senses); each objective's best direction is then
-// refined `rounds` times on a grid a third as wide each time. Two objectives:
-//   capsize: the earliest vanishing angle over every direction;
-//   flood:   for a mesh with openings, the direction that floods with the least heeling moment: the smallest largest
-//            righting arm before the downflooding angle (the arm a steady heeling moment must overcome to get there;
-//            the weight is the same in every direction), among the directions that flood before they capsize.
-// The range ends at the earlier of the two angles. Ties go to the direction found first, so the weakest axis wins a
-// tie. Returns the summary of the deciding direction with { az (degrees from x, in (−180°, 180°]), weakest (az is the
-// weakest axis or its reverse), dirs (directions tried), end, byFlood (the range ends at that direction's downflooding
-// angle), floodAny ({ az, flood }: the earliest downflooding angle over every direction tried, or null) }.
-export async function worstHeelRange(evalDirs, az0, { step = 15, rounds = 7 } = {}) {
-  const keys = {
-    capsize: (s) => s.vanish ?? Infinity,
-    flood: (s) => (s.flood != null && s.flood <= (s.vanish ?? Infinity) ? Math.max(0, isFinite(s.max) ? s.max : 0, s.gzFlood ?? 0) : Infinity),
-  };
-  let floodAny = null, tried = 0;
-  const seen = (az, s) => { if (s.flood != null && (!floodAny || s.flood < floodAny.flood - 1e-9)) floodAny = { az, flood: s.flood }; };
+// weakest axis az0 and every `step` degrees round from it (both heel senses); the best is then refined `rounds` times
+// on a grid a third as wide each time. Ties (within 1e-9 of opts.scale) go to the direction found first, so the weakest
+// axis wins a tie. Returns the summary of the chosen direction with { az (degrees from x, in (−180°, 180°]), weakest (az
+// is the weakest axis or its reverse), dirs (directions tried), earliest ({ az, end, flood }: the earliest end of the
+// range over every direction tried, flood true for a downflooding angle; null when no range ends) }.
+export async function worstHeelRange(evalDirs, az0, { step = 15, rounds = 7, scale = 1 } = {}) {
+  const key = (s) => (s.end != null && s.arm != null ? s.arm : Infinity);
+  const tie = 1e-9 * scale;
+  let earliest = null, tried = 0;
+  const seen = (az, s) => { if (s.end != null && (!earliest || s.end < earliest.end - 1e-9)) earliest = { az, end: s.end, flood: s.flood != null && s.end === s.flood }; };
   const dirs = Array.from({ length: Math.round(360 / step) }, (_, k) => az0 + k * step);
   const sums = await evalDirs(dirs);
   tried += dirs.length;
   dirs.forEach((az, k) => seen(az, sums[k]));
-  // refine only when the objective differs between directions (not, say, a box whose range is 90° every way)
-  const differ = (a, b) => (isFinite(a) || isFinite(b)) && !(Math.abs(a - b) <= 1e-6);
-  const best = {};
-  for (const [name, key] of Object.entries(keys)) {
-    let b = { az: dirs[0], s: sums[0], k: key(sums[0]) }, spread = false;
-    for (let k = 1; k < dirs.length; k++) {
-      const kk = key(sums[k]);
-      if (differ(kk, key(sums[0]))) spread = true;
-      if (kk < b.k - 1e-6 * Math.max(1, Math.abs(b.k))) b = { az: dirs[k], s: sums[k], k: kk };
-    }
-    for (let r = 0, w = step; spread && r < rounds && isFinite(b.k); r++, w /= 3) {
-      const list = [-2, -1, 1, 2].map((j) => b.az + j * w / 3);
-      const ss = await evalDirs(list);
-      tried += list.length;
-      for (let k = 0; k < list.length; k++) { seen(list[k], ss[k]); const kk = key(ss[k]); if (kk < b.k - 1e-6 * Math.max(1, Math.abs(b.k))) b = { az: list[k], s: ss[k], k: kk }; }
-    }
-    best[name] = b;
+  // refine only when the arm differs between directions (not, say, a body self-righting every way)
+  const differ = (a, b) => (isFinite(a) || isFinite(b)) && !(Math.abs(a - b) <= tie);
+  let b = { az: dirs[0], s: sums[0], k: key(sums[0]) }, spread = false;
+  for (let k = 1; k < dirs.length; k++) {
+    const kk = key(sums[k]);
+    if (differ(kk, key(sums[0]))) spread = true;
+    if (kk < b.k - tie) b = { az: dirs[k], s: sums[k], k: kk };
   }
-  const vC = best.capsize.s.vanish ?? Infinity, fF = isFinite(best.flood.k) ? best.flood.s.flood : Infinity;
-  const byFlood = fF < vC;
-  const w = byFlood ? best.flood : best.capsize;
-  const end = Math.min(vC, fF);
+  for (let r = 0, w = step; spread && r < rounds && isFinite(b.k); r++, w /= 3) {
+    const list = [-2, -1, 1, 2].map((j) => b.az + j * w / 3);
+    const ss = await evalDirs(list);
+    tried += list.length;
+    for (let k = 0; k < list.length; k++) { seen(list[k], ss[k]); const kk = key(ss[k]); if (kk < b.k - tie) b = { az: list[k], s: ss[k], k: kk }; }
+  }
   const norm = (a) => { const x = ((a % 360) + 540) % 360 - 180 || 0; return x === -180 ? 180 : x; };
-  const rel = (((w.az - az0) % 180) + 180) % 180;
+  const rel = (((b.az - az0) % 180) + 180) % 180;
   return {
-    ...w.s, az: norm(w.az), weakest: rel < 1e-9 || 180 - rel < 1e-9, dirs: tried, end: isFinite(end) ? end : null, byFlood,
-    floodAny: floodAny ? { az: norm(floodAny.az), flood: floodAny.flood } : null,
+    ...b.s, az: norm(b.az), weakest: rel < 1e-9 || 180 - rel < 1e-9, dirs: tried,
+    earliest: earliest ? { az: norm(earliest.az), end: earliest.end, flood: earliest.flood } : null,
   };
 }
 
 // The range of stability the verdict reports (stabilityVerdict's opts.range), from GZ analyses run by
 // run(jobs) → Promise of gzSummary results; a job is { axis, GM, open (use the mesh's openings), refineMax }.
-// For a stable body (GM_min above the round-off band of opts.scale): worstHeelRange over every direction, the deciding
-// direction run again with its maximum refined. An open hull that floods early when inclined about its long, stiff axis
-// (nearer pitch) needs a large heeling moment to get there, so that flooding does not end the range (review R1-28: the
-// IS Code's downflooding angle is "an angle of heel", MSC.267(85) A 2.2.1, footnote 5); it is reported as a note
-// (floodAny) when it comes earlier. opts.sweep false (no workers in the app): only the weakest axis, both senses.
-// For an unstable or neutral body: the worse sense about the weakest axis (its loll angle).
+// For a stable body (GM_min above the round-off band of opts.scale): worstHeelRange over every direction, the chosen
+// direction run again with its maximum refined. When another direction's range ends sooner (to the 0.1° the verdict
+// shows), that is reported as a note (earliest): it takes a larger heeling moment to get there. opts.sweep false (no
+// workers in the app): only the weakest axis, both senses. For an unstable or neutral body: the worse sense about the
+// weakest axis (its loll angle).
 export async function verdictRange(H, run, { scale = 1, sweep = true } = {}) {
   const worse = (a, b) => {
     if (a.unstable) return (b.loll ?? Infinity) < (a.loll ?? Infinity) ? b : a;
@@ -630,10 +679,11 @@ export async function verdictRange(H, run, { scale = 1, sweep = true } = {}) {
     const [a, b] = await run([0, 180].map((o) => ({ axis: H.axisMinDeg + o, GM: H.GMmin, open: true, refineMax: true })));
     return worse(a, b);
   }
-  const w = await worstHeelRange((azs) => run(azs.map((az) => ({ axis: az, GM: gmAbout(H, az), open: true, refineMax: false }))), H.axisMinDeg);
-  const [full] = await run([{ axis: w.az, GM: gmAbout(H, w.az), open: w.byFlood, refineMax: true }]);
-  const floodAny = w.floodAny && w.floodAny.flood < (full.end ?? Infinity) - 1e-6 ? w.floodAny : null;
-  return { ...full, az: w.az, weakest: w.weakest, dirs: w.dirs, floodAny };
+  const w = await worstHeelRange((azs) => run(azs.map((az) => ({ axis: az, GM: gmAbout(H, az), open: true, refineMax: false }))), H.axisMinDeg, { scale });
+  const [full] = await run([{ axis: w.az, GM: gmAbout(H, w.az), open: true, refineMax: true }]);
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const earliest = w.earliest && full.end != null && r1(w.earliest.end) < r1(full.end) ? w.earliest : null;
+  return { ...full, az: w.az, weakest: w.weakest, dirs: w.dirs, earliest };
 }
 
 // ---------- static equilibrium (rest attitude) ----------
@@ -681,8 +731,9 @@ export function openEdgeCount(tris, tol) { const c = meshCheck(tris, tol); retur
 
 // ---------- plain-language stability verdict ----------
 // GM: metacentric height about the weakest waterplane axis (GM_min). opts.range: the GZ summary that sets the range
-// of stability, or null while it is being computed: for a stable body the worst heel direction (worstHeelRange, with
-// az, weakest and dirs), otherwise the worse sense about the weakest axis. opts.scale: body size (m), sets the round-off
+// of stability, or null while it is being computed: for a stable body the heel direction verdictRange takes (the one
+// the least heeling moment takes to the end of its range, with az, weakest, dirs and earliest), otherwise the worse
+// sense about the weakest axis. opts.scale: body size (m), sets the round-off
 // band in which GM counts as zero. opts.freeTrim: which GZ the range came from.
 // Small-angle words come from GM alone. Large-angle words come from the GZ curve: "self-righting" only when GZ stays
 // positive to 180°; the range ends at the vanishing angle or, for a mesh with openings, where an opening goes under
@@ -704,16 +755,17 @@ export function stabilityVerdict(GM, opts = {}) {
   if (GM <= 1e-9 * scale) return { level: 'warn', text: 'Neutral: GM about the weakest waterplane axis is zero (to round-off), so there is no righting stiffness about it at small angles and the attitude can drift.' };
   if (!range) return { level: 'good', text: 'Stable at small angles: the metacentre is above the CoG about every horizontal axis. The range of stability is being worked out from the GZ curves.' };
   const about = range.dirs
-    ? (range.weakest ? 'About the weakest axis, the worst of all heel directions' : `About the axis at ${f1(range.az)}° from x, the worst of all heel directions`)
+    ? `Heeled about ${range.weakest ? 'the weakest axis' : `the axis at ${f1(range.az)}° from x`}, the direction in which the least heeling moment ends the range`
     : 'About the weakest axis';
   const end = range.end !== undefined ? range.end : range.vanish;
   const flooded = range.flood !== null && range.flood !== undefined && end === range.flood;
-  const fa = range.floodAny;
+  const ea = range.earliest;
   const peak = (range.max > 0 && range.maxDeg < 25 ? ` The righting arm peaks early, at ${f1(range.maxDeg)}°: the IMO intact stability code asks for the peak at 25° or more (2008 IS Code A 2.2.3).` : '')
-    + (fa ? ` Inclined about the axis at ${f1(fa.az)}° from x, an opening goes under water sooner, at ${f1(fa.flood)}°, but it takes a larger heeling moment to get there, so the range ends where it floods with the least.` : '');
+    + (ea ? ` Inclined about the axis at ${f1(ea.az)}° from x, ${ea.flood ? 'an opening goes under water' : 'the range ends'} sooner, at ${f1(ea.end)}°, but it takes a larger heeling moment to get there.` : '');
   if (end === null) return { level: 'good', text: `Stable and self-righting: the metacentre is above the CoG about every horizontal axis, and the righting arm (${trim}) stays positive all the way to 180°${range.dirs ? ' in every heel direction' : ' about the weakest axis'}.${peak}` };
   if (flooded && end <= 0) return { level: 'bad', text: 'An opening in the mesh is under water at this attitude, so water comes in: these hydrostatics treat the body as closed and do not apply.' };
-  const ends = flooded ? `an opening goes under water at ${f1(end)}° (the downflooding angle), where the range of stability ends` : `vanishes at ${f1(end)}°`;
+  const ends = flooded ? `an opening goes under water at ${f1(end)}° (the downflooding angle), where the range of stability ends`
+    : range.fold ? `turns negative at ${f1(end)}°, where the free trim it follows stops being an equilibrium and the body turns to another trim` : `vanishes at ${f1(end)}°`;
   if (end < 30) {
     return {
       level: 'ok',

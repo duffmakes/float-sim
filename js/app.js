@@ -855,12 +855,12 @@ function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
       ? `${sum.neutral ? '' : '<span class="bad">GM about this axis is negative: this attitude is unstable.</span>'}${sum.loll !== null
         ? ` GZ (${trim}, this axis) turns positive again at about <b>${f1(sum.loll)}°</b>${sum.vanish !== null ? ` and vanishes at ${f1(sum.vanish)}°` : ''}. The 3D resting attitude can differ: use Settle to find it.`
         : ' GZ stays negative all the way to 180°: the body turns over.'}`
-      : `Angle of vanishing stability (${trim}${asIfClosed}): <b>${sum.vanish !== null ? f1(sum.vanish) + '°' : '> 180° (self-righting)'}</b>`}
+      : `Angle of vanishing stability (${trim}${asIfClosed}): <b>${sum.vanish !== null ? f1(sum.vanish) + '°' : '> 180° (self-righting)'}</b>${sum.fold ? ` <span class="warn">(GZ jumps from positive to negative there: the free trim it follows stops being an equilibrium, and the body turns to another trim)</span>` : ''}`}
     ${flood !== null ? `<br>${flood <= 0 ? '<span class="bad">An opening in the mesh is under water at this attitude: water comes in, and the curve treats the body as closed.</span>'
       : `<span class="warn">An opening goes under water at <b>${f1(flood)}°</b> (the downflooding angle): past it water comes in, and the curve (faded) treats the body as closed.</span>`}` : ''}
     ${weaker ? `<br><span class="warn">GM about the weakest waterplane axis (${L(H.GMmin)}) is below this axis's GM (${L(GM)}): choose Weakest to heel about it.</span>` : ''}
     ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}
-    ${freeTrim && curve.some((p) => p.trimUnstable) ? `<br><span class="warn">Free trim: from ${f1(curve.find((p) => p.trimUnstable).deg)}° there is no stable trim within ±90° of the previous one, so the curve there uses a trim of maximum energy (a compact body heeled that far would rather turn about another axis).</span>` : ''}`;
+    ${freeTrim && curve.some((p) => p.trimUnstable) ? `<br><span class="warn">Free trim: from ${f1(curve.find((p) => p.trimUnstable).deg)}° no stable trim was found within ±90° of the previous one (searched again every 30°), so the curve there uses a trim of maximum energy (a compact body heeled that far would rather turn about another axis).</span>` : ''}`;
 }
 
 // ------------------------------------------------------------------ target float plane → mass
