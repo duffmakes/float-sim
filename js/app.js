@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
 import { STLLoader } from '../vendor/STLLoader.js';
 import {
-  mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, massProperties, worstHeelRange,
+  mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, massProperties, verdictRange,
   inertiaAbout, bbox, stabilityVerdict, restAttitude, mat3ToQuat, quatToMat3, G0,
 } from './physics.js';
 import { FloatSim } from './sim.js';
@@ -709,9 +709,9 @@ function renderStats(H, mode) {
 
 // ------------------------------------------------------------------ GZ curves
 // Computed in a pool of workers (js/gzworker.js; fixed or free trim), so the page stays responsive on large meshes and
-// with free trim. Each request draws the panel's curve, then works out the verdict's range of stability: for a stable
-// body the worst heel direction over all directions (worstHeelRange in js/physics.js), otherwise the worse sense about
-// the weakest axis. A newer request makes the older one's queued jobs stale.
+// with free trim. Each request draws the panel's curve, then works out the verdict's range of stability (verdictRange in
+// js/physics.js): for a stable body the worst heel direction over all directions, otherwise the worse sense about the
+// weakest axis. A newer request makes the older one's queued jobs stale.
 let gzTimer = null, gzSeq = 0, gzPool;   // gzPool: undefined until first used, null when workers are unavailable
 const STALE = Symbol('stale');
 function scheduleGZ() { clearTimeout(gzTimer); gzTimer = setTimeout(requestGZ, 120); }
@@ -762,7 +762,7 @@ function gzPump() {
 function gzRunner(geom) {
   if (gzPool === undefined) gzPool = makeGzPool();
   if (!gzPool) {
-    return async (jobs) => jobs.map((j) => gzAnalysis(geom.rel, geom.V, j.axis, { GM: j.GM, freeTrim: j.freeTrim, open: geom.open, refineMax: j.refineMax }));
+    return async (jobs) => jobs.map((j) => gzAnalysis(geom.rel, geom.V, j.axis, { GM: j.GM, freeTrim: j.freeTrim, open: j.open === false ? null : geom.open, refineMax: j.refineMax }));
   }
   const P = gzPool, gid = ++P.gid;
   P.geom = { gid, ...geom };
@@ -787,28 +787,18 @@ async function requestGZ() {
     $('gz').classList.remove('stale'); $('gzInfo').classList.remove('stale');
   });
   const range = (async () => {
-    const job = (az, refineMax) => ({ axis: az, GM: gmAbout(H, az), freeTrim: ft, refineMax });
-    let r;
-    if (H.GMmin > 1e-9 * S.model.diag) {
-      const w = await worstHeelRange(async (azs) => { const out = await run(azs.map((az) => job(az, false))); if (stale()) throw STALE; return out.map((o) => o.summary); }, H.axisMinDeg);
-      const [full] = await run([job(w.az, true)]);   // the worst direction again, with its maximum refined
-      r = { ...full.summary, az: w.az, weakest: w.weakest, dirs: w.dirs };
-    } else {
-      const [a, b] = await run([{ axis: H.axisMinDeg, GM: H.GMmin, freeTrim: ft }, { axis: H.axisMinDeg + 180, GM: H.GMmin, freeTrim: ft }]);
-      r = worseSide(a.summary, b.summary);
-    }
+    // the verdict's range (verdictRange in js/physics.js); without workers only the weakest axis, so the page is not
+    // frozen for a whole sweep (review Q2)
+    const r = await verdictRange(H, async (jobs) => {
+      const out = await run(jobs.map((j) => ({ ...j, freeTrim: ft })));
+      if (stale()) throw STALE;
+      return out.map((o) => o.summary);
+    }, { scale: S.model.diag, sweep: !!gzPool });
     if (stale()) return;
     S.range = { stateId, freeTrim: ft, summary: r };
     if (stateId === S.stateId) renderVerdict(H, mode);
   })();
   try { await Promise.all([panel, range]); } catch (e) { if (e !== STALE) console.error(e); }
-}
-// the worse of the two heel senses about the weakest axis: the earlier end of the range (or loll angle)
-function worseSide(a, b) {
-  if (a.unstable) return (b.loll ?? Infinity) < (a.loll ?? Infinity) ? b : a;
-  const va = a.end ?? Infinity, vb = b.end ?? Infinity;
-  if (va !== vb) return vb < va ? b : a;
-  return b.maxDeg < a.maxDeg ? b : a;
 }
 function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   const cv = $('gz'), ctx = cv.getContext('2d');
@@ -859,8 +849,8 @@ function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   const weaker = axis !== 'min' && H.GMmin < GM - 1e-6 * Math.max(1e-9, Math.abs(GM)) - 1e-9 * S.model.diag;
   const flood = sum.flood ?? null, asIfClosed = flood !== null && flood < (sum.vanish ?? Infinity) ? ', as if closed' : '';
   $('gzInfo').innerHTML = `Heeling in ${axisName} from the current attitude, ${trimWords} (positive GZ = righting, dashed line = GM tangent).<br>
-    ${sum.max > 0 ? `Max GZ <b>${L(sum.max)}</b> at <b>${f1(sum.maxDeg)}°</b>
-    → peak righting moment <b>${Nm(S.last.rho * G0 * V * sum.max)}</b>` : 'GZ is not positive at any heel angle about this axis.'}<br>
+    ${flood === 0 ? '' : sum.max > 0 ? `Max GZ <b>${L(sum.max)}</b> at <b>${f1(sum.maxDeg)}°</b>
+    → peak righting moment <b>${Nm(S.last.rho * G0 * V * sum.max)}</b><br>` : 'GZ is not positive at any heel angle about this axis.<br>'}
     ${sum.neutral ? 'GM about this axis is zero (to round-off): no righting stiffness at small angles. ' : ''}${sum.unstable
       ? `${sum.neutral ? '' : '<span class="bad">GM about this axis is negative: this attitude is unstable.</span>'}${sum.loll !== null
         ? ` GZ (${trim}, this axis) turns positive again at about <b>${f1(sum.loll)}°</b>${sum.vanish !== null ? ` and vanishes at ${f1(sum.vanish)}°` : ''}. The 3D resting attitude can differ: use Settle to find it.`
@@ -869,7 +859,8 @@ function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
     ${flood !== null ? `<br>${flood <= 0 ? '<span class="bad">An opening in the mesh is under water at this attitude: water comes in, and the curve treats the body as closed.</span>'
       : `<span class="warn">An opening goes under water at <b>${f1(flood)}°</b> (the downflooding angle): past it water comes in, and the curve (faded) treats the body as closed.</span>`}` : ''}
     ${weaker ? `<br><span class="warn">GM about the weakest waterplane axis (${L(H.GMmin)}) is below this axis's GM (${L(GM)}): choose Weakest to heel about it.</span>` : ''}
-    ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}`;
+    ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}
+    ${freeTrim && curve.some((p) => p.trimUnstable) ? `<br><span class="warn">Free trim: from ${f1(curve.find((p) => p.trimUnstable).deg)}° there is no stable trim within ±90° of the previous one, so the curve there uses a trim of maximum energy (a compact body heeled that far would rather turn about another axis).</span>` : ''}`;
 }
 
 // ------------------------------------------------------------------ target float plane → mass

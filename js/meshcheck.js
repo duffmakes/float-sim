@@ -233,14 +233,28 @@ export function repairMesh(src, tol, opts = {}) {
       let [i, j] = ties[0];
       const others = [0, 1, 2, 3].filter((k) => k !== i && k !== j);
       if (pf(e.t[i]) === pf(e.t[j])) continue;
-      if (pf(e.t[j]) < pf(e.t[i])) [i, j] = [j, i];
-      const pid = pf(e.t[i]);
-      if (!patchN.has(pid)) patchN.set(pid, nrm(pid));
-      const n = patchN.get(pid);
-      const side = others.map((k) => dir[k][0] * n[0] + dir[k][1] * n[1] + dir[k][2] * n[2]);
-      if (!(side[0] * side[1] < 0)) continue;
-      const [neg, pos] = side[0] < 0 ? others : [others[1], others[0]];
-      for (const [x, y] of [[i, neg], [j, pos]]) {
+      const pairs = [];
+      // a contact face that is part of a larger patch (the parts share an edge, not a whole face) already holds its own
+      // part's face at this edge: join it to that one (review R1-26)
+      const own = (x) => others.find((k) => pf(e.t[k]) === pf(e.t[x]));
+      const oi = own(i), oj = own(j);
+      if (oi !== undefined || oj !== undefined) {
+        if (oi !== undefined && oj !== undefined && oi === oj) continue;
+        const a = oi !== undefined ? oi : others.find((k) => k !== oj), b = oj !== undefined ? oj : others.find((k) => k !== oi);
+        if (a === b) continue;
+        pairs.push([i, a], [j, b]);
+      } else {
+        // an isolated contact patch: the one with the lower number goes to the side its first triangle's normal points away from
+        if (pf(e.t[j]) < pf(e.t[i])) [i, j] = [j, i];
+        const pid = pf(e.t[i]);
+        if (!patchN.has(pid)) patchN.set(pid, nrm(pid));
+        const n = patchN.get(pid);
+        const side = others.map((k) => dir[k][0] * n[0] + dir[k][1] * n[1] + dir[k][2] * n[2]);
+        if (!(side[0] * side[1] < 0)) continue;
+        const [neg, pos] = side[0] < 0 ? others : [others[1], others[0]];
+        pairs.push([i, neg], [j, pos]);
+      }
+      for (const [x, y] of pairs) {
         const a = e.t[x], b = e.t[y], same = forward(vid, a, lo, hi) === forward(vid, b, lo, hi);
         link(a, b, same); link(b, a, same);
       }
@@ -300,7 +314,7 @@ export function repairMesh(src, tol, opts = {}) {
     shellOf[t] = compShell[c];
   }
   const closedArr = balancedBy(shellOf, nShell);
-  const shells = Array.from({ length: nShell }, (_, k) => ({ list: [], closed: !!closedArr[k], V: 0, edges: [], lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] }));
+  const shells = Array.from({ length: nShell }, (_, k) => ({ list: [], closed: !!closedArr[k], V: 0, edges: [], edgeT: [], lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] }));
   for (let t = 0; t < nTri; t++) {
     if (shellOf[t] < 0) continue;
     const s = shells[shellOf[t]];
@@ -311,9 +325,8 @@ export function repairMesh(src, tol, opts = {}) {
   const openIds = new Set();
   for (const [key, e] of EW) {
     const lo = Math.floor(key / EKEY), hi = key - lo * EKEY;
-    const s0 = shellOf[e.t[0]];
-    shells[s0].edges.push(lo, hi);
-    for (let k = 1; k < e.t.length; k++) { const s = shellOf[e.t[k]]; if (s !== s0 && !e.t.slice(1, k).some((t) => shellOf[t] === s)) shells[s].edges.push(lo, hi); }
+    // each shell on this edge gets it, with its own triangles there (for the inward direction at the edge)
+    for (const sh of new Set(e.t.map((t) => shellOf[t]))) { shells[sh].edges.push(lo, hi); shells[sh].edgeT.push(e.t.filter((t) => shellOf[t] === sh)); }
   }
   for (const [key, e] of after.E) if (e.f + e.b === 1) { const lo = Math.floor(key / EKEY); openIds.add(lo); openIds.add(key - lo * EKEY); }
   const openPts = new Float64Array(openIds.size * 3);
@@ -353,7 +366,7 @@ export function repairMesh(src, tol, opts = {}) {
     const el = [];
     for (let k = 0; k < a.edges.length; k += 2) {
       const p = a.edges[k] * 3, q = a.edges[k + 1] * 3;
-      if (inBox(P[p], P[p + 1], P[p + 2], P[q], P[q + 1], P[q + 2])) el.push(p, q);
+      if (inBox(P[p], P[p + 1], P[p + 2], P[q], P[q + 1], P[q + 2])) el.push(p, q, k >> 1);
     }
     work += (b.list.length + a.edges.length / 2);
     if (!tl.length || !el.length) return false;
@@ -372,7 +385,7 @@ export function repairMesh(src, tol, opts = {}) {
     }
     const stamp = new Map();
     const sgB = b.V < 0 ? -1 : 1;
-    for (let k = 0; k < el.length; k += 2) {
+    for (let k = 0; k < el.length; k += 3) {
       const p = [P[el[k]], P[el[k] + 1], P[el[k] + 2]], q = [P[el[k + 1]], P[el[k + 1] + 1], P[el[k + 1] + 2]];
       const c0 = [0, 1, 2].map((j) => cell(Math.min(p[j], q[j]), j)), c1 = [0, 1, 2].map((j) => cell(Math.max(p[j], q[j]), j));
       for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) {
@@ -383,7 +396,10 @@ export function repairMesh(src, tol, opts = {}) {
           const r = segTri(tris, t, p, q, epsD);
           if (r === 2) return true;
           if (r === 1) {
-            // through an edge or corner of b: probe a point just past the crossing, on the side b's inside is on
+            // through an edge or corner of b: probe a point just past the crossing, on the side b's inside is on, and
+            // just inside a (against a's outward normals at this edge). That point is off every face of both shells, so
+            // it is inside b only if the insides of a and b overlap; on a face of b the winding number would be 0 or 1
+            // by the sign of a zero, and shells that only touch would be reported (review R1-27)
             const i = t * 9;
             const ux = tris[i + 3] - tris[i], uy = tris[i + 4] - tris[i + 1], uz = tris[i + 5] - tris[i + 2];
             const vx = tris[i + 6] - tris[i], vy = tris[i + 7] - tris[i + 1], vz = tris[i + 8] - tris[i + 2];
@@ -394,8 +410,17 @@ export function repairMesh(src, tol, opts = {}) {
             const x0 = p.map((v, j) => v + s * (q[j] - v));
             const step = 1e-3 * Math.min(len * (dp < 0 ? s : 1 - s), Math.sqrt(Math.hypot(nx, ny, nz) / 2));
             const d = endIn.map((v, j) => (v - x0[j]) / (Math.hypot(endIn[0] - x0[0], endIn[1] - x0[1], endIn[2] - x0[2]) || 1));
+            const nin = [0, 0, 0], sgA = a.V < 0 ? 1 : -1;
+            for (const ta of a.edgeT[el[k + 2]]) {
+              const ia = ta * 9;
+              const ax = tris[ia + 3] - tris[ia], ay = tris[ia + 4] - tris[ia + 1], az = tris[ia + 5] - tris[ia + 2];
+              const bx = tris[ia + 6] - tris[ia], by = tris[ia + 7] - tris[ia + 1], bz = tris[ia + 8] - tris[ia + 2];
+              const mx = ay * bz - az * by, my = az * bx - ax * bz, mz = ax * by - ay * bx, ml = Math.hypot(mx, my, mz) || 1;
+              nin[0] += sgA * mx / ml; nin[1] += sgA * my / ml; nin[2] += sgA * mz / ml;
+            }
+            const nl = Math.hypot(...nin) || 1;
             work += b.list.length;
-            if (Math.abs(windingNumber(tris, b.list, x0.map((v, j) => v + step * d[j]))) > 0.5) return true;
+            if (Math.abs(windingNumber(tris, b.list, x0.map((v, j) => v + step * (d[j] + nin[j] / nl)))) > 0.5) return true;
           }
         }
       }
@@ -403,6 +428,7 @@ export function repairMesh(src, tol, opts = {}) {
     }
     return false;
   };
+  const tested = new Set();
   for (let a = 0; a < n && nestChecked; a++) {
     if (!solid(shells[a])) continue;
     for (let b = a + 1; b < n && nestChecked; b++) {
@@ -418,7 +444,17 @@ export function repairMesh(src, tol, opts = {}) {
         const nIn = pts.filter((q) => Math.abs(windingNumber(tris, Y.list, q)) > 0.5).length;
         if (2 * nIn > pts.length) inside[x].push(y);
       }
+      tested.add(a * n + b);   // both containment tests of the pair are done
       if (work > budget) nestChecked = false;
+    }
+  }
+  // when the budget ran out, a shell whose possible containers were not all tested may be a void: it is not turned
+  // (review Q1)
+  const untested = new Uint8Array(n);
+  if (!nestChecked) {
+    for (let k = 0; k < n; k++) for (let j = 0; j < n; j++) {
+      if (j === k || !shells[j].closed || !solid(shells[j]) || !boxIn(shells[k], shells[j])) continue;
+      if (!tested.has(Math.min(k, j) * n + Math.max(k, j))) { untested[k] = 1; break; }
     }
   }
 
@@ -431,7 +467,7 @@ export function repairMesh(src, tol, opts = {}) {
     if (!solid(s)) continue;
     const depth = inside[k].length;
     const par = depth ? inside[k].reduce((m, j) => (inside[j].length > inside[m].length ? j : m)) : -1;
-    const turn = par >= 0 && turned[par] && Math.sign(V0[k]) !== Math.sign(V0[par]) ? true : s.V < 0 && depth % 2 === 0;
+    const turn = par >= 0 && turned[par] && Math.sign(V0[k]) !== Math.sign(V0[par]) ? true : s.V < 0 && depth % 2 === 0 && !untested[k];
     if (turn) { for (const t of s.list) swap(t); s.V = -s.V; turned[k] = 1; inverted++; flipped += s.list.length; }
     if (s.V < 0) voids++;
     else if (depth % 2 === 1 || crosses[k]) overlaps++;

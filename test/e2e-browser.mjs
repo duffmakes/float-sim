@@ -157,6 +157,13 @@ await waitGz("t.includes('fixed trim') && t.includes('roll (about x)')");
   const vd = await page.locator('#verdict').innerText(), gzd = await page.locator('#gzInfo').innerText();
   expect('open-deck STL: the verdict\'s range ends where an opening goes under water', /opening goes under water/.test(vd), vd.slice(0, 220));
   expect('…the roll GZ panel gives the downflooding angle 32° (exact section: 32.0054°)', /goes under water at 32°/.test(gzd), gzd.split('\n').slice(-1).join(''));
+  // the Waves stage's roll range ends there too (review R1-31)
+  await click('#tabs [data-stage="waves"]'); await page.waitForTimeout(300);
+  await click('#ssSweep');
+  await page.waitForFunction(() => /roll range of stability/.test(document.querySelector('#ssTable').innerText), null, { timeout: 180000 }).catch(() => {});
+  const sst = await page.locator('#ssTable').innerText();
+  expect('…the Waves stage\'s roll range ends at the downflooding angle (32°)', /roll range of stability \(32°/.test(sst) && /opening goes under water/.test(sst), (sst.match(/roll range of stability \([^)]*\)/) || [''])[0]);
+  await click('#tabs [data-stage="float"]'); await page.waitForTimeout(300);
   await loadStl(stlOf('box_noend.stl', boxQ(0, -1, 0, 4, 1, 1, '-x')));
   expect('STL with an end face missing: the verdict is "Opening under water"', (await page.locator('#verdict').innerText()).startsWith('Opening under water'), (await page.locator('#verdict').innerText()).slice(0, 120));
   await loadStl(stlOf('cross.stl', [...boxQ(-2, -0.5, 0, 2, 0.5, 1), ...boxQ(-0.5, -2, 0, 0.5, 2, 1)]));
@@ -217,6 +224,11 @@ expect('…and comes to rest stable (GM_T, GM_L > 0)', num(await stat('GMT')) > 
   expect('…corner-down: body diagonal vertical (within 0.001°)', off < 1e-3, `roll ${cr}°, pitch ${cp}°: ${off.toExponential(2)}° off`);
   const si = await page.locator('#simInfo').innerText();
   expect('…and does not claim it started at rest, and finished with the static equilibrium solve', !si.includes('started at rest') && si.includes('Finished with a static equilibrium solve'), si.split('\n').slice(-2).join(' | '));
+  // the verdict's range over all heel directions: corner-down, it ends at the edge-down attitude, atan(1/√2) = 35.26°
+  // (about the weakest axis alone, set by round-off, it would read up to 50.8°) (review R1-17, R1-31)
+  await page.waitForFunction(() => !/being worked out/.test(document.querySelector('#verdict').innerText) && /vanishes at/.test(document.querySelector('#verdict').innerText), null, { timeout: 120000 }).catch(() => {});
+  const cv = await page.locator('#verdict').innerText();
+  expect('…its verdict\'s range is the worst heel direction: vanishes at 35.3°', /worst of all heel directions/.test(cv) && /vanishes at 35\.3°/.test(cv), cv.slice(0, 200));
 }
 if (shots) await page.screenshot({ path: `${shots}/app-cube.png` });
 

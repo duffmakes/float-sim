@@ -10,7 +10,7 @@ positions. The owner approves each round's findings before fixes are made, and e
 
 | Round | Scope | Status | Findings | PR |
 | --- | --- | --- | --- | --- |
-| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | the owner approved the agreed fixes (2026-11-25) and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer's re-run (on Claude Opus 5.5: no Fable 5.2 credits left) closed all 14 and filed R1-15 … R1-22; the owner asked for those to be fixed in this round too, and they are, with R1-D1 found by the defender, on branch `review/round-1-hydrostatics`. The reviewer's check of those fixes is next | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 8 new ([report](round-1-rerun.md)) | opens after the reviewer's check |
+| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | the owner approved the agreed fixes (2026-11-25) and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer's re-run (on Claude Opus 5.5: no Fable 5.2 credits left) closed all 14 and filed R1-15 … R1-22; the owner asked for those to be fixed in this round too, and they are, with R1-D1 found by the defender, on branch `review/round-1-hydrostatics`. The reviewer's check closed all but R1-16 and filed R1-26 … R1-31 (two major: side effects of the fixes), now fixed too; the reviewer's check of those is next | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 11 new ([report](round-1-rerun.md)); check: 11 closed, 6 new ([report](round-1-check.md)) | opens after the reviewer's check |
 | 2 | Panel-method coefficients | not started | | |
 | 3 | RAOs and the Capytaine comparison | not started | | |
 | 4 | Time-domain simulation and the drop test | not started | | |
@@ -179,11 +179,60 @@ as in round 1; N21 and N22, the two halves of the Settle fix (R1-23); N18, the s
 | R1-D1 | After converging, `gzAt` checks the slope of the trimming arm. Where it falls through zero (an energy maximum), it goes down to the stable roots on either side and keeps the one of least energy | `validate-stability` rest_and_trim (corner-down cube heeled 10°, 15°, 20° about an axis of symmetry: a local energy minimum, below the symmetric trim's energy); the scow's least-energy and envelope checks still pass |
 
 Results with these fixes: `validate-node` 549/549 fine and 452/452 normal and coarse (`validate-stability` 186 checks, was
-138); `validate-proofs` 20/20; `lake build` passes with no `sorry`; `e2e-browser` 137/137 for the app (UI part, with the
-new checks of sections 2d and 4b) and 138/138 for the whole run, validation page included (544/447/447), before the
-R1-23 and R1-25 checks were added; Python ports 126/126, 3/3 and all pass. Each new test was checked against a mutant
+138); `validate-proofs` 20/20; `lake build` passes with no `sorry`; `e2e-browser` 140/140 on 255c8b0, the validation page
+included (549/549 fine, 452/452 normal and coarse); Python ports 126/126, 3/3 and all pass. Each new test was checked against a mutant
 that restores the old behaviour (no stable-root step in free trim, no 180° tolerance, no round-off band, no contact-face
 pairing, no parent-turn rule, no crossing test, a weld searching only its own cell, no downflooding angle, the weakest
 axis only, contact patches taken in file order, a 170° self-righting cutoff, any range past 95° called self-righting):
 each one fails. Two changes are equivalent and survive: welding on rounded instead of floored cells, and dropping the
 coincident-triangle pairs, which the contact-face pairing already handles (that code was then removed).
+
+### Check of the re-run fixes (reviewer, on Claude Opus 5.5)
+
+Report: [round-1-check.md](round-1-check.md), on 255c8b0. Closed: R1-15, R1-17, R1-18, R1-19, R1-20, R1-21, R1-22, R1-23,
+R1-24, R1-25, and R1-D1 for the bug. Still open: R1-16, for parts that share an edge but not a whole face (R1-26).
+Of 42 mutations planted on the new code, 26 were caught. Six new findings, two of them major. They are side effects of
+this round's fixes, so the defender fixed them in the same PR.
+
+| ID | Severity | Finding | Defender's answer | Status |
+| --- | --- | --- | --- | --- |
+| R1-26 | major (regression) | The contact-face pairing breaks correctly wound parts that share an edge but not a whole face (a deckhouse flush with the hull side: 4 m³ for 12 m³, "Sinks", depending on which triangle is first); R1-16 stays wrong there | Concede | fixed, for the reviewer's check |
+| R1-27 | minor | Shells that only touch are reported as overlapping (30 of 36 placements), because the edge/corner probe lands in the contact plane | Concede | fixed, for the reviewer's check |
+| R1-28 | major | The verdict ends the range at the downflooding angle of every heel direction, pitch included: an open barge that floods at 48.4° in roll is "small range" from a direction that floods at 12.2° with 9.9 m of righting arm; the IS Code's θf is an angle of heel | Concede. The defender chose the criterion; the owner may prefer another (see below) | fixed, for the reviewer's check and the owner |
+| R1-29 | minor | A range that ends before the first 5° sample has no maximum: "peaks at 0°" and "GZ is not positive" while GZ(2°) is +0.011 m | Concede | fixed, for the reviewer's check |
+| R1-30 | minor | R1-D1's stable-root scan makes free trim 17× slower (112 s in the app on the 51k-triangle sphere) and silently keeps the energy maximum when it finds no stable root; "least potential energy" overstates a local branch | Concede | fixed, for the reviewer's check |
+| R1-31 | minor | New thresholds and branches are not pinned (C10, C11, C18, C26, C27, C30, C02, C08, C09, C34), nor the app's sweep (E05) or the Waves-stage range with openings (E07) | Concede, except C10, C11 and C02 (see below) | fixed, for the reviewer's check |
+
+#### Fixes made (for the reviewer's check)
+
+| ID | What changed | Where to check |
+| --- | --- | --- |
+| R1-26 | At an edge used by four triangles, a contact triangle that belongs to a larger patch (the parts share an edge, not a whole face) is joined to its own patch's face at that edge. The fixed-side rule is kept only for isolated contact patches, where the contact faces coincide and either side closes both parts | `js/meshcheck.js` (contact pairing); `validate-stability` mesh_check (hull + flush deckhouse: both outward, the deckhouse inside out, the hull inside out, each in both file orders, and with each of the hull's 12 triangles first: 12 m³, closed, no overlap; the STL path with the deckhouse inside out: 12 m³); your `contact2.mjs`: 12 m³ in every case, no false overlap |
+| R1-27 | The probe at an edge or corner crossing is moved just inside the shell whose edge it is (against that shell's outward normals at the edge) as well as past the crossing. It is then off every face of both shells, so it lies inside the other shell only if their insides overlap. Shells record their own triangles at each edge for this | `js/meshcheck.js` (`edgesInto`); `validate-stability` mesh_check (blocks on the deck or under the bottom, 8 placements × 2 orders: no overlap; two same-section blocks overlapping along their length: overlap); your `touch.mjs`: 0 of 36 (30 at 255c8b0) |
+| R1-28 | `worstHeelRange` has two objectives. Capsizing: the earliest vanishing angle over every direction, as before. Flooding: the direction that floods with the least heeling moment, i.e. with the smallest largest righting arm up to its downflooding angle (the arm a steady heeling moment must overcome to get there; the weight is the same in every direction), among the directions that flood before they capsize. The range ends at the earlier of the two. The earliest downflooding angle over all directions is a note in the verdict when it comes sooner ("…but it takes a larger heeling moment to get there"). `gzSummary` reports the arm at the downflooding angle (`gzFlood`), so this objective is continuous across the 5° samples. The app and the tests call the same `verdictRange` | `js/physics.js` `worstHeelRange`, `verdictRange`, `stabilityVerdict`; `validate-stability` stability_verdict (barge 40 × 8 × 6 m open, T 2 m, KG 3 m: roll floods at atan(1.125) = 48.3665°; the verdict's range ends at 44.7°, 1.1° off roll, where it floods with a smaller arm than in roll; Stable; the 12.2° nearer pitch is the note). Open 4 × 2 × 1 m box: 24.3° at 10.4° off roll (the corners dip first; roll alone 32.0°). Square open box: 12.1° on the diagonal |
+| R1-29 | When no sample lies in the range, the maximum is found on [start, end] by golden section (or, without refinement, the curve interpolated to the end). The GZ panel no longer prints a maximum when an opening is already under water | `js/physics.js` `gzSummary`, `js/app.js` `drawGZChart`; `validate-stability` stability_verdict (open box, freeboard 0.05 m: roll floods at atan(0.05) = 2.8624°; maximum positive, inside the range; no "peaks at 0°") |
+| R1-30 | The search for stable trims goes to ±90° of trim in 0.1 rad steps (16 a side, was 60 steps of 0.05 rad to ±170°). Where it finds none, the unstable trim is kept and flagged (`trimUnstable`), the next angles of the curve skip the search, and the GZ panel says so. README and the validation map now say "a stable trim, following the local energy minimum from the previous angle". Without workers, the app takes only the weakest axis (Q2) | `js/physics.js` `gzAt`/`gzCurve`/`gzAnalysis`; the 51k-triangle sphere (G 0.3 m low, 0.05 m off centre), single-threaded: one free-trim `gzAnalysis` 1.1 s (9.1 s at 255c8b0); the verdict's whole range 29 s free and 5.4 s fixed (441 s and 10.8 s at 255c8b0); `validate-stability` rest_and_trim (STEP sphere: flagged from 85°, GZ equal to fixed trim's) |
+| R1-31 | New tests: a catamaran whose range ends at 26.78° (the 30° rule, against [2D]); a square box that peaks at 22.90° (the 25° note, against [2D]); the STEP sphere with G 3 mm off centre, 179.43° (the 0.1° tolerance at 180°); the offset cube whose two stable trims differ in energy by 2.3×10⁻³ (started at the unstable trim, the lower is kept); touching blocks and a coplanar overlap (the probe); the app's sweep now is `verdictRange`, which the Node tests call; e2e: the cube's verdict after Settle reads "vanishes at 35.3°", and the Waves-stage roll range of the open-deck STL ends at the downflooding angle (32°). C10 and C11 (nesting samples outside, one sample enough) and C02 (contact sides swapped) remain equivalent on every test: the nesting decision only matters when surfaces do not cross, where inside or outside samples agree, and swapped sides close both parts when the contact faces coincide | `test/validate-stability.js`, `test/e2e-browser.mjs` sections 2d and 5. Mutants planted again by the defender on the new code: C30, C26, C27, C18, C08, the own-patch rule removed, the inward probe offset removed, untested shells turned again (Q1), R1-29's search removed, the flood objective by angle instead of arm: each fails |
+
+Results with these fixes: `validate-node` 577/577 fine and 480/480 normal and coarse (`validate-stability` 214 checks);
+`validate-proofs` 20/20; `e2e-browser` 142/142, the validation page included. No Lean or Python-ported code changed.
+
+Answers to the questions:
+
+- **Q1 (budget):** a fair catch. When the budget runs out, a negative shell whose possible containers (closed shells
+  whose bounding box contains it) were not all tested is no longer turned, so a void stays a void. Tested with a budget
+  of 1 on a box with an inward inner shell (7.75 m³).
+- **Q2 (main-thread fallback):** yes. Without workers the app now takes only the weakest axis, both senses, and the
+  verdict then says "About the weakest axis" (no "worst of all heel directions").
+- **Q3 (three-use edges and opening points):** intended. An edge used three times is a junction (a fin or a partition
+  meeting the hull), not a hole: the hull is closed across it. The holes are the edges used once, and those give the
+  opening points. `meshCheck` counts both as open because both break the closedness the volume needs.
+
+R1-28's criterion is the defender's choice, and the owner may prefer another:
+1. Flooding counts only about the weakest axis (both senses), except on a square or round waterplane. This is the
+   IS Code's heel for a ship, but it is discontinuous for nearly square bodies.
+2. Flooding counts in directions whose waterplane second moment is within some percentage of the weakest. The defender
+   tried 10 %: on the barge the edge of that band already floods at 38.3°, so the percentage decides the answer.
+
+The least-moment rule needs no threshold and follows from what the downflooding angle is for. It gives near-roll
+answers on long hulls and the diagonal on square ones.

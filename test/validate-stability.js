@@ -15,7 +15,7 @@
 //        the angle between a body diagonal and the edge-down vertical, atan(1/√2) = 35.2644°
 import {
   mat3, transformTris, solveWaterline, hydrostatics, massProperties, submerged, gzAnalysis, gzAt, gzSummary, gmAbout,
-  stabilityVerdict, restAttitude, worstHeelRange,
+  stabilityVerdict, restAttitude, verdictRange,
 } from '../js/physics.js';
 import { meshCheck, repairMesh, weld } from '../js/meshcheck.js';
 import { soupFromIndexed, prepareMesh } from '../js/loader.js';
@@ -206,16 +206,8 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
   // 3 — the plain-language verdict
   {
     const { rows, chk } = chkFactory();
-    // the verdict's range as the app works it out: the worst heel direction for a stable body (worstHeelRange), the
-    // worse sense about the weakest axis otherwise
-    const range = async (rel, H, { freeTrim = false, open = null } = {}) => {
-      if (!(H.GMmin > 0)) {
-        const a = gzAnalysis(rel, H.V, H.axisMinDeg, { GM: H.GMmin, freeTrim, open }).summary, b = gzAnalysis(rel, H.V, H.axisMinDeg + 180, { GM: H.GMmin, freeTrim, open }).summary;
-        return (b.end ?? Infinity) < (a.end ?? Infinity) ? b : a;
-      }
-      const w = await worstHeelRange(async (azs) => azs.map((az) => gzAnalysis(rel, H.V, az, { GM: gmAbout(H, az), freeTrim, open, refineMax: false }).summary), H.axisMinDeg);
-      return { ...gzAnalysis(rel, H.V, w.az, { GM: gmAbout(H, w.az), freeTrim, open }).summary, az: w.az, weakest: w.weakest, dirs: w.dirs };
-    };
+    // the verdict's range as the app works it out (verdictRange, the function the app calls, with the GZ analyses run here)
+    const range = (rel, H, { freeTrim = false, open = null } = {}) => verdictRange(H, async (jobs) => jobs.map((j) => gzAnalysis(rel, H.V, j.axis, { GM: j.GM, freeTrim, open: j.open === false ? null : open, refineMax: j.refineMax }).summary), { scale: 5 });
     const texts = [];
     for (const yaw of [0, 20, 45]) {
       const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 0.5], 3200, 1000, [0, 0, yaw]);
@@ -281,6 +273,43 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       chk('box with an end face missing: the opening is under water upright (downflooding angle 0°)', fe.flood, 0, 0, 0);
       chk('…verdict: bad, an opening under water', stabilityVerdict(e.H.GMmin, { range: fe, scale: 4.6 }).level === 'bad' && /opening/.test(stabilityVerdict(e.H.GMmin, { range: fe, scale: 4.6 }).text), true);
     }
+    {
+      // R1-28: an open-deck barge 40 × 8 × 6 m at T 2 m, KG 3 m. In roll the deck edge goes under at atan(1.125) =
+      // 48.3665° (with the bilge out, the immersed section is a triangle); inclined nearer pitch it floods at 12.2°, but
+      // there the righting arm is metres. The range ends where it floods with the least heeling moment, near roll
+      const m = prepareMesh([dropTris(boxTris(40, 8, 6, 0, -4, 0), onPlane(2, 6))]);
+      const { rel, H } = floating(m.tris, [20, 0, 3], 640000), op = transformTris(m.report.openPts, mat3.identity(), [20, 0, 3]);
+      const fx = gzAnalysis(rel, H.V, 'x', { GM: H.GMt, open: op }).summary;
+      chk('open-deck barge 40×8×6 m: roll downflooding angle = atan(1.125) (°)', fx.flood, Math.atan(1.125) / DEG, 0, 1e-6);
+      const r = await range(rel, H, { open: op }), v = stabilityVerdict(H.GMmin, { range: r, scale: 41 });
+      chk('…the verdict\'s range ends at a downflooding angle past 30°, not later than roll\'s (°)', r.flood !== null && r.end === r.flood && r.end > 30 && r.end <= fx.flood + 1e-9, true);
+      chk('…it takes no larger righting arm to get there than in roll', Math.max(r.max, r.gzFlood) <= Math.max(fx.max, fx.gzFlood) + 1e-9, true);
+      chk('…level Stable, and the earlier flooding nearer pitch (under 13°) is a note', v.level === 'good' && r.floodAny !== null && r.floodAny.flood < 13 && /larger heeling moment/.test(v.text), true);
+    }
+    {
+      // R1-29: the open box at T 0.95 m floods in roll at atan(0.05) = 2.862°, before the first 5° sample: its maximum is
+      // still found, inside the range
+      const m = prepareMesh([dropTris(boxTris(4, 2, 1), onPlane(2, 1))]);
+      const { rel, H } = floating(m.tris, [2, 0, 0.5], 7600), op = transformTris(m.report.openPts, mat3.identity(), [2, 0, 0.5]);
+      const fx = gzAnalysis(rel, H.V, 'x', { GM: H.GMt, open: op }).summary;
+      chk('open box, freeboard 0.05 m: roll downflooding angle = atan(0.05) (°)', fx.flood, Math.atan(0.05) / DEG, 0, 1e-6);
+      chk('…the maximum lies inside the range and is positive', fx.max > 0 && fx.maxDeg > 0 && fx.maxDeg <= fx.flood, true);
+      chk('…the verdict does not say it peaks at 0°', /peaks at 0°/.test(stabilityVerdict(H.GMmin, { range: await range(rel, H, { open: op }), scale: 4.6 }).text), false);
+    }
+    {
+      // R1-31: the 30° small-range threshold, on a catamaran whose range ends between 25° and 30° [2D]
+      const w = 0.5, sp = 0.75, cat = new Float64Array([...boxTris(4, w, 0.5, 0, sp), ...boxTris(4, w, 0.5, 0, -sp - w), ...boxTris(4, 2 * (sp + w), 0.1, 0, -sp - w, 1.5)]);
+      const { rel, H } = floating(cat, [2, 0, 0.9], 1500), polys = [rect(sp, sp + w, 0, 0.5), rect(-sp - w, -sp, 0, 0.5), rect(-sp - w, sp + w, 1.5, 1.6)];
+      const r = await range(rel, H), want = root2d((d) => gz2d(polys, [0, 0.9], 0.375, d).gz, 20, 35);
+      chk('catamaran, hulls at ±0.75 m, KG 0.9 m: range ends at 26.78° vs [2D] (°)', r.end, want, 0, 1e-6);
+      chk('…level ok (the range ends before 30°)', stabilityVerdict(H.GMmin, { range: r, scale: 4.8 }).level, 'ok');
+      // the 25° early-peak note, on a square box whose righting arm peaks between 20° and 25° [2D]
+      const b = floating(boxTris(4, 4, 0.7, 0, -2, 0), [2, 0, 0.3], 4000), rb = await range(b.rel, b.H);
+      const f = (d) => gz2d([rect(-2, 2, 0, 0.7)], [0, 0.3], 1, d).gz;
+      chk('square box 4×4×0.7 m, T 0.25 m, KG 0.3 m: the peak at 22.90° vs [2D] (°)', rb.maxDeg, max2d(f, 15, 30), 0, 0.01);
+      const vb = stabilityVerdict(b.H.GMmin, { range: rb, scale: 5.7 });
+      chk('…level good, with the early-peak note', vb.level === 'good' && /peaks early/.test(vb.text), true);
+    }
     chk('GM 0.5 m on a 32 m ship (no range yet): stable, and never "loll"', stabilityVerdict(0.5, { scale: 200 }).level === 'good' && !/loll/.test(stabilityVerdict(0.5, { scale: 200 }).text), true);
     chk('GM −0.1 m: Unstable', stabilityVerdict(-0.1, { scale: 5 }).level, 'bad');
     chk('GM = 0 to round-off (1e-16 m): Neutral', stabilityVerdict(1e-16, { scale: 1 }).level, 'warn');
@@ -323,6 +352,15 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 3.5 });
       chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: worst range = 180° − atan(0.05/0.3) (°)', r.end, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
       chk('…verdict: not self-righting', /self-righting/.test(v.text), false);
+    }
+    if (getTris) {
+      // R1-31: the 0.1° tolerance at 180°: G 3 mm off the centre gives 180° − atan(0.003/0.3) = 179.427°, not
+      // self-righting
+      const t = await getTris('sphere_r1.step'), mp = massProperties(t);
+      const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.003, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
+      const r = await range(rel, H);
+      chk('STEP sphere, G 0.3 m low and 3 mm off the centre: range = 180° − atan(0.01) = 179.43° (°)', r.end, 180 - Math.atan(0.01) / DEG, 0, 0.01);
+      chk('…not self-righting', /self-righting/.test(stabilityVerdict(H.GMmin, { range: r, scale: 3.5 }).text), false);
     }
     if (getTris) {
       // R1-18: the classic self-righting body, a sphere with G 0.3 m below its centre (GZ = 0.3 sin φ > 0 on (0°, 180°));
@@ -446,6 +484,40 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       chk('stacked boxes that only touch: no overlap', repairMesh(new Float64Array([...boxTris(4, 2, 1), ...boxTris(4, 2, 1, 0, -1, 1)]), tol).report.overlaps, 0, 0, 0);
     }
     {
+      // R1-26: parts that share an edge but not a whole face: a deckhouse 4 × 1 × 1 m flush with the side of a 4 × 2 × 1 m
+      // hull (one edge used by four triangles). Union 12 m³, whichever part is inside out, in either file order, and
+      // whichever of the hull's triangles comes first
+      const hull = boxTris(4, 2, 1), house = boxTris(4, 1, 1, 0, 0, 1);
+      const cases = [['both outward', hull, house], ['deckhouse inside out', hull, flipTris(house)], ['hull inside out', flipTris(hull), house]];
+      for (const [name, a, b] of cases) for (const [ord, t] of [['hull first', [...a, ...b]], ['deckhouse first', [...b, ...a]]]) {
+        const r = repairMesh(new Float64Array(t), tol);
+        chk(`hull + flush deckhouse, ${name}, ${ord}: volume 12 m³, closed, no overlap`, Math.abs(massProperties(r.tris).volume - 12) < 1e-12 && r.report.open + r.report.misoriented === 0 && r.report.overlaps === 0, true);
+      }
+      let rot = true;
+      for (let k = 0; k < 12; k++) {
+        const h = new Float64Array([...hull.slice(k * 9), ...hull.slice(0, k * 9)]);
+        if (Math.abs(massProperties(repairMesh(new Float64Array([...h, ...house]), tol).tris).volume - 12) > 1e-12) rot = false;
+      }
+      chk('…with each of the hull\'s 12 triangles first: 12 m³', rot, true);
+      chk('…through the STL import path: 12 m³', massProperties(prepareMesh([soupFromIndexed(Float32Array.from([...hull, ...flipTris(house)]), null)]).tris).volume, 12, 0, 1e-6);
+    }
+    {
+      // R1-27: blocks that only touch the hull (on its deck, under its bottom) are not overlaps; a coplanar overlap is
+      const hull = boxTris(4, 2, 1);
+      let touch = 0;
+      for (const [x, y, w, d] of [[1, -0.5, 2, 1], [0.123, -0.777, 1.234, 0.987], [0, -1, 4, 2], [2, -0.5, 2, 1]]) for (const z of [1, -1]) {
+        const blk = boxTris(w, d, 1, x, y, z);
+        for (const t of [[...hull, ...blk], [...blk, ...hull]]) touch += repairMesh(new Float64Array(t), tol).report.overlaps;
+      }
+      chk('blocks standing on the deck or hanging under the bottom, 8 placements × 2 file orders: no overlap reported', touch, 0, 0, 0);
+      chk('two 4×2×1 m blocks overlapping 1 m along their length (the same section, faces coplanar): overlap reported', repairMesh(new Float64Array([...hull, ...boxTris(4, 2, 1, 3)]), tol).report.overlaps, 2, 0, 0);
+    }
+    {
+      // review Q1: when the work budget runs out, a negative shell that may be a void is not turned into a solid
+      const r = repairMesh(new Float64Array([...boxTris(4, 2, 1), ...flipTris(boxTris(1, 0.5, 0.5, 1.5, -0.25, 0.25))]), tol, { budget: 1 });
+      chk('box with an inward inner shell, overlap check stopped by a tiny budget: inner shell left as a void (volume 7.75 m³)', !r.report.nestChecked && Math.abs(massProperties(r.tris).volume - 7.75) < 1e-12, true);
+    }
+    {
       // R1-21: welding by distance. Copies of a vertex 2e-13 m apart on either side of a cell boundary are one vertex
       const w = 1e-6;
       for (const [name, x] of [['a cell boundary', Math.round(4 / w) * w], ['the old rounding boundary', Math.round(4 / w) * w + w / 2]]) {
@@ -553,6 +625,32 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       }
       chk('corner-down cube heeled 10°, 15°, 20° about an axis of symmetry: free trim is a local energy minimum', ok, true);
       chk('…below the energy of the symmetric trim 0 at all three angles', lower, 3, 0, 0);
+    }
+    {
+      // R1-31: of the two stable trims on either side of an unstable one, the one of less energy is kept. The corner-down
+      // cube with G moved 0.02 m along the trim axis and 0.002 m along the heel axis, heeled 20° about an axis of
+      // symmetry: the trim at −2.7° is unstable, the stable ones at about −32.3° and +37.2° differ in energy by 2.3×10⁻³
+      // per unit weight. Started at the unstable trim, gzAt must take the lower
+      const cube = boxTris(1, 1, 1, -0.5, -0.5, -0.5), d = [1, 1, 1].map((x) => x / Math.sqrt(3)), a = Math.acos(d[2]);
+      const k = [d[1] / Math.hypot(d[0], d[1]), -d[0] / Math.hypot(d[0], d[1])], C = Math.cos(a), S = Math.sin(a), K = 1 - C;
+      const base = transformTris(cube, [C + K * k[0] * k[0], K * k[0] * k[1], S * k[1], K * k[0] * k[1], C + K * k[1] * k[1], -S * k[0], -S * k[1], S * k[0], C]);
+      const az = hydrostatics(base, solveWaterline(base, 0.5).zw, 500, 1000).axisMinDeg + 90, [ux, uy] = [Math.cos(az * DEG), Math.sin(az * DEG)];
+      const rel = transformTris(base, mat3.identity(), [-uy * 0.02 + ux * 0.002, ux * 0.02 + uy * 0.002, 0]);
+      const ev = (t) => { const s0 = solveWaterline(transformTris(rel, mat3.mul(rotH(-uy, ux, t), rotH(ux, uy, 20 * DEG))), 0.5).sub.B; return { along: s0[0] * ux + s0[1] * uy, U: -s0[2] }; };
+      const bis = (lo, hi) => { let flo = ev(lo).along; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2, fm = ev(m).along; if (fm * flo > 0) { lo = m; flo = fm; } else hi = m; } return (lo + hi) / 2; };
+      const tu = bis(-0.15, 0.05), tm = bis(-0.8, -0.4), tp = bis(0.5, 0.75), want = ev(tm).U < ev(tp).U ? tm : tp;
+      chk('…the two stable trims differ in energy (per unit weight)', Math.abs(ev(tm).U - ev(tp).U) > 1e-3, true);
+      const r = gzAt(rel, 0.5, az, 20, { freeTrim: true, trim0: tu });
+      chk('offset cube heeled 20° about an axis of symmetry, started at the unstable trim: the stable trim of less energy (rad)', r.trim, want, 0, 1e-6);
+    }
+    if (getTris) {
+      // R1-30: a sphere with G 0.3 m low, heeled past 85°, has no stable trim within ±90° (every trim lowers G): free trim
+      // flags it, keeps the curve (for a sphere the trim does not change GZ), and does the search once per curve
+      const t = await getTris('sphere_r1.step'), mp = massProperties(t);
+      const rel = transformTris(t, mat3.identity(), [mp.centroid[0], mp.centroid[1], mp.centroid[2] - 0.3]), V = mp.volume / 2;
+      const fr = gzAnalysis(rel, V, 'x', { freeTrim: true }), fx = gzAnalysis(rel, V, 'x');
+      chk('STEP sphere, G 0.3 m low: free trim flags the heel angles with no stable trim (from 85° on)', fr.curve.filter((p) => p.trimUnstable).length > 0 && fr.curve.every((p) => !p.trimUnstable || p.deg >= 80), true);
+      chk('…and its GZ equals fixed trim\'s (largest difference, m)', Math.max(...fr.curve.map((p, i) => Math.abs(p.gz - fx.curve[i].gz))), 0, 0, 1e-6);
     }
     out.push({ id: 'rest_and_trim', title: 'Neutral buoyancy, static rest attitude (Newton), free-trim GZ (no trimming moment, least energy, envelope theorem)', ref: '[RT] wall-sided list; potential energy U = W(z_G − z_B)', rows });
   }
