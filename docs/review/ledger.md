@@ -10,7 +10,7 @@ positions. The owner approves each round's findings before fixes are made, and e
 
 | Round | Scope | Status | Findings | PR |
 | --- | --- | --- | --- | --- |
-| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | closed (2026-11-25). The owner approved the agreed fixes and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer (on Claude Opus 5.5 from the re-run on: no Fable 5.2 credits left) re-ran the round and checked the fixes four times; the owner asked for every new finding to be fixed in this round, and decided R1-28 (the least-moment criterion) and R1-36's 0.1 % threshold. The fourth check closed everything | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 11 new ([report](round-1-rerun.md)); check: 11 closed, 6 new ([report](round-1-check.md)); second check: 6 closed, 4 new, R1-28 to the owner ([report](round-1-check2.md)); third check: 4 closed, 3 new ([report](round-1-check3.md)); fourth check: all closed, none new ([report](round-1-check4.md)) | branch `review/round-1-hydrostatics` |
+| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | closed (2026-11-25). The owner approved the agreed fixes and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer (on Claude Opus 5.5 from the re-run on: no Fable 5.2 credits left) re-ran the round and checked the fixes four times; the owner asked for every new finding to be fixed in this round, and decided R1-28 (the least-moment criterion) and R1-36's 0.1 % threshold. The fourth check closed everything | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 11 new ([report](round-1-rerun.md)); check: 11 closed, 6 new ([report](round-1-check.md)); second check: 6 closed, 4 new, R1-28 to the owner ([report](round-1-check2.md)); third check: 4 closed, 3 new ([report](round-1-check3.md)); fourth check: all closed, none new ([report](round-1-check4.md)) | [#13](https://github.com/duffmakes/float-sim/pull/13) |
 | 2 | Panel-method coefficients | not started | | |
 | 3 | RAOs and the Capytaine comparison | not started | | |
 | 4 | Time-domain simulation and the drop test | not started | | |
@@ -364,4 +364,4 @@ checked how the code applies them:
   11 e2e mutants caught (E02 near-equivalent, G01 equivalent).
 - Cost on the 51k-triangle sphere, single-threaded: 5.7 s fixed and 33.2 s free, as at b4541ad.
 
-Round 1 is closed. Its fixes ship as one PR from `review/round-1-hydrostatics`.
+Round 1 is closed. Its fixes ship as one PR, [#13](https://github.com/duffmakes/float-sim/pull/13), from `review/round-1-hydrostatics`.
