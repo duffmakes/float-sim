@@ -336,6 +336,8 @@ Answers to the question and to the mutants not given a test:
 Cost: unchanged from b4541ad except for the tie scan over the directions already evaluated, which costs nothing
 measurable.
 
+**Owner's decision on R1-36 (2026-11-25):** keep the 0.1 % threshold for arms that count as the same moment.
+
 Results with these fixes: `validate-node` 599/599 fine and 502/502 normal and coarse (`validate-stability` 236
 checks); `validate-proofs` 20/20; `e2e-browser` 145/145, the validation page included. No Lean or Python-ported code
 changed.
