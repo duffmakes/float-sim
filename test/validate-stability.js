@@ -9,12 +9,15 @@
 //        tanφ = √(−2GM/BM)
 //  [IH]  the cube corner-down: the submerged part is {x ∈ [0,1]³ : x₁ + x₂ + x₃ ≤ t}, so draft and centre of buoyancy
 //        follow from the Irwin–Hall distribution of a sum of three uniform variables
-//  [IMO] 2008 IS Code (MSC.267(85)) Part A 2.2.3: the maximum GZ should occur at a heel of at least 25°
+//  [IMO] 2008 IS Code (MSC.267(85)) Part A 2.2.2: GZ of at least 0.2 m at 30° or more; A 2.2.3: the maximum GZ
+//        should occur at a heel of at least 25°
+//  [SYM] the corner-down cube heeled towards an edge-down attitude: there B is under G by symmetry, so GZ vanishes at
+//        the angle between a body diagonal and the edge-down vertical, atan(1/√2) = 35.2644°
 import {
   mat3, transformTris, solveWaterline, hydrostatics, massProperties, submerged, gzAnalysis, gzAt, gzSummary, gmAbout,
-  stabilityVerdict, restAttitude,
+  stabilityVerdict, restAttitude, worstHeelRange,
 } from '../js/physics.js';
-import { meshCheck, repairMesh } from '../js/meshcheck.js';
+import { meshCheck, repairMesh, weld } from '../js/meshcheck.js';
 import { soupFromIndexed, prepareMesh } from '../js/loader.js';
 
 const DEG = Math.PI / 180;
@@ -34,6 +37,8 @@ export function prism(section, x0, x1) {
   return new Float64Array(out);
 }
 const rect = (y0, y1, z0, z1) => [[y0, z0], [y1, z0], [y1, z1], [y0, z1]];
+// rotation by a (rad) about the horizontal unit axis (ux, uy, 0), Rodrigues' formula
+const rotH = (ux, uy, a) => { const c = Math.cos(a), s = Math.sin(a), k = 1 - c; return [c + k * ux * ux, k * ux * uy, s * uy, k * ux * uy, c + k * uy * uy, -s * ux, -s * uy, s * ux, c]; };
 export const boxTris = (L, B, D, x0 = 0, y0 = -B / 2, z0 = 0) => prism(rect(y0, y0 + B, z0, z0 + D), x0, x0 + L);
 const flipTris = (t, pred = () => true) => {
   const o = Float64Array.from(t);
@@ -74,6 +79,14 @@ export function gz2d(polygons, G, A0, phiDeg) {
 // root and maximum of the [2D] curve by bisection and golden section (no Float Sim code)
 function root2d(f, a, b) { let fa = f(a); for (let i = 0; i < 100; i++) { const m = (a + b) / 2, fm = f(m); if (fm * fa > 0) { a = m; fa = fm; } else b = m; } return (a + b) / 2; }
 function max2d(f, a, b) { const r = (Math.sqrt(5) - 1) / 2; let c = b - r * (b - a), d = a + r * (b - a); for (let i = 0; i < 100; i++) { if (f(c) > f(d)) { b = d; d = c; c = b - r * (b - a); } else { a = c; c = d; d = a + r * (b - a); } } return (a + b) / 2; }
+// [2D] how far the lowest of the points pts (y, z) is below the waterline of the heeled section (positive: under water)
+function depth2d(polygons, G, A0, pts, phiDeg) {
+  const c = Math.cos(phiDeg * DEG), s = Math.sin(phiDeg * DEG), rot = ([y, z]) => [c * (y - G[0]) - s * (z - G[1]), s * (y - G[0]) + c * (z - G[1])];
+  const rp = polygons.map((p) => p.map(rot));
+  let lo = Infinity, hi = -Infinity; for (const p of rp) for (const q of p) { lo = Math.min(lo, q[1]); hi = Math.max(hi, q[1]); }
+  for (let it = 0; it < 200; it++) { const h = (lo + hi) / 2; areaCentroid(rp.map((p) => clipBelow(p, h))).A < A0 ? lo = h : hi = h; }
+  return (lo + hi) / 2 - Math.min(...pts.map((q) => rot(q)[1]));
+}
 
 // set up a body as the app does: G at the origin, waterline for the displacement
 function floating(tris, G, mass, rho = 1000, euler = [0, 0, 0]) {
@@ -193,44 +206,135 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
   // 3 — the plain-language verdict
   {
     const { rows, chk } = chkFactory();
-    const range = (rel, H) => {   // worse of the two heel directions about the weakest axis, as the app does
-      const a = gzAnalysis(rel, H.V, H.axisMinDeg, { GM: H.GMmin }).summary, b = gzAnalysis(rel, H.V, H.axisMinDeg + 180, { GM: H.GMmin }).summary;
-      return (b.vanish ?? Infinity) < (a.vanish ?? Infinity) ? b : a;
+    // the verdict's range as the app works it out: the worst heel direction for a stable body (worstHeelRange), the
+    // worse sense about the weakest axis otherwise
+    const range = async (rel, H, { freeTrim = false, open = null } = {}) => {
+      if (!(H.GMmin > 0)) {
+        const a = gzAnalysis(rel, H.V, H.axisMinDeg, { GM: H.GMmin, freeTrim, open }).summary, b = gzAnalysis(rel, H.V, H.axisMinDeg + 180, { GM: H.GMmin, freeTrim, open }).summary;
+        return (b.end ?? Infinity) < (a.end ?? Infinity) ? b : a;
+      }
+      const w = await worstHeelRange(async (azs) => azs.map((az) => gzAnalysis(rel, H.V, az, { GM: gmAbout(H, az), freeTrim, open, refineMax: false }).summary), H.axisMinDeg);
+      return { ...gzAnalysis(rel, H.V, w.az, { GM: gmAbout(H, w.az), freeTrim, open }).summary, az: w.az, weakest: w.weakest, dirs: w.dirs };
     };
     const texts = [];
     for (const yaw of [0, 20, 45]) {
       const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 0.5], 3200, 1000, [0, 0, yaw]);
-      const v = stabilityVerdict(H.GMmin, { range: range(rel, H), scale: 4.6 });
+      const v = stabilityVerdict(H.GMmin, { range: await range(rel, H), scale: 4.6 });
       texts.push(v.level + v.text);
       if (yaw === 0) {
         chk('box: verdict level good (Stable)', v.level, 'good');
         chk('box (vanishes at 90°): not called self-righting', /self-righting/.test(v.text), false);
-        chk('box: the verdict gives the vanishing angle 90°', /vanishes at 90°/.test(v.text), true);
+        chk('box: the verdict gives the vanishing angle 90°, about the weakest axis (90° every way, so the weakest axis wins the tie)', /vanishes at 90°/.test(v.text) && /weakest axis, the worst of all heel directions/.test(v.text), true);
       }
     }
     chk('box at yaw 0°, 20°, 45°: the same verdict', texts.every((t) => t === texts[0]), true);
     {
       const cat = new Float64Array([...boxTris(4, 0.5, 0.5, 0, 0.5), ...boxTris(4, 0.5, 0.5, 0, -1.0), ...boxTris(4, 2, 0.1, 0, -1, 1.5)]);
       const { rel, H } = floating(cat, [2, 0, 1.0], 1500);
-      const r = range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
-      chk('catamaran (max GZ at 9.3°, gone at 18.2°): level ok, not good', v.level, 'ok');
-      chk('catamaran: the verdict cites the IMO 25° criterion', /25°/.test(v.text) && /IS Code/.test(v.text), true);
+      const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
+      chk('catamaran (max GZ at 9.3°, gone at 18.2°): level ok (small range), not good', v.level, 'ok');
+      chk('catamaran: the range ends before 30°, citing IS Code A 2.2.2', /30°/.test(v.text) && /A 2\.2\.2/.test(v.text), true);
+      chk('catamaran: the early peak is noted, citing the 25° criterion (A 2.2.3)', /peaks early/.test(v.text) && /25°/.test(v.text) && /A 2\.2\.3/.test(v.text), true);
       chk('catamaran: not called self-righting', /self-righting/.test(v.text), false);
+    }
+    {
+      // R1-18: a raft peaks early (20°) but keeps a 92° range: Stable with a note, not "small range"
+      const { rel, H } = floating(boxTris(4, 4, 0.5, 0, -2, 0), [2, 0, 0.2], 3200);
+      const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 5.7 });
+      chk('raft 4×4×0.5 m, T 0.2 m, KG 0.2 m: range ends past 30° (°)', r.end > 90, true);
+      chk('raft: level good, not "small range"', v.level === 'good' && !/range is small/.test(v.text), true);
+      chk('raft: the early peak (before 25°) is noted', /peaks early/.test(v.text), true);
+    }
+    {
+      // R1-17: the corner-down cube has a hexagonal waterplane (I_xx = I_yy, no weakest axis), yet its range depends on
+      // the heel direction; the worst direction ends at the edge-down attitude [SYM], at any yaw
+      const cube = boxTris(1, 1, 1, -0.5, -0.5, -0.5), d = [1, 1, 1].map((x) => x / Math.sqrt(3)), a = Math.acos(d[2]);
+      const k = [d[1] / Math.hypot(d[0], d[1]), -d[0] / Math.hypot(d[0], d[1])], C = Math.cos(a), S = Math.sin(a), K = 1 - C;
+      const Rc = [C + K * k[0] * k[0], K * k[0] * k[1], S * k[1], K * k[0] * k[1], C + K * k[1] * k[1], -S * k[0], -S * k[1], S * k[0], C];
+      const exact = Math.atan(1 / Math.SQRT2) / DEG;
+      for (const yaw of [0, 13.3]) {
+        const rel = transformTris(cube, mat3.mul(mat3.rotZ(yaw * DEG), Rc)), H = hydrostatics(rel, solveWaterline(rel, 0.5).zw, 500, 1000);
+        const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 1.7 });
+        const onlyWeakest = Math.min(...[0, 180].map((o) => gzAnalysis(rel, H.V, H.axisMinDeg + o, { GM: H.GMmin }).summary.end ?? 180));
+        chk(`corner-down cube, yaw ${yaw}°: worst range = atan(1/√2) = 35.2644° [SYM] (°)`, r.end, exact, 0, 5e-3);
+        chk(`…the weakest axis alone (set by round-off) gives a longer range, ${onlyWeakest.toFixed(1)}°`, onlyWeakest > exact + 1, true);
+        chk(`…the verdict gives 35.3° and names the direction`, /vanishes at 35\.3°/.test(v.text) && /axis at -?[0-9.]+° from x/.test(v.text), true);
+      }
+    }
+    {
+      // R1-15: an open deck. About x the deck edge goes under at the angle the [2D] code gives; the verdict's range ends
+      // at the worst direction's downflooding angle, before the closed hull's vanishing angle
+      const open = prepareMesh([dropTris(boxTris(4, 2, 1), onPlane(2, 1))]);
+      const { rel, H } = floating(open.tris, [2, 0, 0.5], 3200);
+      const relOpen = transformTris(open.report.openPts, mat3.identity(), [2, 0, 0.5]);
+      const fx = gzAnalysis(rel, H.V, 'x', { GM: H.GMt, open: relOpen }).summary;
+      const f2 = (deg) => depth2d([rect(-1, 1, 0, 1)], [0, 0.5], 0.8, [[-1, 1], [1, 1]], deg);
+      chk('open-deck box, heeled about x: downflooding angle vs [2D] (°)', fx.flood, root2d(f2, 20, 40), 0, 1e-6);
+      chk('…the range ends there, before the closed hull\'s vanishing angle', fx.end === fx.flood && fx.flood < (fx.vanish ?? 180), true);
+      chk('…the maximum is taken inside the range', fx.maxDeg <= fx.flood, true);
+      const r = await range(rel, H, { open: relOpen }), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
+      chk('open-deck box: the verdict\'s range ends at a downflooding angle, the worst direction\'s (°)', r.flood !== null && r.end === r.flood && r.end <= fx.flood + 1e-9, true);
+      chk('…and says that an opening goes under water', /opening goes under water/.test(v.text), true);
+      const end = prepareMesh([dropTris(boxTris(4, 2, 1), onPlane(0, 0))]);
+      const e = floating(end.tris, [2, 0, 0.5], 3200), eOpen = transformTris(end.report.openPts, mat3.identity(), [2, 0, 0.5]);
+      const fe = gzAnalysis(e.rel, e.H.V, 'x', { GM: e.H.GMt, open: eOpen }).summary;
+      chk('box with an end face missing: the opening is under water upright (downflooding angle 0°)', fe.flood, 0, 0, 0);
+      chk('…verdict: bad, an opening under water', stabilityVerdict(e.H.GMmin, { range: fe, scale: 4.6 }).level === 'bad' && /opening/.test(stabilityVerdict(e.H.GMmin, { range: fe, scale: 4.6 }).text), true);
     }
     chk('GM 0.5 m on a 32 m ship (no range yet): stable, and never "loll"', stabilityVerdict(0.5, { scale: 200 }).level === 'good' && !/loll/.test(stabilityVerdict(0.5, { scale: 200 }).text), true);
     chk('GM −0.1 m: Unstable', stabilityVerdict(-0.1, { scale: 5 }).level, 'bad');
     chk('GM = 0 to round-off (1e-16 m): Neutral', stabilityVerdict(1e-16, { scale: 1 }).level, 'warn');
-    chk('GZ positive to 180°: self-righting', /self-righting/.test(stabilityVerdict(0.2, { range: { vanish: null, maxDeg: 90, max: 0.3 }, scale: 1 }).text), true);
     chk('no waterplane: n/a', stabilityVerdict(NaN).level, 'na');
-    chk('free trim is named when the range came from it', /free trim/.test(stabilityVerdict(0.2, { range: { vanish: 70, maxDeg: 40, max: 0.3 }, scale: 1, freeTrim: true }).text), true);
+    chk('free trim is named when the range came from it', /free trim/.test(stabilityVerdict(0.2, { range: { vanish: 70, end: 70, flood: null, maxDeg: 40, max: 0.3 }, scale: 1, freeTrim: true }).text), true);
     {
       // the tender box (loll 3.93°): Unstable, with the loll angle
       const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 1.0353], 3200);
-      const v = stabilityVerdict(H.GMmin, { range: range(rel, H), scale: 4.6 });
+      const v = stabilityVerdict(H.GMmin, { range: await range(rel, H), scale: 4.6 });
       chk('tender box (GM_T −0.002 m): Unstable', v.level, 'bad');
       chk('tender box: the verdict gives the loll angle 3.9°', /about 3\.9°/.test(v.text), true);
     }
-    out.push({ id: 'stability_verdict', title: 'Stability verdict: small-angle words from GM_min, range words from the GZ curve about the weakest axis', ref: '[IMO] 2008 IS Code A 2.2.3 (max GZ at ≥ 25°)', rows });
+    {
+      // R1-18: the edge-down cube is exactly neutral (GM_min = 0 up to round-off of either sign); the GZ summary about the
+      // weakest axis must not change with yaw
+      const cube = boxTris(1, 1, 1, -0.5, -0.5, -0.5), sums = [];
+      for (const yaw of [0, 10, 33]) {
+        const rel = transformTris(cube, mat3.mul(mat3.rotZ(yaw * DEG), mat3.rotX(Math.PI / 4))), H = hydrostatics(rel, solveWaterline(rel, 0.5).zw, 500, 1000);
+        const sm = gzAnalysis(rel, H.V, H.axisMinDeg, { GM: H.GMmin }).summary;
+        sums.push([sm.neutral, sm.unstable, sm.loll?.toFixed(6), sm.vanish?.toFixed(6)].join());
+        if (yaw === 0) chk('edge-down cube: GZ summary about the weakest axis is neutral (|GM| within the round-off band)', sm.neutral, true);
+      }
+      chk('edge-down cube at yaw 0°, 10°, 33°: the same GZ summary (GM_min +3e-17, −2e-16, +3e-17)', sums.every((x) => x === sums[0]), true);
+    }
+    {
+      // R1-25: the self-righting boundary on a body at rest whose range ends between 90° and 180°: the 4×2×1 m box with
+      // KG 0.3 m. Its worst direction is pitch, where the [2D] code on the 4 m long section gives the vanishing angle
+      const { rel, H } = floating(boxTris(4, 2, 1), [2, 0, 0.3], 3200);
+      const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 4.6 });
+      const f = (deg) => gz2d([rect(-2, 2, 0, 1)], [0, 0.3], 1.6, deg).gz;
+      chk('box, KG 0.3 m: worst range = the pitch vanishing angle vs [2D] (°)', r.end, root2d(f, 95, 110), 0, 1e-6);
+      chk('…roll vanishes later, 112.32° vs [2D]', gzAnalysis(rel, H.V, 'x', { GM: H.GMt }).summary.vanish, root2d((d) => gz2d([rect(-1, 1, 0, 1)], [0, 0.3], 0.8, d).gz, 100, 130), 0, 1e-6);
+      chk('…verdict: Stable, vanishes at 99.9°, not self-righting', v.level === 'good' && /vanishes at 99\.9°/.test(v.text) && !/self-righting/.test(v.text), true);
+    }
+    if (getTris) {
+      // R1-25: the STEP sphere with G 0.3 m below and 0.05 m beside its centre: GZ = 0.3 sin φ + 0.05 cos φ in the worse
+      // sense, which vanishes at 180° − atan(0.05/0.3) = 170.5377°. It is not self-righting
+      const t = await getTris('sphere_r1.step'), mp = massProperties(t);
+      const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1] + 0.05, mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
+      const r = await range(rel, H), v = stabilityVerdict(H.GMmin, { range: r, scale: 3.5 });
+      chk('STEP sphere, G 0.3 m low and 0.05 m off the centre: worst range = 180° − atan(0.05/0.3) (°)', r.end, 180 - Math.atan(0.05 / 0.3) / DEG, 0, 0.01);
+      chk('…verdict: not self-righting', /self-righting/.test(v.text), false);
+    }
+    if (getTris) {
+      // R1-18: the classic self-righting body, a sphere with G 0.3 m below its centre (GZ = 0.3 sin φ > 0 on (0°, 180°));
+      // faceting moves the zero at 180° by thousandths of a degree, which must not cost the "self-righting" words
+      const t = await getTris('sphere_r1.step'), mp = massProperties(t);
+      const { rel, H } = floating(t, [mp.centroid[0], mp.centroid[1], mp.centroid[2] - 0.3], 1000 * mp.volume / 2);
+      const both = [0, 180].map((o) => gzAnalysis(rel, H.V, o, { GM: gmAbout(H, o) }).summary);
+      chk('STEP sphere, G 0.3 m below the centre: GZ about x positive to 180° in both senses (vanish none)', both.every((x) => x.vanish === null), true);
+      const v = stabilityVerdict(H.GMmin, { range: await range(rel, H), scale: 3.5 });
+      chk('…verdict: self-righting', /self-righting/.test(v.text) && !/vanishes/.test(v.text), true);
+    }
+    out.push({ id: 'stability_verdict', title: 'Stability verdict: small-angle words from GM_min, range words from the GZ curves over all heel directions, downflooding', ref: '[IMO] 2008 IS Code A 2.2.2 (GZ ≥ 0.2 m at ≥ 30°) and A 2.2.3 (max GZ at ≥ 25°); [SYM]; [2D]', rows });
   }
 
   // 4 — mesh checks, repair and origin-independent volume
@@ -293,6 +397,66 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       chk('…volume 8 − 0.25 m³', massProperties(v.tris).volume, 7.75, 0, 1e-12);
       const lone = repairMesh(new Float64Array([...box, ...flipTris(boxTris(1, 1, 1, 6, 0, 0))]), tol);
       chk('box and a separate inverted cube: the cube is turned (volume 9 m³)', massProperties(lone.tris).volume, 9, 0, 1e-12);
+    }
+    {
+      // R1-16: parts that touch along shared edges, one of them inside out, in one soup
+      const lower = boxTris(4, 2, 1);
+      for (const [h, want] of [[1, 16], [0.5, 12]]) {
+        // the contact faces are triangulated differently (prism() splits the top and bottom along opposite diagonals)
+        const r = repairMesh(new Float64Array([...lower, ...flipTris(boxTris(4, 2, h, 0, -1, 1))]), tol);
+        chk(`stacked boxes 4×2×1 + 4×2×${h}, the upper one inside out: volume ${want} m³`, massProperties(r.tris).volume, want, 0, 1e-12);
+        chk('…2 shells, the upper one turned, no overlap or void reported', r.report.shells === 2 && r.report.inverted === 1 && r.report.overlaps === 0 && r.report.voids === 0, true);
+      }
+      // the contact triangles identical (the upper box is the lower one mirrored about z = 1, so it is inside out): each
+      // contact triangle is its own patch, joined to a fixed side of its plane, in either order of the parts in the file
+      const mir = Float64Array.from(lower); for (let i = 2; i < mir.length; i += 3) mir[i] = 2 - mir[i];
+      for (const [name, t] of [['lower first', [...lower, ...mir]], ['upper first', [...mir, ...lower]]]) {
+        const r = repairMesh(new Float64Array(t), tol);
+        chk(`stacked boxes with identical contact triangles, the upper one inside out (${name}): volume 16 m³, closed`, Math.abs(massProperties(r.tris).volume - 16) < 1e-12 && r.report.open === 0 && r.report.misoriented === 0, true);
+      }
+      {
+        // the same with the triangles in a shuffled order, so the file order says nothing about which part a triangle is in
+        const t = new Float64Array([...lower, ...flipTris(boxTris(4, 2, 0.5, 0, -1, 1))]), n = t.length / 9;
+        for (const sd of [0, 1, 2]) {
+          const q = Array.from({ length: n }, (_, i) => i);   // Fisher–Yates with a fixed seed per order
+          let seed = 12345 + 777 * sd; for (let i = n - 1; i > 0; i--) { seed = (seed * 1103515245 + 12345) % 2147483648; const j = seed % (i + 1); [q[i], q[j]] = [q[j], q[i]]; }
+          const o = new Float64Array(t.length);
+          q.forEach((src, i) => o.set(t.subarray(src * 9, src * 9 + 9), i * 9));
+          chk(`stacked boxes 4×2×1 + 4×2×0.5, upper inside out, triangles shuffled (order ${sd + 1}): volume 12 m³`, massProperties(repairMesh(o, tol).tris).volume, 12, 0, 1e-12);
+        }
+      }
+      const edge = repairMesh(new Float64Array([...lower, ...flipTris(boxTris(4, 2, 1, 0, 1, 1))]), tol);
+      chk('two boxes sharing one edge, the second inside out: volume 16 m³', massProperties(edge.tris).volume, 16, 0, 1e-12);
+      // a hollow body (void 1.5 m³) turned inside out as a whole, next to a raft, through repairMesh alone (no whole-file
+      // flip first): the hollow body and its void are both turned back
+      const outer = boxTris(4, 2, 1, 0, -1, -3), inner = flipTris(boxTris(3, 1, 0.5, 0.5, -0.5, -2.75)), raft = boxTris(10, 10, 1, -5, -5, 0);
+      const hb = repairMesh(new Float64Array([...raft, ...flipTris(new Float64Array([...outer, ...inner]))]), tol);
+      chk('raft + hollow box inside out: volume 100 + 8 − 1.5 = 106.5 m³', massProperties(hb.tris).volume, 106.5, 0, 1e-12);
+      chk('…1 void, no overlap', hb.report.voids === 1 && hb.report.overlaps === 0, true);
+      const core = boxTris(1, 0.5, 0.2, 1.5, -0.25, -2.6);
+      const nest = repairMesh(flipTris(new Float64Array([...outer, ...inner, ...core])), tol);
+      chk('box / void / solid core inside the void, all inside out: volume 8 − 1.5 + 0.1 = 6.6 m³', massProperties(nest.tris).volume, 6.6, 0, 1e-12);
+    }
+    {
+      // R1-19: shells whose surfaces cross are overlaps; shells that only touch are not
+      const A = boxTris(4, 1, 1, -2, -0.5, 0), B = transformTris(A, mat3.rotZ(Math.PI / 2));
+      chk('two 4×1×1 m boxes crossing at right angles (no face centroid of either inside the other): overlap reported', repairMesh(new Float64Array([...A, ...B]), tol).report.overlaps, 2, 0, 0);
+      const C = boxTris(2, 2, 1, -1, -1, 0), D = boxTris(1, 1, 1, 0.5, 0.5, 0.5);
+      chk('a box and a cube poking out of one corner: overlap reported', repairMesh(new Float64Array([...C, ...D]), tol).report.overlaps, 2, 0, 0);
+      chk('stacked boxes that only touch: no overlap', repairMesh(new Float64Array([...boxTris(4, 2, 1), ...boxTris(4, 2, 1, 0, -1, 1)]), tol).report.overlaps, 0, 0, 0);
+    }
+    {
+      // R1-21: welding by distance. Copies of a vertex 2e-13 m apart on either side of a cell boundary are one vertex
+      const w = 1e-6;
+      for (const [name, x] of [['a cell boundary', Math.round(4 / w) * w], ['the old rounding boundary', Math.round(4 / w) * w + w / 2]]) {
+        const b = Float64Array.from(boxTris(4, 2, 1));
+        let k = 0; for (let i = 0; i < b.length; i += 3) if (Math.abs(b[i] - 4) < 1e-9) b[i] = x + (k++ % 2 ? 1e-13 : -1e-13);
+        const c = meshCheck(b, w);
+        chk(`box whose end vertices straddle ${name} (copies 2e-13 m apart): closed, 0 open, 0 wound wrong`, c.open + c.misoriented, 0, 0, 0);
+        chk('…welds to the box\'s 8 corners', weld(b, w).nVerts, 8, 0, 0);
+      }
+      const far = weld(new Float64Array([0, 0, 0, 1.5e-6, 0, 0, 0, 0, 0]), 1e-6);
+      chk('two points 1.5 tol apart are not joined; exact copies are', far.vid[0] === far.vid[2] && far.vid[0] !== far.vid[1], true);
     }
     if (getTris) {
       // the closed STEP spheres: degenerate pole triangles must not be reported as open
@@ -370,6 +534,25 @@ export async function runStabilityValidation({ chkFactory, getTris = null }) {
       chk('scow 40°: free-trim GZ 0.2994 m at trim −7.27°', +at(fr, 40).gz.toFixed(4) === 0.2994 && +(at(fr, 40).trim / DEG).toFixed(2) === -7.27, true);
       chk('scow: fixed trim overstates the max GZ (0.3536 against 0.3040 m)', fx.summary.max > fr.summary.max, true);
       chk('scow: fixed trim overstates the vanishing angle (90.9° against 85.0°)', fx.summary.vanish > fr.summary.vanish, true);
+    }
+    {
+      // free trim must take the trim of least energy, not the symmetric one: the corner-down cube heeled about an axis
+      // of symmetry has B level with G at trim 0 by symmetry, but that trim is an energy maximum
+      const cube = boxTris(1, 1, 1, -0.5, -0.5, -0.5), d = [1, 1, 1].map((x) => x / Math.sqrt(3)), a = Math.acos(d[2]);
+      const k = [d[1] / Math.hypot(d[0], d[1]), -d[0] / Math.hypot(d[0], d[1])], C = Math.cos(a), S = Math.sin(a), K = 1 - C;
+      const rel = transformTris(cube, [C + K * k[0] * k[0], K * k[0] * k[1], S * k[1], K * k[0] * k[1], C + K * k[1] * k[1], -S * k[0], -S * k[1], S * k[0], C]);
+      const H = hydrostatics(rel, solveWaterline(rel, 0.5).zw, 500, 1000), az = H.axisMinDeg + 90;   // an axis of symmetry
+      const [ux, uy] = [Math.cos(az * DEG), Math.sin(az * DEG)];
+      const U = (deg, trim) => { const R = mat3.mul(rotH(-uy, ux, trim), rotH(ux, uy, deg * DEG)); return -solveWaterline(transformTris(rel, R), H.V).sub.B[2]; };
+      let ok = true, lower = 0;
+      for (const deg of [10, 15, 20]) {
+        const r = gzAt(rel, H.V, az, deg, { freeTrim: true });
+        const e = U(deg, r.trim);
+        if (!(U(deg, r.trim + 0.01) > e && U(deg, r.trim - 0.01) > e)) ok = false;
+        if (e < U(deg, 0) - 1e-9) lower++;
+      }
+      chk('corner-down cube heeled 10°, 15°, 20° about an axis of symmetry: free trim is a local energy minimum', ok, true);
+      chk('…below the energy of the symmetric trim 0 at all three angles', lower, 3, 0, 0);
     }
     out.push({ id: 'rest_and_trim', title: 'Neutral buoyancy, static rest attitude (Newton), free-trim GZ (no trimming moment, least energy, envelope theorem)', ref: '[RT] wall-sided list; potential energy U = W(z_G − z_B)', rows });
   }

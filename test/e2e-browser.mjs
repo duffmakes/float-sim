@@ -135,6 +135,32 @@ await waitGz("t.includes('fixed trim') && t.includes('roll (about x)')");
   const mi = await page.locator('#modelInfo').innerText();
   expect('STL with a flipped side face: re-oriented on import (2 faces), 8 m³', mi.includes('2 faces wound against') && mi.includes('8 m³'), mi.split('\n').slice(-2).join(' | '));
   expect('…true hydrostatics: draft 0.4 m, GM_T 0.533 m', near(num(await stat('Draft')), 0.4, 1e-3) && near(num(await stat('GMT')), 0.533333, 1e-3), `${await stat('Draft')} / ${await stat('GMT')}`);
+  // openings (review R1-15) and crossing shells (R1-19): the same box without its deck, without an end face, and two
+  // crossing boxes, all repaired in the import worker
+  const stlOf = (name, quads) => {
+    const T = []; for (const [a, b, c, d] of quads) T.push([a, b, c], [a, c, d]);
+    return { name, mimeType: 'model/stl', buffer: Buffer.from(`solid ${name}\n${T.map((t) => `facet normal 0 0 0\nouter loop\n${t.map((v) => `vertex ${v.join(' ')}`).join('\n')}\nendloop\nendfacet`).join('\n')}\nendsolid ${name}\n`) };
+  };
+  const boxQ = (x0, y0, z0, x1, y1, z1, skip = '') => [
+    ['bottom', [V(x0, y0, z0), V(x0, y1, z0), V(x1, y1, z0), V(x1, y0, z0)]], ['deck', [V(x0, y0, z1), V(x1, y0, z1), V(x1, y1, z1), V(x0, y1, z1)]],
+    ['-y', [V(x0, y0, z0), V(x1, y0, z0), V(x1, y0, z1), V(x0, y0, z1)]], ['+y', [V(x0, y1, z0), V(x0, y1, z1), V(x1, y1, z1), V(x1, y1, z0)]],
+    ['-x', [V(x0, y0, z0), V(x0, y0, z1), V(x0, y1, z1), V(x0, y1, z0)]], ['+x', [V(x1, y0, z0), V(x1, y1, z0), V(x1, y1, z1), V(x1, y0, z1)]],
+  ].filter(([k]) => k !== skip).map(([, q4]) => q4);
+  const loadStl = async (f) => {
+    await page.setInputFiles('#file', f);
+    await page.waitForFunction((n) => document.querySelector('#modelInfo').innerText.includes(n), f.name, { timeout: 60000 });
+    for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+    await page.waitForFunction(() => !document.querySelector('#gzInfo').classList.contains('stale') && !/being worked out/.test(document.querySelector('#verdict').innerText), null, { timeout: 60000 }).catch(() => {});
+    await page.waitForTimeout(300);
+  };
+  await loadStl(stlOf('box_nodeck.stl', boxQ(0, -1, 0, 4, 1, 1, 'deck')));
+  const vd = await page.locator('#verdict').innerText(), gzd = await page.locator('#gzInfo').innerText();
+  expect('open-deck STL: the verdict\'s range ends where an opening goes under water', /opening goes under water/.test(vd), vd.slice(0, 220));
+  expect('…the roll GZ panel gives the downflooding angle 32° (exact section: 32.0054°)', /goes under water at 32°/.test(gzd), gzd.split('\n').slice(-1).join(''));
+  await loadStl(stlOf('box_noend.stl', boxQ(0, -1, 0, 4, 1, 1, '-x')));
+  expect('STL with an end face missing: the verdict is "Opening under water"', (await page.locator('#verdict').innerText()).startsWith('Opening under water'), (await page.locator('#verdict').innerText()).slice(0, 120));
+  await loadStl(stlOf('cross.stl', [...boxQ(-2, -0.5, 0, 2, 0.5, 1), ...boxQ(-0.5, -2, 0, 0.5, 2, 1)]));
+  expect('two crossing boxes in one STL: the overlap is reported', /overlaps? another shell/.test(await page.locator('#modelInfo').innerText()), (await page.locator('#modelInfo').innerText()).split('\n').slice(-2).join(' | '));
   await page.setInputFiles('#file', MODEL);
   await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
   for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
@@ -154,8 +180,19 @@ await fill('#cgy', '0.05'); await page.press('#cgy', 'Enter'); await page.waitFo
 expect('not-at-rest warning shown', (await page.locator('#verdict').innerText()).includes('not at rest'));
 await settle();
 const roll = num(await page.inputValue('#rollN'));
-expect('settles at the wall-sided list −5.31999° (to 1e-4°)', near(roll, -5.319994, 2e-4), `roll ${roll}°`);
+expect('settles at the wall-sided list −5.31999° (to 2e-4°)', near(roll, -5.319994, 2e-4), `roll ${roll}°`);
 expect('…and the verdict then says it is at rest', !(await page.locator('#verdict').innerText()).includes('not at rest'));
+// 4b — a tender box: GM_T 0.01 m, CoG 2 mm off the centreline. The simulation alone stops about 2.5e-3° short of the
+// wall-sided list (−7.001683°; exact here, since neither the deck edge nor the bilge emerges), so this checks that Settle
+// ends with its static equilibrium solve (review R1-23)
+await fill('#cgy', '0.002'); await page.press('#cgy', 'Enter');
+await fill('#cgz', String(0.2 + 1 / 1.2 - 0.01)); await page.press('#cgz', 'Enter'); await page.waitForTimeout(200);
+await settle();
+{
+  const tr = num(await page.inputValue('#rollN')), si = await page.locator('#simInfo').innerText();
+  expect('tender box settles at the wall-sided list −7.001683° (to 2e-4°; the simulation alone stops ~2.5e-3° short)', near(tr, -7.001683, 2e-4), `roll ${tr}°`);
+  expect('…and Settle finished with the static equilibrium solve', si.includes('Finished with a static equilibrium solve'), si.split('\n').slice(-1).join(''));
+}
 if (shots) await page.screenshot({ path: `${shots}/app-list.png` });
 
 // 5 — cube s.g. ½: unstable upright. Fixed-trim GZ about x turns positive at 45° (edge-down, which is neutral about
@@ -179,7 +216,7 @@ expect('…and comes to rest stable (GM_T, GM_L > 0)', num(await stat('GMT')) > 
   const off = Math.acos(Math.min(1, (Math.abs(up[0]) + Math.abs(up[1]) + Math.abs(up[2])) / Math.sqrt(3))) * 180 / Math.PI;
   expect('…corner-down: body diagonal vertical (within 0.001°)', off < 1e-3, `roll ${cr}°, pitch ${cp}°: ${off.toExponential(2)}° off`);
   const si = await page.locator('#simInfo').innerText();
-  expect('…and does not claim it started at rest', !si.includes('started at rest') && si.includes('static equilibrium solve'), si.split('\n').slice(-2).join(' | '));
+  expect('…and does not claim it started at rest, and finished with the static equilibrium solve', !si.includes('started at rest') && si.includes('Finished with a static equilibrium solve'), si.split('\n').slice(-2).join(' | '));
 }
 if (shots) await page.screenshot({ path: `${shots}/app-cube.png` });
 
@@ -526,4 +563,5 @@ if (!capyStatus.available) {
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
-process.exit(fails ? 1 : 0);
+// exit once stdout has been written out: process.exit() does not wait for pending writes to a pipe (review R1-24)
+process.stdout.write('', () => process.exit(fails ? 1 : 0));

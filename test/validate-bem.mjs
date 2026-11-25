@@ -289,4 +289,5 @@ console.log('\n— known models, meshed as the app does (panelSize at standard f
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed`);
-process.exit(fail ? 1 : 0);
+// exit once stdout has been written out: process.exit() does not wait for pending writes to a pipe (review R1-24)
+process.stdout.write('', () => process.exit(fail ? 1 : 0));

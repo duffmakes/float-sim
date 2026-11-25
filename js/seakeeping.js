@@ -221,9 +221,11 @@ export function initSeakeeping(api) {
     const model = linearModel(relFine, hydrostatics(relFine, sol.zw, st.m, st.rho), st.m, IGw, st.rho, coeffs, { diffraction: diffModes });
     // roll range of stability (GZ about the run's x axis), at the trim setting of the GZ panel
     const freeTrim = !!(api.gzFreeTrim && api.gzFreeTrim());
-    const gz = gzAnalysis(rel, H.V, 'x', { GM: gmAbout(H, 'x'), freeTrim }).summary;
+    // (the range ends where an opening of the mesh goes under water, if that comes before the vanishing angle)
+    const open = st.model.openPts ? transformTris(st.model.openPts, Rsk, st.G) : null;
+    const gz = gzAnalysis(rel, H.V, 'x', { GM: gmAbout(H, 'x'), freeTrim, open }).summary;
     const offset = Math.hypot(...H.offset);
-    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), trim: freeTrim ? 'free trim' : 'fixed trim', offset, st, hulls: {}, moorBase, toEq };
+    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.end ?? 180), trim: `${freeTrim ? 'free trim' : 'fixed trim'}${gz.flood !== null && gz.end === gz.flood ? '; the range ends where an opening goes under water' : ''}`, offset, st, hulls: {}, moorBase, toEq };
     return K.prep;
   }
 

@@ -23,10 +23,13 @@ closed and consistently oriented (every directed edge p→q used as often as q�
   `submerged`'s sums equal the volume and first moments of that closed surface, as computed from any apex;
 * `green_indep`: the waterplane sums do not depend on the point the lid is fanned from.
 
-What is taken as given: that a closed, consistently oriented triangulated surface bounds a solid whose volume is
-(1/6)·Σ det (the divergence theorem for polyhedra). Proofs/Tetra.lean proves the single tetrahedron's case, and
+What is taken as given: that for a closed, embedded (not self-intersecting), outward-oriented triangulated surface the
+sums are the enclosed volume, (1/6)·Σ det, and its first and second moments (the divergence theorem for polyhedra).
+For any closed surface the sums are the integrals of the winding number: overlapping shells count twice and an inward
+surface gives −V. Proofs/Tetra.lean proves the volume of a single tetrahedron (not its moments), and
 Proofs/MeshBox.lean runs the transcribed algorithm on a box at any draft and gets its exact volume, centre of
-buoyancy and waterplane.
+buoyancy and waterplane. `Balanced` compares exactly equal points; the code's `meshCheck` tests it after welding
+vertices within 10⁻⁷ of the body's size, so these theorems apply to the welded mesh.
 -/
 
 namespace FloatSim.Mesh

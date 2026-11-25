@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
 import { STLLoader } from '../vendor/STLLoader.js';
 import {
-  mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, massProperties,
+  mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, massProperties, worstHeelRange,
   inertiaAbout, bbox, stabilityVerdict, restAttitude, mat3ToQuat, quatToMat3, G0,
 } from './physics.js';
 import { FloatSim } from './sim.js';
@@ -195,22 +195,44 @@ async function loadFile(file) {
       parts = await readCad(buf, ext, $('quality').value);
       S.lastCad = file;
     }
-    task.update({ detail: `Building the model: volume, centroid, inertia and the watertight check (${parts.length} bod${parts.length > 1 ? 'ies' : 'y'})…` });
+    task.update({ detail: `Checking the mesh: welding, face winding, shells, voids and overlaps (${parts.length} bod${parts.length > 1 ? 'ies' : 'y'}, ${(parts.reduce((n, p) => n + p.length, 0) / 9).toLocaleString()} triangles)…` });
+    await nextPaint();
+    const prepared = await prepareInWorker(parts);
+    task.update({ detail: 'Building the model: volume, centroid and inertia…' });
     await nextPaint();
     // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known.
     // STL has no units: the "STL drawn in" menu gives the file's units.
-    setModel(file.name, parts, parts.length, { rawScale: ext === 'stl' ? null : 0.001 });
+    setModel(file.name, null, parts.length, { rawScale: ext === 'stl' ? null : 0.001, prepared });
   } catch (e) {
     console.error(e);
     alert(e.message || String(e));
   } finally { task.done(); }
 }
 
+// The import repair (js/meshcheck.js) in a worker, so a large multi-part file does not freeze the page; on the page
+// itself if workers are unavailable.
+function prepareInWorker(parts) {
+  return new Promise((resolve) => {
+    let w;
+    const here = () => { if (w) w.terminate(); resolve(prepareMesh(parts)); };
+    try { w = new Worker(new URL('./meshworker.js', import.meta.url), { type: 'module' }); } catch (e) { here(); return; }
+    w.onmessage = (e) => {
+      w.terminate();
+      if (e.data.error) { console.error(e.data.error); here(); return; }
+      resolve({ tris: new Float64Array(e.data.tris), flipped: e.data.flipped, report: { ...e.data.report, openPts: new Float64Array(e.data.openPts) } });
+    };
+    w.onerror = (e) => { console.error(e); here(); };
+    const bufs = parts.map((p) => Float64Array.from(p).buffer);
+    w.postMessage({ parts: bufs }, bufs);
+  });
+}
+
 function setModel(name, raw, nParts = 1, opts = {}) {
   // a different model starts in the file's own csys; reloading the same file (another mesh quality) keeps the one entered
   if (!S.model || S.model.name !== name) resetRef();
-  // re-orient faces wound against their neighbours and turn inside-out shells (js/meshcheck.js), once, on the file's numbers
-  const rep = prepareMesh(raw);
+  // re-orient faces wound against their neighbours and turn inside-out shells (js/meshcheck.js), once, on the file's
+  // numbers; a file is repaired in a worker before it gets here (opts.prepared)
+  const rep = opts.prepared || prepareMesh(raw);
   S.model = { name, raw: rep.tris, mesh: rep.report, nParts, rawScale: opts.rawScale ?? null };
   unitsHint();
   stopSim(); S.sim = null; S.preview = null; hideBanner();
@@ -240,6 +262,8 @@ function rescaleModel() {
   const M = S.model; if (!M) return;
   const k = M.rawScale ?? stlScale();
   M.tris = toRefTris(M.raw.map((v) => v * k), S.ref);   // metres, in the reference csys
+  // corners of the mesh's openings (edges used by one triangle), to tell when an opening is under water
+  M.openPts = M.mesh.openPts && M.mesh.openPts.length ? toRefTris(M.mesh.openPts.map((v) => v * k), S.ref) : null;
   M.mp = massProperties(M.tris);
   const bb = bbox(M.tris);
   M.bb = bb;
@@ -284,11 +308,11 @@ function rescaleModel() {
     </table>
     ${nFix ? `<div class="warn">${plural(nFix, 'face')} wound against ${nFix === 1 ? 'its' : 'their'} neighbours (or a shell turned inside out) ${nFix === 1 ? 'was' : 'were'} re-oriented on import. Check the export if this is unexpected.</div>` : ''}
     ${R.misoriented || R.nonOrientable ? '<div class="bad">Some faces could not be oriented consistently (the surface folds or crosses itself). Volumes and stability are not reliable; repair the mesh in CAD.</div>' : ''}
-    ${M.open > 0 ? '<div class="warn">The mesh is not closed. The enclosed volume treats the openings as closed by flat lids at the top of the body, and the hydrostatics hold only while every opening stays above the waterline.</div>' : ''}
+    ${M.open > 0 ? '<div class="warn">The mesh is not closed. The enclosed volume treats the openings as closed by flat lids at the top of the body, and the hydrostatics hold only while every opening stays above the waterline. The verdict says when an opening is under water, and the GZ curves end where one goes under (the downflooding angle).</div>' : ''}
     ${R.overlaps ? `<div class="warn">${plural(R.overlaps, 'shell')} overlap${R.overlaps === 1 ? 's' : ''} another shell: the overlapping volume is counted twice. Merge the solids (Boolean union) in CAD.</div>` : ''}
     ${R.voids ? '<div class="hint">A void (an inner shell wound inwards) is left out of the volume and mass properties, and it counts as flooded for buoyancy below the waterline. If it is sealed and dry, remove the inner surface.</div>' : ''}
-    ${M.nParts > 1 && !R.overlaps ? '<div class="hint">Multiple bodies are treated as one rigid object.</div>' : ''}
-    ${!R.nestChecked ? '<div class="hint">Too many shells to check them for overlaps.</div>' : ''}
+    ${(M.nParts > 1 || R.shells > 1) && !R.overlaps ? `<div class="hint">${R.shells > 1 ? `The ${R.shells.toLocaleString()} shells are` : 'The bodies are'} treated as one rigid object. ${R.nestChecked ? 'No overlaps were found between them' : 'They were not all checked for overlaps'}; solids that overlap would have their shared volume counted twice.</div>` : ''}
+    ${!R.nestChecked ? '<div class="hint">The overlap check stopped early on this large mesh, so overlapping shells may be missed.</div>' : ''}
     ${vNeg ? '<div class="bad">Volume is not positive — the geometry is not a closed solid.</div>' : ''}`;
 }
 
@@ -439,20 +463,26 @@ $('gzFree').addEventListener('change', (e) => {
 // ------------------------------------------------------------------ static analysis
 function relGeometry(R) {
   const G = getCogM();
-  return { G, rel: transformTris(S.model.tris, R, G) };
+  return { G, rel: transformTris(S.model.tris, R, G), relOpen: S.model.openPts ? transformTris(S.model.openPts, R, G) : null };
+}
+// how far the lowest opening point is below the waterline zw (positive: an opening is under water), or null
+function openDepth(relOpen, zw) {
+  if (!relOpen) return null;
+  let z = Infinity; for (let i = 2; i < relOpen.length; i += 3) if (relOpen[i] < z) z = relOpen[i];
+  return zw - z;
 }
 
 function update() {
   if (!S.model) return;
   const R = getR();
-  const { G, rel } = relGeometry(R);
+  const { G, rel, relOpen } = relGeometry(R);
   const m = getMass(), rho = S.rho;
   const Vneed = m / rho;
   const sol = solveWaterline(rel, Vneed);
   const H = hydrostatics(rel, sol.zw, m, rho);
-  H.status = sol.status; H.neutral = !!sol.neutral;
+  H.status = sol.status; H.neutral = !!sol.neutral; H.openDepth = openDepth(relOpen, sol.zw);
   S.stateId = (S.stateId || 0) + 1;   // the GZ worker's answers are matched to this state
-  S.last = { R, G, rel, H, m, rho, Vneed };
+  S.last = { R, G, rel, relOpen, H, m, rho, Vneed };
 
   const mi = $('massInfo');
   const avgRho = m / S.model.mp.volume;
@@ -614,6 +644,9 @@ function verdictFor(H) {
   if (H.status === 'floats' && (!(H.wp.area > 0) || H.wpBad)) {
     return { level: 'bad', label: 'Mesh error', text: 'The waterplane has a negative area or second moment, which no real body has: some faces are wound the wrong way. Repair the mesh in CAD; these results are not meaningful.' };
   }
+  if (H.status === 'floats' && H.openDepth !== null && H.openDepth > 1e-9 * S.model.diag) {
+    return { level: 'bad', label: 'Opening under water', text: `An opening in the mesh (an edge with a face on one side only) is ${L(H.openDepth)} below the waterline at this attitude, so water would come in. These hydrostatics treat the body as closed by flat lids at the top and do not apply. If the opening is a gap in the export, close the mesh in CAD.` };
+  }
   const range = S.range && S.range.stateId === S.stateId && S.range.freeTrim === S.gzFree ? S.range.summary : null;
   const v = stabilityVerdict(H.wp.area > 0 ? H.GMmin : NaN, { range, scale: S.model.diag, freeTrim: S.gzFree });
   return { ...v, label: { good: 'Stable', ok: 'Stable (small range)', warn: 'Neutral', bad: 'Unstable', na: '—' }[v.level] };
@@ -674,65 +707,108 @@ function renderStats(H, mode) {
   ].join('');
 }
 
-// ------------------------------------------------------------------ GZ curve
-// Computed in js/gzworker.js (fixed or free trim), so the page stays responsive on large meshes and with free trim.
-// Each request also brings the GZ about the weakest waterplane axis in both heel directions, for the verdict's range.
-let gzTimer = null, gzWorker = null, gzBusy = null, gzQueued = null, gzSeq = 0;
+// ------------------------------------------------------------------ GZ curves
+// Computed in a pool of workers (js/gzworker.js; fixed or free trim), so the page stays responsive on large meshes and
+// with free trim. Each request draws the panel's curve, then works out the verdict's range of stability: for a stable
+// body the worst heel direction over all directions (worstHeelRange in js/physics.js), otherwise the worse sense about
+// the weakest axis. A newer request makes the older one's queued jobs stale.
+let gzTimer = null, gzSeq = 0, gzPool;   // gzPool: undefined until first used, null when workers are unavailable
+const STALE = Symbol('stale');
 function scheduleGZ() { clearTimeout(gzTimer); gzTimer = setTimeout(requestGZ, 120); }
-const panelAxis = (H) => (S.gzAxis === 'min' ? H.axisMinDeg : S.gzAxis);
 function clearGZ() {
   const cv = $('gz'), ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, cv.width, cv.height);
   $('gzInfo').textContent = '';
 }
-function requestGZ() {
+function makeGzPool() {
+  const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1));
+  const P = { ws: [], queue: [], gid: 0, jid: 0, geom: null };
+  try {
+    for (let i = 0; i < n; i++) {
+      const x = { w: new Worker(new URL('./gzworker.js', import.meta.url), { type: 'module' }), busy: false, gid: 0, cur: null };
+      x.w.onmessage = (e) => {
+        const c = x.cur; x.busy = false; x.cur = null;
+        if (c && c.id === e.data.id) { if (e.data.error) c.q.reject(new Error(e.data.error)); else c.q.resolve(e.data); }
+        gzPump();
+      };
+      x.w.onerror = (e) => {   // a worker that fails: finish here without workers
+        console.error(e);
+        const pend = [...P.ws.map((y) => y.cur && y.cur.q).filter(Boolean), ...P.queue];
+        P.ws.forEach((y) => y.w.terminate()); gzPool = null;
+        pend.forEach((q) => q.reject(STALE));
+        scheduleGZ();
+      };
+      P.ws.push(x);
+    }
+  } catch (e) { P.ws.forEach((y) => y.w.terminate()); return null; }
+  return P;
+}
+function gzPump() {
+  const P = gzPool; if (!P) return;
+  while (P.queue.length) {
+    const x = P.ws.find((y) => !y.busy); if (!x) return;
+    const q = P.queue.shift();
+    if (q.gid !== P.geom.gid) { q.reject(STALE); continue; }
+    if (x.gid !== q.gid) {
+      const g = P.geom, rel = Float64Array.from(g.rel).buffer, open = g.open ? Float64Array.from(g.open).buffer : null;
+      x.w.postMessage({ type: 'geom', gid: g.gid, rel, open, V: g.V }, open ? [rel, open] : [rel]);
+      x.gid = g.gid;
+    }
+    x.busy = true; x.cur = { id: ++P.jid, q };
+    x.w.postMessage({ type: 'job', id: x.cur.id, ...q.job });
+  }
+}
+// run(jobs) → Promise of [{ curve, summary }] for one geometry { rel, open, V }; jobs: { axis, GM, freeTrim, refineMax, wantCurve }
+function gzRunner(geom) {
+  if (gzPool === undefined) gzPool = makeGzPool();
+  if (!gzPool) {
+    return async (jobs) => jobs.map((j) => gzAnalysis(geom.rel, geom.V, j.axis, { GM: j.GM, freeTrim: j.freeTrim, open: geom.open, refineMax: j.refineMax }));
+  }
+  const P = gzPool, gid = ++P.gid;
+  P.geom = { gid, ...geom };
+  for (const q of P.queue.splice(0)) q.reject(STALE);
+  return (jobs) => Promise.all(jobs.map((job) => new Promise((resolve, reject) => {
+    if (!gzPool || gzPool !== P) { reject(STALE); return; }
+    P.queue.push({ gid, job, resolve, reject }); gzPump();
+  })));
+}
+async function requestGZ() {
   const src = S.preview || S.last;
   if (!S.model || !src || src.H.status === 'sinks' || !(src.H.wp.area > 0)) { clearGZ(); return; }
-  const H = src.H, ft = S.gzFree, jobs = [];
-  if (S.gzAxis !== 'min') jobs.push({ key: 'panel', axis: S.gzAxis, GM: gmAbout(H, S.gzAxis), freeTrim: ft });
-  jobs.push({ key: 'min+', axis: H.axisMinDeg, GM: H.GMmin, freeTrim: ft }, { key: 'min-', axis: H.axisMinDeg + 180, GM: H.GMmin, freeTrim: ft });
-  const req = { seq: ++gzSeq, stateId: S.stateId, mode: S.preview ? 'preview' : 'static', rel: src.rel, H, V: H.V, jobs, freeTrim: ft, axis: S.gzAxis };
-  if (gzWorker === null) {
-    try {
-      gzWorker = new Worker(new URL('./gzworker.js', import.meta.url), { type: 'module' });
-      gzWorker.onmessage = onGZ;
-      gzWorker.onerror = (e) => { console.error(e); gzWorker = false; gzBusy = null; };
-    } catch (e) { gzWorker = false; }
-  }
-  if (!gzWorker) {   // no workers: compute here
-    applyGZ(req, jobs.map((j) => ({ key: j.key, ...gzAnalysis(req.rel, req.V, j.axis, { GM: j.GM, freeTrim: j.freeTrim }) })));
-    return;
-  }
+  const H = src.H, ft = S.gzFree, seq = ++gzSeq, stateId = S.stateId, mode = S.preview ? 'preview' : 'static', axis = S.gzAxis;
+  const stale = () => seq !== gzSeq;
+  const run = gzRunner({ rel: src.rel, open: src.relOpen || null, V: H.V });
   // the panel shows the previous curve faded until the new one arrives
   $('gz').classList.add('stale'); $('gzInfo').classList.add('stale');
-  if (gzBusy) { gzQueued = req; return; }
-  sendGZ(req);
+  const pAxis = axis === 'min' ? H.axisMinDeg : axis;
+  const panel = run([{ axis: pAxis, GM: gmAbout(H, pAxis), freeTrim: ft, wantCurve: true }]).then(([p]) => {
+    if (stale()) return;
+    drawGZChart({ H, curve: p.curve, summary: p.summary, freeTrim: ft, axis });
+    $('gz').classList.remove('stale'); $('gzInfo').classList.remove('stale');
+  });
+  const range = (async () => {
+    const job = (az, refineMax) => ({ axis: az, GM: gmAbout(H, az), freeTrim: ft, refineMax });
+    let r;
+    if (H.GMmin > 1e-9 * S.model.diag) {
+      const w = await worstHeelRange(async (azs) => { const out = await run(azs.map((az) => job(az, false))); if (stale()) throw STALE; return out.map((o) => o.summary); }, H.axisMinDeg);
+      const [full] = await run([job(w.az, true)]);   // the worst direction again, with its maximum refined
+      r = { ...full.summary, az: w.az, weakest: w.weakest, dirs: w.dirs };
+    } else {
+      const [a, b] = await run([{ axis: H.axisMinDeg, GM: H.GMmin, freeTrim: ft }, { axis: H.axisMinDeg + 180, GM: H.GMmin, freeTrim: ft }]);
+      r = worseSide(a.summary, b.summary);
+    }
+    if (stale()) return;
+    S.range = { stateId, freeTrim: ft, summary: r };
+    if (stateId === S.stateId) renderVerdict(H, mode);
+  })();
+  try { await Promise.all([panel, range]); } catch (e) { if (e !== STALE) console.error(e); }
 }
-function sendGZ(req) {
-  gzBusy = req;
-  const buf = Float64Array.from(req.rel).buffer;
-  gzWorker.postMessage({ id: req.seq, rel: buf, V: req.V, jobs: req.jobs }, [buf]);
-}
-function onGZ(e) {
-  const req = gzBusy; gzBusy = null;
-  if (gzQueued) { const q = gzQueued; gzQueued = null; sendGZ(q); }
-  if (e.data.error) { console.error(e.data.error); return; }
-  if (req && req.seq === e.data.id && req.seq === gzSeq) applyGZ(req, e.data.out);
-}
-// the worse of the two heel directions about the weakest axis: the earlier vanishing angle (or loll angle)
+// the worse of the two heel senses about the weakest axis: the earlier end of the range (or loll angle)
 function worseSide(a, b) {
   if (a.unstable) return (b.loll ?? Infinity) < (a.loll ?? Infinity) ? b : a;
-  const va = a.vanish ?? Infinity, vb = b.vanish ?? Infinity;
+  const va = a.end ?? Infinity, vb = b.end ?? Infinity;
   if (va !== vb) return vb < va ? b : a;
   return b.maxDeg < a.maxDeg ? b : a;
-}
-function applyGZ(req, out) {
-  const by = Object.fromEntries(out.map((o) => [o.key, o]));
-  S.range = { stateId: req.stateId, freeTrim: req.freeTrim, summary: worseSide(by['min+'].summary, by['min-'].summary) };
-  if (req.stateId === S.stateId) renderVerdict(req.H, req.mode);
-  const p = by.panel || by['min+'];
-  drawGZChart({ ...req, curve: p.curve, summary: p.summary });
-  $('gz').classList.remove('stale'); $('gzInfo').classList.remove('stale');
 }
 function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   const cv = $('gz'), ctx = cv.getContext('2d');
@@ -767,6 +843,11 @@ function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   curve.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(p.deg), Y(p.gz * k)));
   ctx.stroke();
   if (sum.max > 0) { ctx.fillStyle = '#2a78d6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X(sum.maxDeg), Y(sum.max * k), 4, 0, 7); ctx.fill(); ctx.stroke(); }
+  // downflooding angle: past it the curve treats the body as closed
+  if (sum.flood !== null && sum.flood !== undefined) {
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fillRect(X(sum.flood), y0, x1 - X(sum.flood), y1 - y0);
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(sum.flood), y0); ctx.lineTo(X(sum.flood), y1); ctx.stroke(); ctx.setLineDash([]);
+  }
   ctx.save(); ctx.translate(11, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillStyle = '#444';
   ctx.fillText(`GZ (${unitName()})`, 0, 0); ctx.restore();
 
@@ -776,14 +857,17 @@ function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   const sunk = curve.some((p) => p.status !== 'floats');
   const f1 = (x) => fmt(x, 1);
   const weaker = axis !== 'min' && H.GMmin < GM - 1e-6 * Math.max(1e-9, Math.abs(GM)) - 1e-9 * S.model.diag;
+  const flood = sum.flood ?? null, asIfClosed = flood !== null && flood < (sum.vanish ?? Infinity) ? ', as if closed' : '';
   $('gzInfo').innerHTML = `Heeling in ${axisName} from the current attitude, ${trimWords} (positive GZ = righting, dashed line = GM tangent).<br>
-    Max GZ <b>${L(sum.max)}</b> at <b>${f1(sum.maxDeg)}°</b>
-    → peak righting moment <b>${Nm(S.last.rho * G0 * V * Math.max(0, sum.max))}</b><br>
-    ${sum.unstable
-      ? `<span class="bad">GM about this axis is negative: this attitude is unstable.</span>${sum.loll !== null
+    ${sum.max > 0 ? `Max GZ <b>${L(sum.max)}</b> at <b>${f1(sum.maxDeg)}°</b>
+    → peak righting moment <b>${Nm(S.last.rho * G0 * V * sum.max)}</b>` : 'GZ is not positive at any heel angle about this axis.'}<br>
+    ${sum.neutral ? 'GM about this axis is zero (to round-off): no righting stiffness at small angles. ' : ''}${sum.unstable
+      ? `${sum.neutral ? '' : '<span class="bad">GM about this axis is negative: this attitude is unstable.</span>'}${sum.loll !== null
         ? ` GZ (${trim}, this axis) turns positive again at about <b>${f1(sum.loll)}°</b>${sum.vanish !== null ? ` and vanishes at ${f1(sum.vanish)}°` : ''}. The 3D resting attitude can differ: use Settle to find it.`
         : ' GZ stays negative all the way to 180°: the body turns over.'}`
-      : `Angle of vanishing stability (${trim}): <b>${sum.vanish !== null ? f1(sum.vanish) + '°' : '> 180° (self-righting)'}</b>`}
+      : `Angle of vanishing stability (${trim}${asIfClosed}): <b>${sum.vanish !== null ? f1(sum.vanish) + '°' : '> 180° (self-righting)'}</b>`}
+    ${flood !== null ? `<br>${flood <= 0 ? '<span class="bad">An opening in the mesh is under water at this attitude: water comes in, and the curve treats the body as closed.</span>'
+      : `<span class="warn">An opening goes under water at <b>${f1(flood)}°</b> (the downflooding angle): past it water comes in, and the curve (faded) treats the body as closed.</span>`}` : ''}
     ${weaker ? `<br><span class="warn">GM about the weakest waterplane axis (${L(H.GMmin)}) is below this axis's GM (${L(GM)}): choose Weakest to heel about it.</span>` : ''}
     ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}`;
 }
@@ -805,7 +889,7 @@ function computeTarget(preview) {
   if (!S.model) return;
   stopSim();
   const R = getR();
-  const { G, rel } = relGeometry(R);
+  const { G, rel, relOpen } = relGeometry(R);
   const [zmin, zmax] = [Math.min(...zr(rel)), Math.max(...zr(rel))];
   const mode = $('tMode').value, val = parseFloat($('tVal').value) || 0;
   let zw;
@@ -822,6 +906,7 @@ function computeTarget(preview) {
   const H = hydrostatics(rel, zw, 1, S.rho);
   const mass = S.rho * H.V;
   const Hm = hydrostatics(rel, zw, mass, S.rho);
+  Hm.openDepth = openDepth(relOpen, zw);
   S.target = { mass, H: Hm };
   const RT = mat3.transpose(R);
   const dModel = mat3.apply(RT, [Hm.B[0], Hm.B[1], 0]);
@@ -845,7 +930,7 @@ function computeTarget(preview) {
   $('tApply').disabled = false;
 
   if (preview) {
-    S.preview = { rel, H: Hm };
+    S.preview = { rel, relOpen, H: Hm };
     S.stateId = (S.stateId || 0) + 1;   // the verdict's GZ range must come from the previewed attitude
     placeStatic(R, Hm);
     renderStats(Hm, 'preview');

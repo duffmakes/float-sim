@@ -142,4 +142,5 @@ console.log('\n— js/physics.js massProperties against proofs/Proofs/Mesh.lean 
 }
 
 console.log(`\n${pass}/${pass + fail} passed${fail ? `, ${fail} FAILED` : ''}`);
-process.exit(fail ? 1 : 0);
+// exit once stdout has been written out: process.exit() does not wait for pending writes to a pipe (review R1-24)
+process.stdout.write('', () => process.exit(fail ? 1 : 0));
