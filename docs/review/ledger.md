@@ -10,7 +10,7 @@ positions. The owner approves each round's findings before fixes are made, and e
 
 | Round | Scope | Status | Findings | PR |
 | --- | --- | --- | --- | --- |
-| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | the owner approved the agreed fixes (2026-11-25) and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer's re-run (on Claude Opus 5.5: no Fable 5.2 credits left) closed all 14 and filed R1-15 … R1-22; the owner asked for those to be fixed in this round too, and they are, with R1-D1 found by the defender, on branch `review/round-1-hydrostatics`. The reviewer's check closed all but R1-16 and filed R1-26 … R1-31 (two major: side effects of the fixes), now fixed too; the reviewer's check of those is next | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 11 new ([report](round-1-rerun.md)); check: 11 closed, 6 new ([report](round-1-check.md)) | opens after the reviewer's check |
+| 1 | Hydrostatics and upright stability: waterline, displacement, KB, BM, GM, GZ curves, free-float equilibrium | closed (2026-11-25). The owner approved the agreed fixes and added two items: Lean proofs of the code's own formulas, volume included, and an optional free-trim GZ. The reviewer (on Claude Opus 5.5 from the re-run on: no Fable 5.2 credits left) re-ran the round and checked the fixes four times; the owner asked for every new finding to be fixed in this round, and decided R1-28 (the least-moment criterion) and R1-36's 0.1 % threshold. The fourth check closed everything | 14 findings, 5 questions ([report](round-1-findings.md)); re-run: 14 closed, 11 new ([report](round-1-rerun.md)); check: 11 closed, 6 new ([report](round-1-check.md)); second check: 6 closed, 4 new, R1-28 to the owner ([report](round-1-check2.md)); third check: 4 closed, 3 new ([report](round-1-check3.md)); fourth check: all closed, none new ([report](round-1-check4.md)) | branch `review/round-1-hydrostatics` |
 | 2 | Panel-method coefficients | not started | | |
 | 3 | RAOs and the Capytaine comparison | not started | | |
 | 4 | Time-domain simulation and the drop test | not started | | |
@@ -341,3 +341,27 @@ measurable.
 Results with these fixes: `validate-node` 599/599 fine and 502/502 normal and coarse (`validate-stability` 236
 checks); `validate-proofs` 20/20; `e2e-browser` 145/145, the validation page included. No Lean or Python-ported code
 changed.
+
+### Fourth check of the fixes (reviewer, on Claude Opus 5.5)
+
+Report: [round-1-check4.md](round-1-check4.md), on 78eb7ce. Closed: R1-36, R1-37, R1-38 and Q6. No new findings. The
+reviewer treated the owner's two decisions (the least-moment criterion, R1-28; the 0.1 % band, R1-36) as settled and
+checked how the code applies them:
+
+- The off-centre sphere reads 170.536–170.538° at coarse, normal and fine quality (closed form 170.5377°), and
+  179.426–179.427° with G 3 mm off (179.4271°), with no false "larger heeling moment" note. With free trim it reads
+  177.0° about 71.6°: there the arm does vary with direction (0.30024 m against 0.30414 m about x), so that is the rule
+  applied correctly.
+- Every range the tie moved ends sooner, and every chosen arm is within 0.1 % of the least. The largest shifts: the
+  barge with free trim 48.25° → 48.07° (about −5°), the open 20 m hull with free trim 31.48° → 31.13° (about −8.3°),
+  the open box 28.79° → 28.34°.
+- The cube's free-trim angle is asin(1/3) again; the pontoon and the barge heeled in pitch end at 12.9872° and
+  10.2302° (the reviewer's 0.002° continuations: 12.986–12.988° and 10.230–10.232°), not called folds. The 20 m hull's
+  fold angle depends on the step (13.14° in a 0.002° continuation, 13.85° from `gzAnalysis`), as disclosed; its verdict
+  uses roll.
+- Mutations: 63 of 75 Node mutants caught, the 12 survivors equivalent or near-equivalent (C02, C10, C11, C15, C16,
+  C23, F03, F06, F17, H03, H11, and I07, the fold test's ratio term, which the band floor covers on every case); 9 of
+  11 e2e mutants caught (E02 near-equivalent, G01 equivalent).
+- Cost on the 51k-triangle sphere, single-threaded: 5.7 s fixed and 33.2 s free, as at b4541ad.
+
+Round 1 is closed. Its fixes ship as one PR from `review/round-1-hydrostatics`.
