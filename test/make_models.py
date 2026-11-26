@@ -81,7 +81,7 @@ cases.append(dict(
     ref="[RT] wall-sided: tanφ·(GM + ½·BM·tan²φ) = GG'",
     rho=FRESH, mass=m, cog=[L / 2, GGp, KG], euler=[-phi, 0, 0],
     expect=dict(status='floats', V=m / FRESH, offset=0.0),
-    sim=dict(start_euler=[0, 0, 0], expect_roll=-phi, tol_deg=0.15)))
+    sim=dict(start_euler=[0, 0, 0], expect_roll=-phi, tol_deg=1e-3)))
 
 # ---------------------------------------------------------------- 3. cube at three specific gravities
 solids['cube_1m'] = box(1, 1, 1, (-0.5, -0.5, 0))
@@ -102,11 +102,15 @@ BMc = (5 * math.sqrt(3) / 16) * a_hex ** 4 / 0.5
 BGc = 0.40625 / math.sqrt(3)
 cases.append(dict(
     id='cube_corner_s050', file='cube_1m.step', curved=False,
-    title='1 m cube, s.g. ½, corner-down (body diagonal vertical): the attitude the simulator settles into',
+    title='1 m cube, s.g. ½, corner-down (body diagonal vertical): released upright, the simulator settles into it',
     ref='hexagonal mid-section: draft = √3/2, Awp = 3√3/4, BM = (5√3/16)a⁴/V; BG from Irwin–Hall(3) mean deviation',
     rho=FRESH, mass=500.0, cog=[0, 0, 0.5], euler=[45, math.degrees(math.atan(1 / math.sqrt(2))), 0],
     expect=dict(status='floats', draft=math.sqrt(3) / 2, Awp=3 * math.sqrt(3) / 4, offset=0.0,
-                BMt=BMc, BMl=BMc, GMt=BMc - BGc, GMl=BMc - BGc, stable=True)))
+                BMt=BMc, BMl=BMc, GMt=BMc - BGc, GMl=BMc - BGc, stable=True),
+    # released from upright (an unstable equilibrium; the simulator's small start kick tips it) it must come to rest
+    # with a body diagonal vertical: the lowest potential energy over all attitudes (z_G − z_B = 0.234549, against
+    # 0.235702 edge-down and 0.25 face-down; test/validate-stability.js finds it by global minimisation)
+    sim=dict(start_euler=[0, 0, 0], expect_up='diagonal', tol_deg=1e-3)))
 
 # ---------------------------------------------------------------- 4. square log, s = ½, corner-down at 45°
 solids['square_log_3x1x1'] = box(3, 1, 1, (0, -0.5, 0))
@@ -117,7 +121,7 @@ cases.append(dict(
     ref='[ESH] s = ½ square log rests corner-down; triangle section: draft = √2/2, GM = w³/(12A) − h/3 = √2/6',
     rho=FRESH, mass=1500.0, cog=[1.5, 0, 0.5], euler=[45, 0, 0],
     expect=dict(status='floats', draft=h, offset=0.0, BMt=(2 * h) ** 3 / 12 / 0.5, GMt=(2 * h) ** 3 / 12 / 0.5 - h / 3, stable=True),
-    sim=dict(start_euler=[20, 0, 0], expect_roll=45.0, tol_deg=0.3)))
+    sim=dict(start_euler=[20, 0, 0], expect_roll=45.0, tol_deg=1e-3)))
 
 # ---------------------------------------------------------------- 5. vertical cylinders (spar stability)
 for name, r, H in (('vcyl_tall', 0.25, 1.0), ('vcyl_squat', 0.5, 0.4)):

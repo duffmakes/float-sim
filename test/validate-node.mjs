@@ -20,4 +20,5 @@ const r = await runValidation({
   },
 });
 console.log(`\n${r.pass}/${r.total} checks passed (${r.cases} cases, mesh quality ${quality}, ${r.seconds.toFixed(1)} s)`);
-process.exit(r.pass === r.total ? 0 : 1);
+// exit once stdout has been written out: process.exit() does not wait for pending writes to a pipe (review R1-24)
+process.stdout.write('', () => process.exit(r.pass === r.total ? 0 : 1));

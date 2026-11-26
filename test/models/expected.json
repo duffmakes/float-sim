@@ -134,7 +134,7 @@
      0
     ],
     "expect_roll": -5.3199943594845855,
-    "tol_deg": 0.15
+    "tol_deg": 0.001
    }
   },
   {
@@ -228,7 +228,7 @@
    "id": "cube_corner_s050",
    "file": "cube_1m.step",
    "curved": false,
-   "title": "1 m cube, s.g. \u00bd, corner-down (body diagonal vertical): the attitude the simulator settles into",
+   "title": "1 m cube, s.g. \u00bd, corner-down (body diagonal vertical): released upright, the simulator settles into it",
    "ref": "hexagonal mid-section: draft = \u221a3/2, Awp = 3\u221a3/4, BM = (5\u221a3/16)a\u2074/V; BG from Irwin\u2013Hall(3) mean deviation",
    "rho": 1000.0,
    "mass": 500.0,
@@ -252,6 +252,15 @@
     "GMt": 0.036084391824351636,
     "GMl": 0.036084391824351636,
     "stable": true
+   },
+   "sim": {
+    "start_euler": [
+     0,
+     0,
+     0
+    ],
+    "expect_up": "diagonal",
+    "tol_deg": 0.001
    }
   },
   {
@@ -287,7 +296,7 @@
      0
     ],
     "expect_roll": 45.0,
-    "tol_deg": 0.3
+    "tol_deg": 0.001
    }
   },
   {

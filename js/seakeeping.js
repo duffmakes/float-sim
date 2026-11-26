@@ -1,5 +1,5 @@
 // Sea-state simulation, spectral stability estimates and RAO sweeps (UI glue).
-import { mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, quatToMat3 } from './physics.js';
+import { mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, quatToMat3 } from './physics.js';
 import { SEA_STATES, spectrumFn, pmSpectrum, jonswapSpectrum, dnvGamma, WaveField, G, regularAmplitude, waveNumber } from './waves.js';
 import {
   refineTris, indexMesh, waveForces, linearModel, defaultHydroCoeffs, raoSweepAsync, raoAt, spectralResponse, spectralFromSweep, fkExcitation, spectralResponseMulti,
@@ -174,7 +174,7 @@ export function initSeakeeping(api) {
     if (!st || st.H.status === 'sinks') return null;
     const moorCfg = api.extras.config().moor;
     const key = JSON.stringify([st.model.name, st.model.tris.length, st.m, st.G, api.refKey(), st.rho, api.getEuler(), api.inertiaKey(), $('raoFmax').value,
-      ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value), $('hDiffH').checked, $('hDiffV').checked, moorCfg]);
+      ['hA11', 'hA22', 'hA33', 'hA44', 'hA55', 'hZ3', 'hZ4', 'hZ5'].map((i) => $(i).value), $('hDiffH').checked, $('hDiffV').checked, moorCfg, !!(api.gzFreeTrim && api.gzFreeTrim())]);
     if (K.prep && K.prep.key === key) return K.prep;
     const R = st.R, yaw = Math.atan2(R[3], R[0]);
     const Rsk = mat3.mul(mat3.rotZ(-yaw), R);
@@ -219,9 +219,13 @@ export function initSeakeeping(api) {
     const relFine = refineTris(rel, Math.max(Math.min(lamMin / 10, size / 15), st.model.diag / 200), 40000);
     const diffModes = [$('hDiffH').checked, $('hDiffH').checked, $('hDiffV').checked];
     const model = linearModel(relFine, hydrostatics(relFine, sol.zw, st.m, st.rho), st.m, IGw, st.rho, coeffs, { diffraction: diffModes });
-    const gz = gzSummary(gzCurve(rel, H.V, 'x'));
+    // roll range of stability (GZ about the run's x axis), at the trim setting of the GZ panel
+    const freeTrim = !!(api.gzFreeTrim && api.gzFreeTrim());
+    // (the range ends where an opening of the mesh goes under water, if that comes before the vanishing angle)
+    const open = st.model.openPts ? transformTris(st.model.openPts, Rsk, st.G) : null;
+    const gz = gzAnalysis(rel, H.V, 'x', { GM: gmAbout(H, 'x'), freeTrim, open }).summary;
     const offset = Math.hypot(...H.offset);
-    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.vanish ?? 180), offset, st, hulls: {}, moorBase, toEq };
+    K.prep = { key, Rsk, rel, H, IGb, IGw, coeffs, model, diffModes, zw: sol.zw, size, gz, vanish: gz.unstable ? 0 : (gz.end ?? 180), trim: `${freeTrim ? 'free trim' : 'fixed trim'}${gz.flood !== null && gz.end === gz.flood ? '; the range ends where an opening goes under water' : ''}`, offset, st, hulls: {}, moorBase, toEq };
     return K.prep;
   }
 
@@ -676,7 +680,7 @@ export function initSeakeeping(api) {
   }
 
   // ------------------------------------------------------------ stability verdict
-  function verdict({ ssLabel, maxRoll, vanish, capsized, greenFrac }) {
+  function verdict({ ssLabel, maxRoll, vanish, capsized, greenFrac, trim = 'fixed trim' }) {
     const range = vanish > 0 ? vanish : 0;
     let level, word;
     if (capsized || range === 0) { level = 'bad'; word = capsized ? 'capsized' : 'unstable at rest'; }
@@ -684,7 +688,7 @@ export function initSeakeeping(api) {
     else if (maxRoll >= 0.5 * range || greenFrac > 0.05) { level = 'warn'; word = 'marginal'; }
     else { level = 'good'; word = 'safe'; }
     const icon = { good: '✓', warn: '!', bad: '✕' }[level];
-    return { level, word, icon, text: `${ssLabel}: max roll ${f(maxRoll)}° of ${range >= 180 ? '180° (self-righting)' : `${f(range)}° range`}: ${word}` };
+    return { level, word, icon, text: `${ssLabel}: max roll ${f(maxRoll)}° of ${range >= 180 ? `180° (self-righting, GZ at ${trim})` : `${f(range)}° range (GZ at ${trim})`}: ${word}` };
   }
   function setSeaVerdict(v, extra = '') {
     $('seaVerdict').className = `verdict ${v.level === 'warn' ? 'warn' : v.level}`;
@@ -752,7 +756,7 @@ export function initSeakeeping(api) {
       const spm = spectralResponseMulti(sm.model, S, s.heading, [2, 3, 4], field.meta.wMin, field.meta.wMax, 300, 20 * 60, exFK);
       const sr = spm[3], sp = spm[4], sh = spm[2];
       const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
-      const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
+      const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac, trim: P.trim });
       setSeaVerdict(v, ` <span class="hint">(20 min time-domain run, direction ${s.dir}°)</span>`);
       const row = (k, td, spv, u) => `<tr><td>${k}</td><td>${f(td)} ${u}</td><td>${f(spv)} ${u}</td></tr>`;
       $('seaStats').innerHTML = `<table>
@@ -823,7 +827,7 @@ export function initSeakeeping(api) {
     : `off (held on station; max offset ${f(st.drift.maxOffset)} m)`);
   function showRegularStats(P, s, stats, hull, field, t0) {
     const greenFrac = stats.steps ? stats.greenSteps / stats.steps : 0;
-    const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac });
+    const v = verdict({ ssLabel: s.label, maxRoll: stats.maxRoll, vanish: P.vanish, capsized: stats.capsized, greenFrac, trim: P.trim });
     setSeaVerdict(v, ` <span class="hint">(5 min regular-wave run, direction ${s.dir}°)</span>`);
     const st = stats.steady || {};
     const row = (k, td, lin, u) => `<tr><td>${k}</td><td>${f(td)} ${u}</td><td>${f(lin)} ${u}</td><td>${lin > 1e-9 && td !== undefined ? `${(Math.round(1000 * (td / lin - 1)) / 10 || 0).toFixed(1)} %` : '—'}</td></tr>`;
@@ -869,13 +873,13 @@ export function initSeakeeping(api) {
       const spm = viaBem ? null : spectralResponseMulti(sm.model, S, s.heading, [2, 3, 4], 0.4 * wp, Math.max(4 * wp, ...sm.model.wn.filter((w, j) => j >= 2 && j <= 4).map((w) => 1.5 * w)), 300, 3 * 3600, exFK);
       const r = (j) => (viaBem ? spectralFromSweep(bemPts, S, j, 3 * 3600, m0) : spm[j]);
       const roll = r(3), pitch = r(4), heave = r(2);
-      const v = verdict({ ssLabel: `SS${x.ss}`, maxRoll: roll.mpm, vanish: P.vanish, capsized: false, greenFrac: 0 });
+      const v = verdict({ ssLabel: `SS${x.ss}`, maxRoll: roll.mpm, vanish: P.vanish, capsized: false, greenFrac: 0, trim: P.trim });
       const d = diffractionCheck(P.size, wp);
       return `<tr><td>SS${x.ss}${viaBem ? '' : (bemBase ? ' <span class="hint" title="outside the panel-method frequency range: linear estimate model">†</span>' : '')}</td><td>${x.Hs}</td><td>${x.Tp}${x.tpDerived ? '*' : ''}</td><td>${f(heave.sig)}</td><td>${f(roll.sig)}</td><td>${f(roll.mpm)}</td><td>${f(pitch.sig)}</td>
         <td><span class="badge ${v.level}">${v.icon} ${v.word}</span>${d.ok ? '' : ` <span class="badge warn" title="body is ${f(d.ratio, 2)} of the peak wavelength; diffraction not modelled">! D/λ ${f(d.ratio, 2)}</span>`}</td></tr>`;
     });
     $('ssTable').innerHTML = `<table class="ss-table"><tr><th>SS</th><th>Hs m</th><th>Tp s</th><th>heave sig m</th><th>roll sig °</th><th>roll max 3 h °</th><th>pitch sig °</th><th>verdict</th></tr>${rows.join('')}</table>
-      <span class="hint">Linear spectral estimate at direction ${s.dir}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (RAO stage)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemBase ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}).${X.drag ? ' Viscous drag: linearised for each row\'s sea state.' : ''}${X.moor ? ' Mooring: linear catenary stiffness at the mean position.' : ''} Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
+      <span class="hint">Linear spectral estimate at direction ${s.dir}° (${s.type === 'pm' ? 'PM' : 'JONSWAP'}) from ${usedBem && !usedEst ? 'the panel-method RAOs (RAO stage)' : usedBem ? `the panel-method RAOs where the sweep covers the sea (rows marked † use the ${sm.source === 'estimates' ? 'estimate' : 'simulator'} model; widen the RAO frequency range to include them)` : `the ${sm.source === 'estimates' ? 'Froude–Krylov estimate' : 'simulator (panel-method coefficients at the natural frequencies)'} model${bemBase ? '' : '; run Compute RAOs with the panel method for frequency-dependent coefficients'}`}: significant single amplitude 2√m₀ and most-probable max in 3 h, compared with the roll range of stability (${P.vanish >= 180 ? '> 180°' : f(P.vanish) + '°'}, GZ at ${P.trim}).${X.drag ? ' Viscous drag: linearised for each row\'s sea state.' : ''}${X.moor ? ' Mooring: linear catenary stiffness at the mean position.' : ''} Large predicted rolls are where the linear estimate is least reliable, so confirm those with a time-domain run. * SS1 period from the fully developed Pierson–Moskowitz relation. <b>! D/λ</b> marks sea states whose waves are short relative to the body (D/λ > 0.2), where Froude–Krylov loads are approximate.</span>`;
   }
   $('ssSweep').onclick = async () => {
     if (K.locked) return;

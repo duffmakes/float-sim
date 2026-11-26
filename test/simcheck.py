@@ -119,9 +119,17 @@ for c in exp['cases']:
             sim.step(sim.dt)
         if sim.t > 2 and math.hypot(*sim.v) / 4 + math.hypot(*sim.w) < 1e-6:
             settled = sim.t; break
-    e = euler_deg(quat_to_mat(sim.q))
-    ok = settled is not None and abs(e[0] - c['sim']['expect_roll']) <= c['sim']['tol_deg'] and abs(e[1]) <= c['sim']['tol_deg']
+    Rf = quat_to_mat(sim.q)
+    e = euler_deg(Rf)
+    if c['sim'].get('expect_up') == 'diagonal':
+        # the world vertical in body axes (third row of R) along a body diagonal (±1, ±1, ±1)/√3
+        off = math.degrees(math.acos(min(1.0, (abs(Rf[6]) + abs(Rf[7]) + abs(Rf[8])) / math.sqrt(3))))
+        ok = settled is not None and off <= c['sim']['tol_deg']
+        want = f"vertical along a body diagonal, {off:.2e}° off"
+    else:
+        ok = settled is not None and abs(e[0] - c['sim']['expect_roll']) <= c['sim']['tol_deg'] and abs(e[1]) <= c['sim']['tol_deg']
+        want = f"expected roll {c['sim']['expect_roll']:.3f}°"
     fails += not ok
     print(f"{'PASS' if ok else 'FAIL'}  {c['id']}: released at roll {c['sim']['start_euler'][0]}°, settled at t={settled and round(settled, 1)} s, "
-          f"roll {e[0]:.3f}° pitch {e[1]:.3f}°  (expected roll {c['sim']['expect_roll']:.3f}°, dt={sim.dt * 1000:.2f} ms)")
+          f"roll {e[0]:.4f}° pitch {e[1]:.4f}°  ({want}, dt={sim.dt * 1000:.2f} ms)")
 sys.exit(1 if fails else 0)

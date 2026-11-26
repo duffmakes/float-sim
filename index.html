@@ -552,7 +552,8 @@
       <div id="verdict" class="verdict"></div>
       <table id="stats" class="pgtable"></table>
       <div class="gh">Righting arm GZ<span class="sp"></span>
-        <span class="sg" id="gzAxis"><button data-axis="x" class="on">Roll</button><button data-axis="y">Pitch</button></span>
+        <span class="sg" id="gzAxis"><button data-axis="x" class="on">Roll</button><button data-axis="y">Pitch</button><button data-axis="min" title="Heel about the weakest waterplane axis (smallest GM)">Weakest</button></span>
+        <label class="gzfree" title="Free trim: at every heel angle the body also re-trims until there is no trimming moment. Fixed trim (off): it heels without re-trimming, which overstates GZ on hulls that are not symmetric fore and aft."><input id="gzFree" type="checkbox"> Free trim</label>
       </div>
       <div class="chartwrap"><canvas id="gz" width="360" height="170"></canvas></div>
       <div id="gzInfo" class="info pad"></div>

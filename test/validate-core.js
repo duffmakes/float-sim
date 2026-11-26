@@ -10,6 +10,7 @@ import { runWaveValidation } from './validate-waves.js';
 import { runDropValidation } from './validate-drop.js';
 import { runSmallBodyValidation } from './validate-smallbody.js';
 import { runRefCsysValidation } from './validate-refcsys.js';
+import { runStabilityValidation } from './validate-stability.js';
 
 export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, vendorDir, onCase = () => {}, waves = true }) {
   const results = [];
@@ -50,7 +51,8 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
         const meas = { V: H.V, draft: H.draft, Awp: H.wp.area, KB: H.B[2] - H.zmin, BMt: H.BMt, BMl: H.BMl, GMt: H.GMt, GMl: H.GMl };
         for (const k of ['V', 'draft', 'Awp', 'KB', 'BMt', 'BMl', 'GMt', 'GMl']) if (k in e) chk(k, meas[k], e[k]);
         if ('offset' in e) chk('B–G horiz. offset', Math.hypot(...H.offset), 0, 0, c.curved ? 1e-4 : 1e-6);
-        if ('stable' in e) chk('stable upright', H.GMt > 0 && H.GMl > 0, e.stable);
+        // stable: GM about the weakest waterplane axis is positive (GM_T and GM_L can both be positive when it is not)
+        if ('stable' in e) chk('stable (GM_min > 0)', H.GMmin > 0, e.stable);
         if ('kg_per_cm' in e) chk('immersion kg/cm', H.tpc / 100, e.kg_per_cm);
         if (e.B_model) {
           const b = mat3.apply(mat3.transpose(R), H.B).map((v, i) => v + G[i]);
@@ -86,10 +88,17 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
           const ke = Math.hypot(...sim.v) / diag + Math.hypot(...sim.w);
           if (sim.t > 2 && ke < 1e-6) { settledAt = sim.t; break; }
         }
-        const eul = mat3.toEulerDeg(quatToMat3(sim.q));
+        const Rf = quatToMat3(sim.q), eul = mat3.toEulerDeg(Rf);
         chk('sim settles', settledAt !== null, true);
-        chk('sim final roll °', eul[0], c.sim.expect_roll, 0, c.sim.tol_deg);
-        chk('sim final pitch °', eul[1], 0, 0, c.sim.tol_deg);
+        if (c.sim.expect_up === 'diagonal') {
+          // the world vertical in body axes (third row of R) must lie along a body diagonal (±1, ±1, ±1)/√3
+          const up = Rf.slice(6, 9);
+          const off = Math.acos(Math.min(1, (Math.abs(up[0]) + Math.abs(up[1]) + Math.abs(up[2])) / Math.sqrt(3))) * 180 / Math.PI;
+          chk('sim: vertical along a body diagonal (° off)', off, 0, 0, c.sim.tol_deg);
+        } else {
+          chk('sim final roll °', eul[0], c.sim.expect_roll, 0, c.sim.tol_deg);
+          chk('sim final pitch °', eul[1], 0, 0, c.sim.tol_deg);
+        }
         meta += ` · sim dt ${(sim.dt * 1000).toFixed(2)} ms, settled at t = ${settledAt?.toFixed(1) ?? '—'} s`;
       }
     } catch (err) {
@@ -108,6 +117,11 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
     const chkFactory = () => {
       const rows = [];
       const chk = (label, got, want, rel = 1e-6, absFloor = 0) => {
+        if (typeof want === 'boolean' || typeof want === 'string') {
+          const ok = got === want;
+          rows.push({ label, got, want, err: null, rel: null, ok }); total++; if (ok) pass++;
+          return;
+        }
         const err = Math.abs(got - want);
         const ok = err <= Math.max(rel * Math.abs(want), absFloor);
         rows.push({ label, got, want, err, rel: want !== 0 ? err / Math.abs(want) : null, ok });
@@ -119,7 +133,9 @@ export async function runValidation({ quality = 'fine', fetchBytes, fetchJSON, v
       const t1 = performance.now();
       // the small-body checks generate their own geometry, so they run once (at the fine quality), not per mesh quality
       const small = quality === 'fine' ? [...await runSmallBodyValidation({ chkFactory }), ...await runRefCsysValidation({ chkFactory })] : [];
-      for (const c of [...await runWaveValidation({ exp, getTris, chkFactory }), ...await runDropValidation({ getTris, chkFactory }), ...small]) {
+      // stability read-outs, mesh checks and rest attitudes (generated geometry, plus the STEP spheres at this quality)
+      const stab = await runStabilityValidation({ chkFactory, getTris });
+      for (const c of [...stab, ...await runWaveValidation({ exp, getTris, chkFactory }), ...await runDropValidation({ getTris, chkFactory }), ...small]) {
         c.meta = c.meta || '';
         results.push(c); onCase(c, c.rows, c.meta);
       }

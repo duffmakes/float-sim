@@ -93,9 +93,101 @@ expect('global axes triad drawn', (await page.locator('#triad text').count()) ==
 await click('#gtb [data-view="top"]'); await page.waitForTimeout(200);
 expect('Top view: global Z points at the viewer (no Z arrowhead)', await page.evaluate(() => [...document.querySelectorAll('#triad g')].find((g) => g.textContent === 'Z').querySelector('polygon').getAttribute('points') === ''));
 await click('#gtb [data-view="iso"]');
-await click('#simRun'); await page.waitForTimeout(3500);
+await click('#simRun');
+// at rest = slow and B under G, held for 1 s of simulated time (the start kick dies away first)
+await page.waitForFunction(() => document.querySelector('#simInfo').innerText.includes('started at rest'), null, { timeout: 60000 }).catch(() => {});
 expect('simulate from rest explains why nothing moves', (await page.locator('#simInfo').innerText()).includes('started at rest'));
 await click('#simReset');
+
+// 2c — GZ panel: fixed trim by default and labelled; Weakest axis; free trim (same curve for a box, which is
+// symmetric fore and aft); the verdict gives the range from the GZ curve about the weakest axis
+const gzText = () => page.locator('#gzInfo').innerText();
+const waitGz = (pred) => page.waitForFunction((src) => !document.querySelector('#gzInfo').classList.contains('stale') && new Function('t', `return ${src}`)(document.querySelector('#gzInfo').innerText), pred, { timeout: 30000 });
+await waitGz("t.includes('fixed trim')");
+expect('GZ panel says fixed trim', (await gzText()).includes('fixed trim: the body is not allowed to re-trim'));
+await page.waitForFunction(() => /vanishes at 90°/.test(document.querySelector('#verdict').innerText), null, { timeout: 30000 }).catch(() => {});
+expect('verdict: range from the GZ curve (box vanishes at 90°), not "self-righting"', /vanishes at 90°/.test(await page.locator('#verdict').innerText()) && !/self-righting/.test(await page.locator('#verdict').innerText()), (await page.locator('#verdict').innerText()).slice(0, 200));
+expect('weakest axis row reads 0° for a box along x', (await stat('GM about weakest axis')).includes('axis at 0° from x'), await stat('GM about weakest axis'));
+await click('#gzAxis button[data-axis="min"]');
+await waitGz("t.includes('weakest waterplane axis')");
+expect('GZ about the weakest axis', (await gzText()).includes('Heeling in the weakest waterplane axis (0° from x)'));
+await check('#gzFree');
+await waitGz("t.includes('free trim')");
+const gzFreeTxt = await gzText();
+expect('free trim: labelled, and the box keeps max GZ 0.324 m and 90°', gzFreeTxt.includes('free trim: at every angle') && /Max GZ\s+0\.324 m/.test(gzFreeTxt) && gzFreeTxt.includes('(free trim): 90°'), gzFreeTxt.split('\n').slice(1).join(' | '));
+await uncheck('#gzFree');
+await click('#gzAxis button[data-axis="x"]');
+await waitGz("t.includes('fixed trim') && t.includes('roll (about x)')");
+
+// 2d — an STL whose +y side face is wound the wrong way: repaired on import, true hydrostatics
+{
+  const P = [];   // 4 × 2 × 1 m box in millimetres (the default STL units), outward winding except the +y side
+  const q = (a, b, c, d) => { P.push([a, b, c], [a, c, d]); };
+  const V = (x, y, z) => [x * 1000, y * 1000, z * 1000];
+  q(V(0, -1, 0), V(0, 1, 0), V(4, 1, 0), V(4, -1, 0)); q(V(0, -1, 1), V(4, -1, 1), V(4, 1, 1), V(0, 1, 1));
+  q(V(0, -1, 0), V(4, -1, 0), V(4, -1, 1), V(0, -1, 1)); q(V(0, 1, 0), V(4, 1, 0), V(4, 1, 1), V(0, 1, 1));   // +y side: flipped
+  q(V(0, -1, 0), V(0, -1, 1), V(0, 1, 1), V(0, 1, 0)); q(V(4, -1, 0), V(4, 1, 0), V(4, 1, 1), V(4, -1, 1));
+  const stl = `solid flipped\n${P.map((t) => `facet normal 0 0 0\nouter loop\n${t.map((v) => `vertex ${v.join(' ')}`).join('\n')}\nendloop\nendfacet`).join('\n')}\nendsolid flipped\n`;
+  await page.setInputFiles('#file', { name: 'box_flipped_side.stl', mimeType: 'model/stl', buffer: Buffer.from(stl) });
+  await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_flipped_side'), null, { timeout: 60000 });
+  for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+  await page.waitForTimeout(300);
+  const mi = await page.locator('#modelInfo').innerText();
+  expect('STL with a flipped side face: re-oriented on import (2 faces), 8 m³', mi.includes('2 faces wound against') && mi.includes('8 m³'), mi.split('\n').slice(-2).join(' | '));
+  expect('…true hydrostatics: draft 0.4 m, GM_T 0.533 m', near(num(await stat('Draft')), 0.4, 1e-3) && near(num(await stat('GMT')), 0.533333, 1e-3), `${await stat('Draft')} / ${await stat('GMT')}`);
+  // openings (review R1-15) and crossing shells (R1-19): the same box without its deck, without an end face, and two
+  // crossing boxes, all repaired in the import worker
+  const stlOf = (name, quads) => {
+    const T = []; for (const [a, b, c, d] of quads) T.push([a, b, c], [a, c, d]);
+    return { name, mimeType: 'model/stl', buffer: Buffer.from(`solid ${name}\n${T.map((t) => `facet normal 0 0 0\nouter loop\n${t.map((v) => `vertex ${v.join(' ')}`).join('\n')}\nendloop\nendfacet`).join('\n')}\nendsolid ${name}\n`) };
+  };
+  const boxQ = (x0, y0, z0, x1, y1, z1, skip = '') => [
+    ['bottom', [V(x0, y0, z0), V(x0, y1, z0), V(x1, y1, z0), V(x1, y0, z0)]], ['deck', [V(x0, y0, z1), V(x1, y0, z1), V(x1, y1, z1), V(x0, y1, z1)]],
+    ['-y', [V(x0, y0, z0), V(x1, y0, z0), V(x1, y0, z1), V(x0, y0, z1)]], ['+y', [V(x0, y1, z0), V(x0, y1, z1), V(x1, y1, z1), V(x1, y1, z0)]],
+    ['-x', [V(x0, y0, z0), V(x0, y0, z1), V(x0, y1, z1), V(x0, y1, z0)]], ['+x', [V(x1, y0, z0), V(x1, y1, z0), V(x1, y1, z1), V(x1, y0, z1)]],
+  ].filter(([k]) => k !== skip).map(([, q4]) => q4);
+  const loadStl = async (f) => {
+    await page.setInputFiles('#file', f);
+    await page.waitForFunction((n) => document.querySelector('#modelInfo').innerText.includes(n), f.name, { timeout: 60000 });
+    for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+    await page.waitForFunction(() => !document.querySelector('#gzInfo').classList.contains('stale') && !/being worked out/.test(document.querySelector('#verdict').innerText), null, { timeout: 60000 }).catch(() => {});
+    await page.waitForTimeout(300);
+  };
+  await loadStl(stlOf('box_nodeck.stl', boxQ(0, -1, 0, 4, 1, 1, 'deck')));
+  const vd = await page.locator('#verdict').innerText(), gzd = await page.locator('#gzInfo').innerText();
+  expect('open-deck STL: the verdict\'s range ends where an opening goes under water', /opening goes under water/.test(vd), vd.slice(0, 220));
+  expect('…the roll GZ panel gives the downflooding angle 32° (exact section: 32.0054°)', /goes under water at 32°/.test(gzd), gzd.split('\n').slice(-1).join(''));
+  // the Waves stage's roll range ends there too (review R1-31)
+  await click('#tabs [data-stage="waves"]'); await page.waitForTimeout(300);
+  await click('#ssSweep');
+  await page.waitForFunction(() => /roll range of stability/.test(document.querySelector('#ssTable').innerText), null, { timeout: 180000 }).catch(() => {});
+  const sst = await page.locator('#ssTable').innerText();
+  expect('…the Waves stage\'s roll range ends at the downflooding angle (32°)', /roll range of stability \(32°/.test(sst) && /opening goes under water/.test(sst), (sst.match(/roll range of stability \([^)]*\)/) || [''])[0]);
+  await click('#tabs [data-stage="float"]'); await page.waitForTimeout(300);
+  await loadStl(stlOf('box_noend.stl', boxQ(0, -1, 0, 4, 1, 1, '-x')));
+  expect('STL with an end face missing: the verdict is "Opening under water"', (await page.locator('#verdict').innerText()).startsWith('Opening under water'), (await page.locator('#verdict').innerText()).slice(0, 120));
+  {
+    const g = await gzText();   // review R1-35: no maximum is given with an opening under water at the start
+    expect('…the GZ panel says the opening is under water and gives no maximum', /under water at this attitude/.test(g) && !/Max GZ/.test(g), g.split('\n').slice(1, 3).join(' | '));
+  }
+  await loadStl(stlOf('cross.stl', [...boxQ(-2, -0.5, 0, 2, 0.5, 1), ...boxQ(-0.5, -2, 0, 0.5, 2, 1)]));
+  expect('two crossing boxes in one STL: the overlap is reported', /overlaps? another shell/.test(await page.locator('#modelInfo').innerText()), (await page.locator('#modelInfo').innerText()).split('\n').slice(-2).join(' | '));
+  // review R1-38: a 4 × 1 × 0.5 m box (T 0.2 m, KG 0.3 m) heeled in pitch with free roll rolls over at a fold, and the
+  // GZ panel says that GZ jumps there
+  await loadStl(stlOf('slender.stl', boxQ(0, -0.5, 0, 4, 0.5, 0.5)));
+  for (const [id, v] of [['mass', '800'], ['cgz', '0.3']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+  await click('#gzAxis button[data-axis="y"]'); await check('#gzFree');
+  await waitGz("t.includes('GZ jumps')").catch(() => {});
+  {
+    const g = await gzText();
+    expect('slender box heeled in pitch with free trim: the GZ panel says GZ jumps at the end of the range (a fold)', /GZ jumps from positive to negative there/.test(g), g.split('\n').slice(-2).join(' | '));
+  }
+  await uncheck('#gzFree'); await click('#gzAxis button[data-axis="x"]');
+  await page.setInputFiles('#file', MODEL);
+  await page.waitForFunction(() => document.querySelector('#modelInfo').innerText.includes('box_4x2x1'), null, { timeout: 60000 });
+  for (const [id, v] of [['mass', '3200'], ['cgx', '2'], ['cgy', '0'], ['cgz', '0.5']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
+  await page.waitForTimeout(300);
+}
 
 // 3 — target plane from upright: draft 0.25 m → 2000 kg
 await fill('#tVal', '0.25'); await click('#tCalc'); await page.waitForTimeout(200);
@@ -110,10 +202,23 @@ await fill('#cgy', '0.05'); await page.press('#cgy', 'Enter'); await page.waitFo
 expect('not-at-rest warning shown', (await page.locator('#verdict').innerText()).includes('not at rest'));
 await settle();
 const roll = num(await page.inputValue('#rollN'));
-expect('settles at −5.32° list', near(roll, -5.32, 0.02), `roll ${roll}°`);
+expect('settles at the wall-sided list −5.31999° (to 2e-4°)', near(roll, -5.319994, 2e-4), `roll ${roll}°`);
+expect('…and the verdict then says it is at rest', !(await page.locator('#verdict').innerText()).includes('not at rest'));
+// 4b — a tender box: GM_T 0.01 m, CoG 2 mm off the centreline. The simulation alone stops about 2.5e-3° short of the
+// wall-sided list (−7.001683°; exact here, since neither the deck edge nor the bilge emerges), so this checks that Settle
+// ends with its static equilibrium solve (review R1-23)
+await fill('#cgy', '0.002'); await page.press('#cgy', 'Enter');
+await fill('#cgz', String(0.2 + 1 / 1.2 - 0.01)); await page.press('#cgz', 'Enter'); await page.waitForTimeout(200);
+await settle();
+{
+  const tr = num(await page.inputValue('#rollN')), si = await page.locator('#simInfo').innerText();
+  expect('tender box settles at the wall-sided list −7.001683° (to 2e-4°; the simulation alone stops ~2.5e-3° short)', near(tr, -7.001683, 2e-4), `roll ${tr}°`);
+  expect('…and Settle finished with the static equilibrium solve', si.includes('Finished with a static equilibrium solve'), si.split('\n').slice(-1).join(''));
+}
 if (shots) await page.screenshot({ path: `${shots}/app-list.png` });
 
-// 5 — cube s.g. ½: unstable upright, rolls to 45°, neutral about the edge axis
+// 5 — cube s.g. ½: unstable upright. Fixed-trim GZ about x turns positive at 45° (edge-down, which is neutral about
+// the edge), but the 3D rest is corner-down: the body diagonal vertical (lowest potential energy over all attitudes)
 const gzBefore = await page.locator('#gzInfo').innerText();
 await select('#demo', 'box');
 // the GZ panel redraws on a short debounce; software WebGL can delay it, so wait for the change
@@ -121,12 +226,25 @@ await page.waitForFunction((b) => document.querySelector('#gzInfo').innerText !=
 expect('cube s.g. ½ upright → Unstable', (await page.locator('#verdict').innerText()).startsWith('Unstable'));
 const gzTxt = await page.locator('#gzInfo').innerText();
 const loll = num((gzTxt.match(/about ([\d.]+)°/) || [])[1]);
-expect('GZ says unstable, rests near 45°', gzTxt.includes('unstable') && near(loll, 45, 0.5), gzTxt.split('\n').slice(-1)[0]);
+expect('GZ says unstable, turns positive at 45° (fixed trim)', gzTxt.includes('unstable') && gzTxt.includes('fixed trim, this axis') && near(loll, 45, 0.01), gzTxt.split('\n').slice(-1)[0]);
 await settle();
 // released from exactly upright it must NOT stay balanced on the unstable equilibrium
 const cr = num(await page.inputValue('#rollN')), cp = num(await page.inputValue('#pitchN'));
 expect('cube leaves the unstable upright attitude', Math.abs(cr) > 10 || Math.abs(cp) > 10, `roll ${cr}°, pitch ${cp}°`);
 expect('…and comes to rest stable (GM_T, GM_L > 0)', num(await stat('GMT')) > 0 && num(await stat('GML')) > 0, `${await stat('GMT')} / ${await stat('GML')}`);
+{
+  // corner-down: in R = Rz·Ry·Rx the world vertical in body axes is (−sin p, cos p sin r, cos p cos r)
+  const r = cr * Math.PI / 180, p = cp * Math.PI / 180, up = [-Math.sin(p), Math.cos(p) * Math.sin(r), Math.cos(p) * Math.cos(r)];
+  const off = Math.acos(Math.min(1, (Math.abs(up[0]) + Math.abs(up[1]) + Math.abs(up[2])) / Math.sqrt(3))) * 180 / Math.PI;
+  expect('…corner-down: body diagonal vertical (within 0.001°)', off < 1e-3, `roll ${cr}°, pitch ${cp}°: ${off.toExponential(2)}° off`);
+  const si = await page.locator('#simInfo').innerText();
+  expect('…and does not claim it started at rest, and finished with the static equilibrium solve', !si.includes('started at rest') && si.includes('Finished with a static equilibrium solve'), si.split('\n').slice(-2).join(' | '));
+  // the verdict's range over all heel directions: corner-down, it ends at the edge-down attitude, atan(1/√2) = 35.26°
+  // (about the weakest axis alone, set by round-off, it would read up to 50.8°) (review R1-17, R1-31)
+  await page.waitForFunction(() => !/being worked out/.test(document.querySelector('#verdict').innerText) && /vanishes at/.test(document.querySelector('#verdict').innerText), null, { timeout: 120000 }).catch(() => {});
+  const cv = await page.locator('#verdict').innerText();
+  expect('…its verdict\'s range is taken in the direction the least heeling moment ends it: vanishes at 35.3°', /least heeling moment ends the range/.test(cv) && /vanishes at 35\.3°/.test(cv), cv.slice(0, 200));
+}
 if (shots) await page.screenshot({ path: `${shots}/app-cube.png` });
 
 // 6 — seakeeping: SS3 beam seas on the demo barge
@@ -284,6 +402,15 @@ await page.waitForFunction(() => document.querySelector('#taskbox').classList.co
 for (const [id, v] of [['mass', (1000 * Math.PI * 0.35 ** 2 * 0.6).toFixed(3)], ['cgx', '0'], ['cgy', '0'], ['cgz', '0.3']]) { await fill(`#${id}`, v); await page.press(`#${id}`, 'Enter'); }
 await page.waitForTimeout(300);
 expect('buoy: draft 0.6 m', near(num(await stat('Draft')), 0.6, 1e-3), await stat('Draft'));
+// review R1-35: heeled past 95° with free trim the buoy has no stable trim within ±90°, and the GZ panel says so
+await check('#gzFree');
+await waitGz("t.includes('free trim: at every angle')").catch(() => {});
+{
+  const g = await gzText();
+  expect('buoy, free trim: the GZ panel notes the heel angles with no stable trim (from about 90°)', /from (8|9)\d° no stable trim was found within ±90°/.test(g), g.split('\n').slice(-1).join(''));
+}
+await uncheck('#gzFree');
+await waitGz("t.includes('fixed trim: the body')").catch(() => {});
 await click('#ptPick');
 const glBox = await page.locator('#gl').boundingBox();
 await page.mouse.click(glBox.x + glBox.width / 2, glBox.y + glBox.height / 2);
@@ -472,4 +599,5 @@ if (!capyStatus.available) {
 expect('no console errors', errs.length === 0, errs.join(' | '));
 await browser.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
-process.exit(fails ? 1 : 0);
+// exit once stdout has been written out: process.exit() does not wait for pending writes to a pipe (review R1-24)
+process.stdout.write('', () => process.exit(fails ? 1 : 0));

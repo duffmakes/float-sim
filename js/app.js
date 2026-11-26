@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
 import { STLLoader } from '../vendor/STLLoader.js';
 import {
-  mat3, transformTris, solveWaterline, hydrostatics, gzCurve, gzSummary, massProperties,
-  inertiaAbout, bbox, openEdgeCount, stabilityVerdict, mat3ToQuat, quatToMat3, G0,
+  mat3, transformTris, solveWaterline, hydrostatics, gzAnalysis, gmAbout, massProperties, verdictRange,
+  inertiaAbout, bbox, stabilityVerdict, restAttitude, mat3ToQuat, quatToMat3, G0,
 } from './physics.js';
 import { FloatSim } from './sim.js';
-import { readCad, soupFromIndexed, concat } from './loader.js';
+import { readCad, soupFromIndexed, prepareMesh } from './loader.js';
 import { initSeakeeping } from './seakeeping.js';
 import { initDropTest } from './droptest.js';
 import { initExtras } from './extras.js';
@@ -22,7 +22,7 @@ let drop = null;  // drop / rise test module
 let extras = null;  // small-body options (tracked points, drag, mooring, wind)
 let ui = null;      // workspace chrome (stages, menus, status bar)
 const S = {
-  model: null,        // { name, raw: Float64Array (file units), tris (m, ref csys), geo, mp, diag, open }
+  model: null,        // { name, raw: Float64Array (file units, winding repaired), mesh (repair report), tris (m, ref csys), mp, diag }
   ref: refFrame(null),  // reference csys (origin and axes in the file's coordinates); the model works in it
   cogAuto: true,      // the CoG is a default (centroid / demo), not typed: it stays on the body if the ref csys changes
   inTyped: false,     // the custom inertia fields hold typed numbers (not the prefilled computed ones)
@@ -30,7 +30,9 @@ const S = {
   sim: null, simRunning: false, settling: false,
   preview: null,      // target-plane preview state
   target: null,
-  gzAxis: 'x',
+  gzAxis: 'x',        // GZ panel heel axis: 'x' (roll), 'y' (pitch) or 'min' (weakest waterplane axis)
+  gzFree: false,      // free-trim GZ (off: fixed trim)
+  range: null,        // GZ summary about the weakest axis for the verdict ({ key, summary }), from the GZ worker
   last: null,         // last static analysis
 };
 
@@ -193,21 +195,45 @@ async function loadFile(file) {
       parts = await readCad(buf, ext, $('quality').value);
       S.lastCad = file;
     }
-    task.update({ detail: `Building the model: volume, centroid, inertia and the watertight check (${parts.length} bod${parts.length > 1 ? 'ies' : 'y'})…` });
+    task.update({ detail: `Checking the mesh: welding, face winding, shells, voids and overlaps (${parts.length} bod${parts.length > 1 ? 'ies' : 'y'}, ${(parts.reduce((n, p) => n + p.length, 0) / 9).toLocaleString()} triangles)…` });
+    await nextPaint();
+    const prepared = await prepareInWorker(parts);
+    task.update({ detail: 'Building the model: volume, centroid and inertia…' });
     await nextPaint();
     // STEP/IGES/BREP carry their own units and the importer normalises them to millimetres, so their size is known.
     // STL has no units: the "STL drawn in" menu gives the file's units.
-    setModel(file.name, concat(parts), parts.length, { rawScale: ext === 'stl' ? null : 0.001 });
+    setModel(file.name, null, parts.length, { rawScale: ext === 'stl' ? null : 0.001, prepared });
   } catch (e) {
     console.error(e);
     alert(e.message || String(e));
   } finally { task.done(); }
 }
 
+// The import repair (js/meshcheck.js) in a worker, so a large multi-part file does not freeze the page; on the page
+// itself if workers are unavailable.
+function prepareInWorker(parts) {
+  return new Promise((resolve) => {
+    let w;
+    const here = () => { if (w) w.terminate(); resolve(prepareMesh(parts)); };
+    try { w = new Worker(new URL('./meshworker.js', import.meta.url), { type: 'module' }); } catch (e) { here(); return; }
+    w.onmessage = (e) => {
+      w.terminate();
+      if (e.data.error) { console.error(e.data.error); here(); return; }
+      resolve({ tris: new Float64Array(e.data.tris), flipped: e.data.flipped, report: { ...e.data.report, openPts: new Float64Array(e.data.openPts) } });
+    };
+    w.onerror = (e) => { console.error(e); here(); };
+    const bufs = parts.map((p) => Float64Array.from(p).buffer);
+    w.postMessage({ parts: bufs }, bufs);
+  });
+}
+
 function setModel(name, raw, nParts = 1, opts = {}) {
   // a different model starts in the file's own csys; reloading the same file (another mesh quality) keeps the one entered
   if (!S.model || S.model.name !== name) resetRef();
-  S.model = { name, raw, nParts, rawScale: opts.rawScale ?? null };
+  // re-orient faces wound against their neighbours and turn inside-out shells (js/meshcheck.js), once, on the file's
+  // numbers; a file is repaired in a worker before it gets here (opts.prepared)
+  const rep = opts.prepared || prepareMesh(raw);
+  S.model = { name, raw: rep.tris, mesh: rep.report, nParts, rawScale: opts.rawScale ?? null };
   unitsHint();
   stopSim(); S.sim = null; S.preview = null; hideBanner();
   $('simInfo').textContent = '';
@@ -236,12 +262,14 @@ function rescaleModel() {
   const M = S.model; if (!M) return;
   const k = M.rawScale ?? stlScale();
   M.tris = toRefTris(M.raw.map((v) => v * k), S.ref);   // metres, in the reference csys
+  // corners of the mesh's openings (edges used by one triangle), to tell when an opening is under water
+  M.openPts = M.mesh.openPts && M.mesh.openPts.length ? toRefTris(M.mesh.openPts.map((v) => v * k), S.ref) : null;
   M.mp = massProperties(M.tris);
   const bb = bbox(M.tris);
   M.bb = bb;
   M.size = [bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]];
   M.diag = Math.hypot(...M.size);
-  M.open = openEdgeCount(M.tris, M.diag * 1e-7);
+  M.open = M.mesh.open;
 
   // three.js mesh (non-indexed soup)
   if (bodyMesh) { body.remove(bodyMesh); bodyMesh.geometry.dispose(); }
@@ -265,7 +293,8 @@ function rescaleModel() {
   vertLine.material.dashSize = gLine.material.dashSize = d * 0.015;
   vertLine.material.gapSize = gLine.material.gapSize = d * 0.01;
 
-  const vNeg = M.mp.volume <= 0;
+  const vNeg = M.mp.volume <= 0, R = M.mesh;
+  const nFix = R.flipped, plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
   $('modelInfo').innerHTML = `
     <table>
       <tr><td>File</td><td>${M.name}${M.nParts > 1 ? ` (${M.nParts} bodies)` : ''}</td></tr>
@@ -273,10 +302,17 @@ function rescaleModel() {
       <tr><td>Size X×Y×Z</td><td>${M.size.map((s) => fmt(s, 3)).join(' × ')} m${S.ref.identity ? '' : ' (ref axes)'}</td></tr>
       <tr><td>Enclosed volume</td><td>${vol(M.mp.volume)}</td></tr>
       <tr><td>Centroid</td><td>${vecL(M.mp.centroid)}${S.ref.identity ? '' : ' (ref csys)'}</td></tr>
-      <tr><td>Watertight</td><td>${M.open === 0 ? '<span class="good">yes</span>' : `<span class="warn">${M.open.toLocaleString()} open edges</span>`}</td></tr>
+      <tr><td>Watertight</td><td>${M.open === 0 ? '<span class="good">yes</span>' : `<span class="warn">${plural(M.open, 'open edge')}</span>`}</td></tr>
+      <tr><td>Face winding</td><td>${R.misoriented ? `<span class="bad">${plural(R.misoriented, 'edge')} wound the same way on both sides</span>` : nFix ? `<span class="warn">consistent after repair</span>` : '<span class="good">consistent</span>'}</td></tr>
+      ${R.shells > 1 ? `<tr><td>Shells</td><td>${R.shells.toLocaleString()}${R.voids ? ` (${plural(R.voids, 'void')})` : ''}</td></tr>` : ''}
     </table>
-    ${M.open > 0 ? '<div class="warn">Mesh is not fully closed; volumes may be approximate.</div>' : ''}
-    ${M.nParts > 1 ? '<div class="hint">Multiple bodies are treated as one rigid object. Overlapping bodies double-count volume.</div>' : ''}
+    ${nFix ? `<div class="warn">${plural(nFix, 'face')} wound against ${nFix === 1 ? 'its' : 'their'} neighbours (or a shell turned inside out) ${nFix === 1 ? 'was' : 'were'} re-oriented on import. Check the export if this is unexpected.</div>` : ''}
+    ${R.misoriented || R.nonOrientable ? '<div class="bad">Some faces could not be oriented consistently (the surface folds or crosses itself). Volumes and stability are not reliable; repair the mesh in CAD.</div>' : ''}
+    ${M.open > 0 ? '<div class="warn">The mesh is not closed. The enclosed volume treats the openings as closed by flat lids at the top of the body, and the hydrostatics hold only while every opening stays above the waterline. The verdict says when an opening is under water, and the GZ curves end where one goes under (the downflooding angle).</div>' : ''}
+    ${R.overlaps ? `<div class="warn">${plural(R.overlaps, 'shell')} overlap${R.overlaps === 1 ? 's' : ''} another shell: the overlapping volume is counted twice. Merge the solids (Boolean union) in CAD.</div>` : ''}
+    ${R.voids ? '<div class="hint">A void (an inner shell wound inwards) is left out of the volume and mass properties, and it counts as flooded for buoyancy below the waterline. If it is sealed and dry, remove the inner surface.</div>' : ''}
+    ${(M.nParts > 1 || R.shells > 1) && !R.overlaps ? `<div class="hint">${R.shells > 1 ? `The ${R.shells.toLocaleString()} shells are` : 'The bodies are'} treated as one rigid object. ${R.nestChecked ? 'No overlaps were found between them' : 'They were not all checked for overlaps'}; solids that overlap would have their shared volume counted twice.</div>` : ''}
+    ${!R.nestChecked ? '<div class="hint">The overlap check stopped early on this large mesh, so overlapping shells may be missed.</div>' : ''}
     ${vNeg ? '<div class="bad">Volume is not positive — the geometry is not a closed solid.</div>' : ''}`;
 }
 
@@ -306,9 +342,11 @@ const getCogM = () => ['cgx', 'cgy', 'cgz'].map((id) => (parseFloat($(id).value)
 function setCog(cm) { ['cgx', 'cgy', 'cgz'].forEach((id, i) => { const v = cm[i] / unitScale(); $(id).value = Math.abs(v) < 1e-9 ? 0 : +v.toPrecision(6); }); }
 const getMass = () => Math.max(0, parseFloat($('mass').value) || 0);
 const getEuler = () => ['rollN', 'pitchN', 'yawN'].map((id) => parseFloat($(id).value) || 0);
+// to 1e-4° (enough for a settled list or trim; the sliders show 0.5° steps)
 function setEuler(e) {
   ['roll', 'pitch', 'yaw'].forEach((id, i) => {
-    let v = +e[i].toFixed(2);
+    let v = +e[i].toFixed(4);
+    if (Object.is(v, -0)) v = 0;
     $(id + 'N').value = v; $(id).value = v;
   });
 }
@@ -416,23 +454,35 @@ $('gzAxis').addEventListener('click', (e) => {
   for (const x of $('gzAxis').children) x.classList.toggle('on', x === b);
   S.gzAxis = b.dataset.axis; scheduleGZ();
 });
+$('gzFree').addEventListener('change', (e) => {
+  S.gzFree = e.target.checked; S.range = null;
+  const src = S.preview || S.last; if (src) renderVerdict(src.H, S.preview ? 'preview' : 'static');
+  scheduleGZ(); if (sea) sea.onModelChange();
+});
 
 // ------------------------------------------------------------------ static analysis
 function relGeometry(R) {
   const G = getCogM();
-  return { G, rel: transformTris(S.model.tris, R, G) };
+  return { G, rel: transformTris(S.model.tris, R, G), relOpen: S.model.openPts ? transformTris(S.model.openPts, R, G) : null };
+}
+// how far the lowest opening point is below the waterline zw (positive: an opening is under water), or null
+function openDepth(relOpen, zw) {
+  if (!relOpen) return null;
+  let z = Infinity; for (let i = 2; i < relOpen.length; i += 3) if (relOpen[i] < z) z = relOpen[i];
+  return zw - z;
 }
 
 function update() {
   if (!S.model) return;
   const R = getR();
-  const { G, rel } = relGeometry(R);
+  const { G, rel, relOpen } = relGeometry(R);
   const m = getMass(), rho = S.rho;
   const Vneed = m / rho;
   const sol = solveWaterline(rel, Vneed);
   const H = hydrostatics(rel, sol.zw, m, rho);
-  H.status = sol.status;
-  S.last = { R, G, rel, H, m, rho, Vneed };
+  H.status = sol.status; H.neutral = !!sol.neutral; H.openDepth = openDepth(relOpen, sol.zw);
+  S.stateId = (S.stateId || 0) + 1;   // the GZ worker's answers are matched to this state
+  S.last = { R, G, rel, relOpen, H, m, rho, Vneed };
 
   const mi = $('massInfo');
   const avgRho = m / S.model.mp.volume;
@@ -583,23 +633,42 @@ $('inMode').addEventListener('change', () => {
 for (const id of ['inAt', 'inProdSign']) $(id).addEventListener('change', () => { if (S.model && !S.inTyped && $('inMode').value === 'custom') prefillInertia(); onAttitude(); });
 for (const id of IN_IDS) $(id).addEventListener('change', () => { S.inTyped = true; onAttitude(); });
 
-function renderStats(H, mode) {
-  const { R, m, rho } = S.last;
-  const beam = Math.min(...waterplaneExtent(H));
-  const verdict = H.status === 'sinks' ? { level: 'bad', text: 'Weight exceeds buoyancy of the fully submerged body. It sinks — no float plane exists.' }
-    : stabilityVerdict(H.wp.area > 0 ? H.GMmin : NaN, beam);
+// The verdict: small-angle words from GM about the weakest waterplane axis, large-angle words from the GZ curve about
+// that axis (S.range, the worse heel direction, computed by the GZ worker; until it arrives the verdict says so).
+function verdictFor(H) {
+  if (H.status === 'sinks') {
+    return H.neutral
+      ? { level: 'warn', label: 'Neutrally buoyant', text: 'The weight equals the buoyancy of the whole body (to round-off), so it hangs fully submerged with no float plane: it neither sinks nor rises. Any more weight sinks it; any less and it rises to a float plane.' }
+      : { level: 'bad', label: 'Sinks', text: 'Weight exceeds buoyancy of the fully submerged body. It sinks — no float plane exists.' };
+  }
+  if (H.status === 'floats' && (!(H.wp.area > 0) || H.wpBad)) {
+    return { level: 'bad', label: 'Mesh error', text: 'The waterplane has a negative area or second moment, which no real body has: some faces are wound the wrong way. Repair the mesh in CAD; these results are not meaningful.' };
+  }
+  if (H.status === 'floats' && H.openDepth !== null && H.openDepth > 1e-9 * S.model.diag) {
+    return { level: 'bad', label: 'Opening under water', text: `An opening in the mesh (an edge with a face on one side only) is ${L(H.openDepth)} below the waterline at this attitude, so water would come in. These hydrostatics treat the body as closed by flat lids at the top and do not apply. If the opening is a gap in the export, close the mesh in CAD.` };
+  }
+  const range = S.range && S.range.stateId === S.stateId && S.range.freeTrim === S.gzFree ? S.range.summary : null;
+  const v = stabilityVerdict(H.wp.area > 0 ? H.GMmin : NaN, { range, scale: S.model.diag, freeTrim: S.gzFree });
+  return { ...v, label: { good: 'Stable', ok: 'Stable (small range)', warn: 'Neutral', bad: 'Unstable', na: '—' }[v.level] };
+}
+function renderVerdict(H, mode) {
+  const verdict = verdictFor(H);
   const offMag = Math.hypot(...H.offset);
   const balanced = offMag < S.model.diag * 1e-4;
+  $('verdict').className = `verdict ${verdict.level}`;
+  $('verdict').innerHTML = `<b>${verdict.label}${mode === 'preview' ? ' · target plane preview' : ''}</b>${verdict.text}
+    ${!balanced && H.status !== 'sinks' && mode !== 'preview' ? `<div style="margin-top:6px;color:var(--warn)">This attitude is not at rest: B is ${L(offMag)} horizontally from G, giving an unbalanced moment of ${Nm(H.buoyancy * offMag)}. The body will rotate — run the simulation to find its resting attitude.</div>` : ''}`;
+}
+
+function renderStats(H, mode) {
+  const { R, m, rho } = S.last;
+  renderVerdict(H, mode);
   const Iw = mat3.mul(R, mat3.mul(inertiaG(), mat3.transpose(R)));
   const Troll = H.GMt > 0 ? 2 * Math.PI * Math.sqrt(Iw[0] / (rho * G0 * H.V * H.GMt)) : NaN;
   const Tpitch = H.GMl > 0 ? 2 * Math.PI * Math.sqrt(Iw[4] / (rho * G0 * H.V * H.GMl)) : NaN;
   const Theave = H.wp.area > 0 ? 2 * Math.PI * Math.sqrt(m / (rho * G0 * H.wp.area)) : NaN;
   const RT = mat3.transpose(R), G = S.last.G;
   const toModel = (p) => { const q = mat3.apply(RT, p); return [q[0] + G[0], q[1] + G[1], q[2] + G[2]]; };
-
-  $('verdict').className = `verdict ${verdict.level}`;
-  $('verdict').innerHTML = `<b>${{ good: 'Stable', ok: 'Stable (tender)', warn: 'Marginal', bad: H.status === 'sinks' ? 'Sinks' : 'Unstable', na: '—' }[verdict.level]}${mode === 'preview' ? ' · target plane preview' : ''}</b>${verdict.text}
-    ${!balanced && H.status !== 'sinks' && mode !== 'preview' ? `<div style="margin-top:6px;color:var(--warn)">This attitude is not at rest: B is ${L(offMag)} horizontally from G, giving an unbalanced moment of ${Nm(H.buoyancy * offMag)}. The body will rotate — run the simulation to find its resting attitude.</div>` : ''}`;
 
   const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
   const grp = (k) => `<tr class="grp"><td colspan="2">${k}</td></tr>`;
@@ -628,7 +697,7 @@ function renderStats(H, mode) {
     row('BM<sub>L</sub> = I<sub>yy</sub>/V (pitch)', L(H.BMl)),
     row('<b>GM<sub>T</sub></b> (roll)', `<b class="${H.GMt > 0 ? '' : 'bad'}">${L(H.GMt)}</b>`),
     row('<b>GM<sub>L</sub></b> (pitch)', `<b>${L(H.GMl)}</b>`),
-    row('GM about weakest axis', `${L(H.GMmin)} @ ${fmt(Math.abs(H.axisMinDeg) < 1e-6 ? 0 : H.axisMinDeg, 1)}°`),
+    row('GM about weakest axis', `${L(H.GMmin)} (axis at ${fmt(Math.abs(H.axisMinDeg) < 1e-6 ? 0 : H.axisMinDeg, 1)}° from x)`),
     row('Righting moment / degree roll', Nm(H.rightingPerDegT)),
     row('Righting moment / degree pitch', Nm(H.rightingPerDegL)),
     grp('Natural periods (approx.)'),
@@ -638,29 +707,108 @@ function renderStats(H, mode) {
   ].join('');
 }
 
-function waterplaneExtent(H) {
-  const s = H.segs || [];
-  if (!s.length) return [0, 0];
-  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-  for (let i = 0; i < s.length; i += 2) { x0 = Math.min(x0, s[i]); x1 = Math.max(x1, s[i]); y0 = Math.min(y0, s[i + 1]); y1 = Math.max(y1, s[i + 1]); }
-  return [x1 - x0, y1 - y0];
+// ------------------------------------------------------------------ GZ curves
+// Computed in a pool of workers (js/gzworker.js; fixed or free trim), so the page stays responsive on large meshes and
+// with free trim. Each request draws the panel's curve, then works out the verdict's range of stability (verdictRange in
+// js/physics.js): for a stable body the worst heel direction over all directions, otherwise the worse sense about the
+// weakest axis. A newer request makes the older one's queued jobs stale.
+let gzTimer = null, gzSeq = 0, gzPool;   // gzPool: undefined until first used, null when workers are unavailable
+const STALE = Symbol('stale');
+function scheduleGZ() { clearTimeout(gzTimer); gzTimer = setTimeout(requestGZ, 120); }
+function clearGZ() {
+  const cv = $('gz'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  $('gzInfo').textContent = '';
 }
-
-// ------------------------------------------------------------------ GZ curve
-let gzTimer = null;
-function scheduleGZ() { clearTimeout(gzTimer); gzTimer = setTimeout(drawGZ, 120); }
-function drawGZ() {
+function makeGzPool() {
+  const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1));
+  const P = { ws: [], queue: [], gid: 0, jid: 0, geom: null };
+  try {
+    for (let i = 0; i < n; i++) {
+      const x = { w: new Worker(new URL('./gzworker.js', import.meta.url), { type: 'module' }), busy: false, gid: 0, cur: null };
+      x.w.onmessage = (e) => {
+        const c = x.cur; x.busy = false; x.cur = null;
+        if (c && c.id === e.data.id) { if (e.data.error) c.q.reject(new Error(e.data.error)); else c.q.resolve(e.data); }
+        gzPump();
+      };
+      x.w.onerror = (e) => {   // a worker that fails: finish here without workers
+        console.error(e);
+        const pend = [...P.ws.map((y) => y.cur && y.cur.q).filter(Boolean), ...P.queue];
+        P.ws.forEach((y) => y.w.terminate()); gzPool = null;
+        pend.forEach((q) => q.reject(STALE));
+        scheduleGZ();
+      };
+      P.ws.push(x);
+    }
+  } catch (e) { P.ws.forEach((y) => y.w.terminate()); return null; }
+  return P;
+}
+function gzPump() {
+  const P = gzPool; if (!P) return;
+  while (P.queue.length) {
+    const x = P.ws.find((y) => !y.busy); if (!x) return;
+    const q = P.queue.shift();
+    if (q.gid !== P.geom.gid) { q.reject(STALE); continue; }
+    if (x.gid !== q.gid) {
+      const g = P.geom, rel = Float64Array.from(g.rel).buffer, open = g.open ? Float64Array.from(g.open).buffer : null;
+      x.w.postMessage({ type: 'geom', gid: g.gid, rel, open, V: g.V }, open ? [rel, open] : [rel]);
+      x.gid = g.gid;
+    }
+    x.busy = true; x.cur = { id: ++P.jid, q };
+    x.w.postMessage({ type: 'job', id: x.cur.id, ...q.job });
+  }
+}
+// run(jobs) → Promise of [{ curve, summary }] for one geometry { rel, open, V }; jobs: { axis, GM, freeTrim, refineMax, wantCurve }
+function gzRunner(geom) {
+  if (gzPool === undefined) gzPool = makeGzPool();
+  if (!gzPool) {
+    return async (jobs) => jobs.map((j) => gzAnalysis(geom.rel, geom.V, j.axis, { GM: j.GM, freeTrim: j.freeTrim, open: j.open === false ? null : geom.open, refineMax: j.refineMax }));
+  }
+  const P = gzPool, gid = ++P.gid;
+  P.geom = { gid, ...geom };
+  for (const q of P.queue.splice(0)) q.reject(STALE);
+  return (jobs) => Promise.all(jobs.map((job) => new Promise((resolve, reject) => {
+    if (!gzPool || gzPool !== P) { reject(STALE); return; }
+    P.queue.push({ gid, job, resolve, reject }); gzPump();
+  })));
+}
+async function requestGZ() {
+  const src = S.preview || S.last;
+  if (!S.model || !src || src.H.status === 'sinks' || !(src.H.wp.area > 0)) { clearGZ(); return; }
+  const H = src.H, ft = S.gzFree, seq = ++gzSeq, stateId = S.stateId, mode = S.preview ? 'preview' : 'static', axis = S.gzAxis;
+  const stale = () => seq !== gzSeq;
+  const run = gzRunner({ rel: src.rel, open: src.relOpen || null, V: H.V });
+  // the panel shows the previous curve faded until the new one arrives
+  $('gz').classList.add('stale'); $('gzInfo').classList.add('stale');
+  const pAxis = axis === 'min' ? H.axisMinDeg : axis;
+  const panel = run([{ axis: pAxis, GM: gmAbout(H, pAxis), freeTrim: ft, wantCurve: true }]).then(([p]) => {
+    if (stale()) return;
+    drawGZChart({ H, curve: p.curve, summary: p.summary, freeTrim: ft, axis });
+    $('gz').classList.remove('stale'); $('gzInfo').classList.remove('stale');
+  });
+  const range = (async () => {
+    // the verdict's range (verdictRange in js/physics.js); without workers only the weakest axis, so the page is not
+    // frozen for a whole sweep (review Q2)
+    const r = await verdictRange(H, async (jobs) => {
+      const out = await run(jobs.map((j) => ({ ...j, freeTrim: ft })));
+      if (stale()) throw STALE;
+      return out.map((o) => o.summary);
+    }, { scale: S.model.diag, sweep: !!gzPool });
+    if (stale()) return;
+    S.range = { stateId, freeTrim: ft, summary: r };
+    if (stateId === S.stateId) renderVerdict(H, mode);
+  })();
+  try { await Promise.all([panel, range]); } catch (e) { if (e !== STALE) console.error(e); }
+}
+function drawGZChart({ H, curve, summary: sum, freeTrim, axis }) {
   const cv = $('gz'), ctx = cv.getContext('2d');
   const dpr = Math.min(devicePixelRatio, 2);
   const W = cv.clientWidth || 360, Hh = 170;
   cv.width = W * dpr; cv.height = Hh * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, Hh);
-  if (!S.last || S.last.H.status === 'sinks' || S.last.H.wp.area <= 0) { $('gzInfo').textContent = ''; return; }
-  const { rel, H } = S.preview ? S.preview : S.last;
   const V = H.V;
-  const curve = gzCurve(rel, V, S.gzAxis, Array.from({ length: 37 }, (_, i) => i * 5));
-  const sum = gzSummary(curve);
-  const GM = S.gzAxis === 'x' ? H.GMt : H.GMl;
+  const ax = axis === 'min' ? H.axisMinDeg : axis;
+  const GM = gmAbout(H, ax);
   const k = 1 / unitScale();
   const vals = curve.map((p) => p.gz * k);
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
@@ -685,18 +833,34 @@ function drawGZ() {
   curve.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(p.deg), Y(p.gz * k)));
   ctx.stroke();
   if (sum.max > 0) { ctx.fillStyle = '#2a78d6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X(sum.maxDeg), Y(sum.max * k), 4, 0, 7); ctx.fill(); ctx.stroke(); }
+  // downflooding angle: past it the curve treats the body as closed
+  if (sum.flood !== null && sum.flood !== undefined) {
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fillRect(X(sum.flood), y0, x1 - X(sum.flood), y1 - y0);
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(sum.flood), y0); ctx.lineTo(X(sum.flood), y1); ctx.stroke(); ctx.setLineDash([]);
+  }
   ctx.save(); ctx.translate(11, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillStyle = '#444';
   ctx.fillText(`GZ (${unitName()})`, 0, 0); ctx.restore();
 
-  const axisName = S.gzAxis === 'x' ? 'roll' : 'pitch';
+  const axisName = axis === 'x' ? 'roll (about x)' : axis === 'y' ? 'pitch (about y)' : `the weakest waterplane axis (${fmt(Math.abs(H.axisMinDeg) < 1e-6 ? 0 : H.axisMinDeg, 1)}° from x)`;
+  const trim = freeTrim ? 'free trim' : 'fixed trim';
+  const trimWords = freeTrim ? 'free trim: at every angle the body also re-trims until there is no trimming moment' : 'fixed trim: the body is not allowed to re-trim as it heels';
   const sunk = curve.some((p) => p.status !== 'floats');
-  $('gzInfo').innerHTML = `Heeling in ${axisName} from the current attitude (positive GZ = righting, dashed line = GM tangent).<br>
-    Max GZ <b>${L(sum.max)}</b> at <b>${sum.maxDeg}°</b>
-    → peak righting moment <b>${Nm(S.last.rho * G0 * V * Math.max(0, sum.max))}</b><br>
-    ${sum.unstable
-      ? `<span class="bad">GZ is negative straight away: this attitude is unstable.</span>${sum.loll !== null ? ` It heels over until GZ turns positive, at about <b>${fmt(sum.loll, 1)}°</b>.` : ''}`
-      : `Angle of vanishing stability: <b>${sum.vanish !== null ? fmt(sum.vanish, 1) + '°' : '> 180° (self-righting)'}</b>`}
-    ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}`;
+  const f1 = (x) => fmt(x, 1);
+  const weaker = axis !== 'min' && H.GMmin < GM - 1e-6 * Math.max(1e-9, Math.abs(GM)) - 1e-9 * S.model.diag;
+  const flood = sum.flood ?? null, asIfClosed = flood !== null && flood < (sum.vanish ?? Infinity) ? ', as if closed' : '';
+  $('gzInfo').innerHTML = `Heeling in ${axisName} from the current attitude, ${trimWords} (positive GZ = righting, dashed line = GM tangent).<br>
+    ${flood === 0 ? '' : sum.max > 0 ? `Max GZ <b>${L(sum.max)}</b> at <b>${f1(sum.maxDeg)}°</b>
+    → peak righting moment <b>${Nm(S.last.rho * G0 * V * sum.max)}</b><br>` : 'GZ is not positive at any heel angle about this axis.<br>'}
+    ${sum.neutral ? 'GM about this axis is zero (to round-off): no righting stiffness at small angles. ' : ''}${sum.unstable
+      ? `${sum.neutral ? '' : '<span class="bad">GM about this axis is negative: this attitude is unstable.</span>'}${sum.loll !== null
+        ? ` GZ (${trim}, this axis) turns positive again at about <b>${f1(sum.loll)}°</b>${sum.vanish !== null ? ` and vanishes at ${f1(sum.vanish)}°` : ''}. The 3D resting attitude can differ: use Settle to find it.`
+        : ' GZ stays negative all the way to 180°: the body turns over.'}`
+      : `Angle of vanishing stability (${trim}${asIfClosed}): <b>${sum.vanish !== null ? f1(sum.vanish) + '°' : '> 180° (self-righting)'}</b>${sum.fold ? ` <span class="warn">(GZ jumps from positive to negative there: the free trim it follows stops being an equilibrium, and the body turns to another trim)</span>` : ''}`}
+    ${flood !== null ? `<br>${flood <= 0 ? '<span class="bad">An opening in the mesh is under water at this attitude: water comes in, and the curve treats the body as closed.</span>'
+      : `<span class="warn">An opening goes under water at <b>${f1(flood)}°</b> (the downflooding angle): past it water comes in, and the curve (faded) treats the body as closed.</span>`}` : ''}
+    ${weaker ? `<br><span class="warn">GM about the weakest waterplane axis (${L(H.GMmin)}) is below this axis's GM (${L(GM)}): choose Weakest to heel about it.</span>` : ''}
+    ${sunk ? '<br><span class="warn">Note: the body is fully submerged at some heel angles.</span>' : ''}
+    ${freeTrim && curve.some((p) => p.trimUnstable) ? `<br><span class="warn">Free trim: from ${f1(curve.find((p) => p.trimUnstable).deg)}° no stable trim was found within ±90° of the previous one (searched again every 30°), so the curve there uses a trim of maximum energy (a compact body heeled that far would rather turn about another axis).</span>` : ''}`;
 }
 
 // ------------------------------------------------------------------ target float plane → mass
@@ -716,7 +880,7 @@ function computeTarget(preview) {
   if (!S.model) return;
   stopSim();
   const R = getR();
-  const { G, rel } = relGeometry(R);
+  const { G, rel, relOpen } = relGeometry(R);
   const [zmin, zmax] = [Math.min(...zr(rel)), Math.max(...zr(rel))];
   const mode = $('tMode').value, val = parseFloat($('tVal').value) || 0;
   let zw;
@@ -733,6 +897,7 @@ function computeTarget(preview) {
   const H = hydrostatics(rel, zw, 1, S.rho);
   const mass = S.rho * H.V;
   const Hm = hydrostatics(rel, zw, mass, S.rho);
+  Hm.openDepth = openDepth(relOpen, zw);
   S.target = { mass, H: Hm };
   const RT = mat3.transpose(R);
   const dModel = mat3.apply(RT, [Hm.B[0], Hm.B[1], 0]);
@@ -756,7 +921,8 @@ function computeTarget(preview) {
   $('tApply').disabled = false;
 
   if (preview) {
-    S.preview = { rel, H: Hm };
+    S.preview = { rel, relOpen, H: Hm };
+    S.stateId = (S.stateId || 0) + 1;   // the verdict's GZ range must come from the previewed attitude
     placeStatic(R, Hm);
     renderStats(Hm, 'preview');
     showBanner(`Previewing target float plane — needs ${kg(mass)}`, 'Exit preview', () => { S.preview = null; hideBanner(); update(); });
@@ -791,7 +957,13 @@ function startSim() {
   if (!S.sim) {
     S.sim = makeSim();
     const H = S.last.H;
-    S.simFromRest = H.status !== 'sinks' && Math.hypot(...H.offset) < S.model.diag * 1e-4;
+    // "nothing to move" is said only if the start was a stable rest attitude and the body ends where it started
+    // (an unstable equilibrium such as the upright cube at s.g. ½ also has B under G)
+    S.simStart = {
+      rest: H.status !== 'sinks' && Math.hypot(...H.offset) < S.model.diag * 1e-4 && H.GMmin > 0,
+      up: S.last.R.slice(6, 9),   // world vertical in body axes (third row of R)
+    };
+    S.calmSince = null;
   }
   S.simRunning = true; $('simRun').textContent = '❚❚ Pause';
 }
@@ -812,13 +984,32 @@ $('simApply').onclick = () => {
 $('zeta').oninput = (e) => { $('zetaV').textContent = e.target.value; if (S.sim) S.sim.zeta = parseFloat(e.target.value); };
 $('speed').oninput = (e) => { $('speedV').textContent = `${e.target.value}×`; };
 
+// At rest: slow (|v|/size + |ω| < 1e-5 per s) AND B nearly under G (within 1e-4 of the size), held for 1 s of
+// simulated time. Speed alone is also small at the turning points of a slow swing, where B is furthest from under G.
+function restCheck(sim) {
+  const s = sim.last;
+  const ke = Math.hypot(...sim.v) / S.model.diag + Math.hypot(...sim.w);
+  const off = s && s.V > 0 ? Math.hypot(s.B[0] - sim.p[0], s.B[1] - sim.p[1]) : Infinity;
+  const calm = sim.t > 1 && ke < 1e-5 && off < 1e-4 * S.model.diag;
+  if (!calm) S.calmSince = null; else if (S.calmSince === null) S.calmSince = sim.t;
+  return calm && sim.t - S.calmSince >= 1;
+}
 function simFrame(dtReal) {
   const sim = S.sim;
   const triCount = sim.b.length / 9;
   const budget = Math.max(1, Math.floor(4e6 / Math.max(1, triCount)));    // keep each frame affordable
   const span = S.settling ? budget * sim.dt : dtReal * parseFloat($('speed').value);
   const steps = Math.min(budget, Math.ceil(span / sim.dt));
-  sim.advance(steps * sim.dt, steps);
+  // advance in chunks of 0.25 s of simulated time and test for rest after each (one frame of a small mesh can cover
+  // many minutes of simulated time when settling)
+  const chunk = Math.max(1, Math.ceil(0.25 / sim.dt));
+  let settled = false;
+  for (let done = 0; done < steps && !settled;) {
+    const n = Math.min(chunk, steps - done);
+    sim.advance(n * sim.dt, n); done += n;
+    settled = restCheck(sim);
+    if (S.settling && sim.t > 900) break;
+  }
   const R = quatToMat3(sim.q);
   setBodyPose(R, sim.p);
   // analysis of current instantaneous state (relative to G)
@@ -826,19 +1017,27 @@ function simFrame(dtReal) {
   const H = hydrostatics(rel, -sim.p[2], getMass(), S.rho);
   drawMarkers(sim.p, H);
   const e = mat3.toEulerDeg(R);
-  const ke = Math.hypot(...sim.v) / S.model.diag + Math.hypot(...sim.w);
-  const settled = sim.t > 1 && ke < 2e-4;
+  const up = R.slice(6, 9), st = S.simStart || {};
+  const moved = !st.up || Math.acos(Math.min(1, up[0] * st.up[0] + up[1] * st.up[1] + up[2] * st.up[2])) > 0.01 * Math.PI / 180;
   $('simInfo').innerHTML = `t = <b>${fmt(sim.t, 2)} s</b> · roll <b>${fmt(e[0], 1)}°</b> pitch <b>${fmt(e[1], 1)}°</b> yaw <b>${fmt(e[2], 1)}°</b><br>
     draft <b>${L(H.draft)}</b> · GM<sub>T</sub> <b>${L(H.GMt)}</b> · B–G offset <b>${L(Math.hypot(...H.offset))}</b>
     ${settled ? '<br><span class="good">Settled — this is a stable resting attitude.</span>' : ''}
-    ${settled && S.simFromRest ? '<br><span class="hint">It started at rest in this attitude, so there was nothing to move. Tilt it under Start attitude to watch it right itself.</span>' : ''}`;
+    ${settled && st.rest && !moved ? '<br><span class="hint">It started at rest in this attitude, so there was nothing to move. Tilt it under Start attitude to watch it right itself.</span>' : ''}`;
   if (S.settling && !settled && sim.t > 900) {
     stopSim(); $('simInfo').innerHTML += '<br><span class="warn">Did not settle within 900 s of simulated time — try more damping.</span>';
   }
   if (settled && S.settling) {
     stopSim();
     const Rs = quatToMat3(S.sim.q); S.sim = null;
-    setEuler(mat3.toEulerDeg(Rs)); update();
+    // finish with a static equilibrium solve, so the attitude copied back has B exactly under G
+    const fin = restAttitude(transformTris(S.model.tris, mat3.identity(), getCogM()), getMass() / S.rho, Rs);
+    const turn = fin.converged ? Math.acos(Math.min(1, (fin.R[0] * Rs[0] + fin.R[1] * Rs[1] + fin.R[2] * Rs[2] + fin.R[3] * Rs[3] + fin.R[4] * Rs[4] + fin.R[5] * Rs[5] + fin.R[6] * Rs[6] + fin.R[7] * Rs[7] + fin.R[8] * Rs[8] - 1) / 2)) * 180 / Math.PI : NaN;
+    const useFin = fin.converged && turn < 1;
+    setEuler(mat3.toEulerDeg(useFin ? fin.R : Rs)); update();
+    const info = $('simInfo').innerHTML;
+    $('simInfo').innerHTML = `${info}<br><span class="hint">${useFin
+      ? `Finished with a static equilibrium solve (B under G to ${L(fin.offset)}; it moved the attitude by ${fmt(turn, 3)}°).`
+      : 'The static equilibrium solve did not converge near the simulated attitude, so the simulated attitude is kept.'}</span>`;
   }
 }
 
@@ -936,6 +1135,7 @@ sea = initSeakeeping({
   THREE, scene, renderer, water, waterDepth, mG, extras,
   getState: () => (S.model && S.last ? { model: S.model, ...S.last } : null),
   getEuler, setBodyPose, getInertiaBody: () => inertiaG(), inertiaKey: () => JSON.stringify(inertiaG()),
+  gzFreeTrim: () => S.gzFree,   // the GZ panel's trim setting, used for the range of stability in the verdict
   // the reference csys: the model's coordinates are in it, so its origin is the body point (0, 0, 0)
   refKey: () => JSON.stringify([S.ref.O, S.ref.R]), refCustom: () => $('refMode').value === 'custom' && !S.ref.identity,
   stopCalmSim: () => { stopSim(); S.sim = null; S.preview = null; hideBanner(); },
