@@ -1,0 +1,22 @@
+services:
+  app:
+    build: { context: ., target: app }
+    image: float-sim:app
+    ports:
+      - "127.0.0.1:${FLOATSIM_PORT:-8765}:8765"   # this computer only, like ./serve.sh
+    volumes:
+      - .:/app:ro          # live source: edit files, reload the page, no rebuild
+    init: true             # reaps Capytaine worker processes, passes Ctrl-C through
+    restart: unless-stopped
+
+  test:
+    build: { context: ., target: test }
+    image: float-sim:test
+    profiles: [test]       # not started by `docker compose up`
+    volumes:
+      - .:/app
+    init: true
+    # default: node test/validate-node.mjs; override, e.g.
+    #   docker compose run --rm test node test/validate-bem.mjs
+    #   docker compose run --rm test node test/validate-capytaine.mjs
+    #   docker compose run --rm test python test/validate.py

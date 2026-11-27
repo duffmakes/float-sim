@@ -1,0 +1,10 @@
+.git
+.claude
+node_modules
+proofs/.lake
+**/__pycache__
+*.pyc
+test-results
+test/rao-compare/results
+*.bundle
+.DS_Store
