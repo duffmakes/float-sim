@@ -8,6 +8,29 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 
 `serve.sh` runs `tools/serve.py` (Python standard library only). If that Python also has [Capytaine](https://github.com/capytaine/capytaine) (`pip install capytaine`, or point `FLOATSIM_PYTHON` at a Python that has it), the RAO stage's **Solve with Capytaine** button works too; see below.
 
+Docker is optional, and nothing else needs installing. `requirements.txt` is only for Capytaine: `pip install -r requirements.txt` installs the tested versions.
+
+### Docker
+
+The container comes with Capytaine installed, so **Solve with Capytaine** works without a local Python setup:
+
+```bash
+docker compose up -d                  # build on first run, then open http://localhost:8765
+docker compose down                   # stop
+```
+
+- The port is published on 127.0.0.1 only, as with `./serve.sh`. Set `FLOATSIM_PORT` to use another port.
+- The source folder is mounted read-only. After you edit a file, reload the page; you don't need to rebuild. Rebuild (`docker compose build`) only after changing `requirements.txt` or the `Dockerfile`.
+- The `test` service adds Node 22 for the validation suites. It runs only when you call it:
+
+  ```bash
+  docker compose run --rm test                                   # node test/validate-node.mjs
+  docker compose run --rm test node test/validate-capytaine.mjs  # or any other suite below
+  ```
+
+  It has no browser, so run `test/e2e-browser.mjs` on the host against the running container.
+- `requirements.txt` pins Capytaine 3.0.0 and the libraries it needs, at the versions used for the comparisons in `docs/rao-compare/`.
+
 ## Workspace
 
 The page is laid out like a CAD / FEA tool: a menu bar, stage tabs, a setup pane on the left (property grid), the 3D view with its view toolbar and an animation toolbar, a results pane on the right and a status bar.
