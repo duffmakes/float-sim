@@ -8,6 +8,8 @@ Browser-based hydrostatics and stability tool for CAD bodies. Runs entirely loca
 
 `serve.sh` runs `tools/serve.py` (Python standard library only). If that Python also has [Capytaine](https://github.com/capytaine/capytaine) (`pip install capytaine`, or point `FLOATSIM_PYTHON` at a Python that has it), the RAO stage's **Solve with Capytaine** button works too; see below.
 
+Docker is optional, and nothing else needs installing. `requirements.txt` is only for Capytaine: `pip install -r requirements.txt` installs the tested versions.
+
 ### Docker
 
 The container comes with Capytaine installed, so **Solve with Capytaine** works without a local Python setup:
